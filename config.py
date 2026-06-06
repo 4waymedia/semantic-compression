@@ -4,183 +4,195 @@ BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
 # Reverse lookup: char → index
 BASE64_INDEX = {ch: i for i, ch in enumerate(BASE64_CHARS)}
 
+
 # ---------------------------------------------------------------------------
-# Tier system
+# Tier 0 — single-char IDs
+#
+# Design principle: IDs are lossless variable pointers to words.
+# No semantic annotations in the stream — those live in the DB.
+# Every single-char ID decodes back to exactly one word or system signal.
+#
+# Slot allocation (64 total):
+#   A-Z  (26) — Essential 26 word IDs (100% lossless word pointers)
+#   0-2   (3) — System stream markers
+#   - _   (2) — Stream format separators
+#   a-f   (6) — RESERVED: System 2 process stages (do not assign)
+#   g-z  (20) — OPEN: future Tier 0 expansion
+#   3-9   (7) — OPEN: future Tier 0 expansion
 # ---------------------------------------------------------------------------
 
-TIER_BOUNDARIES = {
-    0: (1, 64),          # 1-char: 64 reserved primitives
-    1: (2, 4096),        # 2-char: top ~1,000 by frequency
-    2: (3, 262144),      # 3-char: mid-frequency words
-    3: (4, 16777216),    # 4-char: low-freq / high-meaning words
-    4: (4, None),        # 4-char, '-' prefix: phrases
-    5: (4, None),        # 4-char, '-' prefix: collocations
-    6: (4, None),        # 4-char, '-' prefix: pragmatic formulas
+# System markers
+SYSTEM_IDS = {
+    '0': 'STREAM_START',
+    '1': 'STREAM_END',
+    '2': 'CHUNK_BOUNDARY',
+    '-': 'ATTR_DELIMITER',    # separates word ID from attribute list in FLEX mode
+    '_': 'CONTINUATION',      # token spans next unit
+}
+
+# Essential 26 — the highest-frequency words in English, one ID each.
+# a/an share one ID (same lemma). All others are distinct lemmas.
+WORD_IDS = {
+    'A': 'a',      # a / an     — general pointer (article)
+    'B': 'be',     # be         — existence / state (is, was, am, are, been)
+    'C': 'we',     # we         — collective perspective
+    'D': 'do',     # do         — primary action verb (does, did)
+    'E': 'he',     # he         — third person masculine
+    'F': 'of',     # of         — belonging / composition / origin
+    'G': 'to',     # to         — direction / intention / infinitive marker
+    'H': 'have',   # have       — possession / past timeline (has, had)
+    'I': 'in',     # in         — spatial anchor (interior)
+    'J': 'on',     # on         — spatial anchor (surface)
+    'K': 'for',    # for        — purpose / reason / benefit
+    'L': 'they',   # they       — third person plural
+    'M': 'i',      # I          — self / speaker (first person)
+    'N': 'and',    # and        — pure addition / bridge
+    'O': 'or',     # or         — choice / alternative
+    'P': 'not',    # not        — negation
+    'Q': 'all',    # all        — maximum scale / entire set
+    'R': 'she',    # she        — third person feminine
+    'S': 'this',   # this       — near demonstrative pointer
+    'T': 'the',    # the        — specific definite pointer (most common word)
+    'U': 'it',     # it         — non-human / abstract entity
+    'V': 'with',   # with       — accompaniment / tool / connection
+    'W': 'will',   # will       — future gateway
+    'X': 'but',    # but        — contrast / conflict
+    'Y': 'you',    # you        — audience / listener
+    'Z': 'that',   # that       — far demonstrative pointer / subordinator
+}
+
+# Reserved — labeled but NOT active. Do not use in compression until promoted.
+RESERVED_IDS = {
+    # System 2 — process stages (Surov 2022). Claim these 6 slots when ready.
+    'a': 'RESERVED_STAGE_PERCEPTION',
+    'b': 'RESERVED_STAGE_NOVELTY',
+    'c': 'RESERVED_STAGE_GOAL_PLAN',
+    'd': 'RESERVED_STAGE_ACTION',
+    'e': 'RESERVED_STAGE_PROGRESS',
+    'f': 'RESERVED_STAGE_RESULT',
+    # Open — g-z (20 slots), 3-9 (7 slots): unclaimed
+}
+
+# All active single-char IDs (system + words). Reserved are NOT included.
+PRIMITIVES = {**SYSTEM_IDS, **WORD_IDS}
+
+# Reverse lookup: word/signal → char ID
+PRIMITIVES_REVERSE = {v: k for k, v in PRIMITIVES.items()}
+
+# Fast lookup: lemma string → single-char ID (for the compressor)
+WORD_TO_ID = {v: k for k, v in WORD_IDS.items()}
+
+# Validate: no collisions, all chars are valid Base64
+assert len(PRIMITIVES) == 31, f"Expected 31 active primitives, got {len(PRIMITIVES)}"
+assert all(k in BASE64_CHARS for k in PRIMITIVES), "Primitive key outside Base64 charset"
+assert all(k in BASE64_CHARS for k in RESERVED_IDS), "Reserved key outside Base64 charset"
+assert not (set(PRIMITIVES) & set(RESERVED_IDS)), "Collision between active and reserved IDs"
+
+
+# ---------------------------------------------------------------------------
+# Tier system — word library ID tiers
+#
+# Tier 0: single-char (defined above)
+# Tier 1: 2-char, first char from g-z  →  20 × 64 = 1,280 IDs
+# Tier 2: 3-char, first char from g-z  →  20 × 64² = 81,920 IDs
+# Tier 3: 4-char, first char from g-z  →  20 × 64³ = 5,242,880 IDs
+# Phrase: 4-char, first char = '-'     →  64³ = 262,144 IDs
+#
+# Tier detection: first char + length (no ambiguity with Tier 0 since
+# active Tier 0 uses A-Z + 0-2 + -_, and Tier 1-3 use g-z as first char).
+# ---------------------------------------------------------------------------
+
+# First chars for Tier 1/2/3 word IDs — lowercase g-z only.
+# Skips a-f (reserved for System 2 Tier 0 promotion).
+TIER_WORD_FIRST_CHARS = 'ghijklmnopqrstuvwxyz'  # 20 chars
+
+TIER_CAPACITY = {
+    1: len(TIER_WORD_FIRST_CHARS) * 64,            # 1,280
+    2: len(TIER_WORD_FIRST_CHARS) * 64 ** 2,       # 81,920
+    3: len(TIER_WORD_FIRST_CHARS) * 64 ** 3,       # 5,242,880
 }
 
 TIER_FREQ_RANK = {
-    1: (1, 1000),
-    2: (1001, 10000),
-    3: (10001, None),    # None = unbounded
+    1: (1, 1000),       # top ~1,000 by corpus frequency (capped at Tier 1 capacity)
+    2: (1001, 10000),   # next 9,000
+    3: (10001, None),   # remainder (unbounded)
 }
 
-# First character encodes tier for fast detection without DB lookup
-TIER_FIRST_CHARS = {
-    1: set(BASE64_CHARS[0:10]),    # A-J        → 2-char IDs (Tier 1)
-    2: set(BASE64_CHARS[10:36]),   # K-Z + a-j  → 3-char IDs (Tier 2)
-    3: set(BASE64_CHARS[36:62]),   # k-z + 0-9  → 4-char IDs (Tier 3)
-    4: {'-'},                      # '-' → phrase IDs (tiers 4, 5, 6)
-}
-# Tier 0: the ID IS a single char (no first-char prefix needed)
 
 def detect_tier(token_id: str) -> int:
     """Return tier of a token ID without a DB lookup."""
-    if len(token_id) == 1:
+    n = len(token_id)
+    if n == 1:
         return 0
     first = token_id[0]
     if first == '-':
-        return 4  # phrases/collocations/pragmatic — subtype stored in DB
-    if first in TIER_FIRST_CHARS[1]:
-        return 1
-    if first in TIER_FIRST_CHARS[2]:
-        return 2
-    if first in TIER_FIRST_CHARS[3]:
-        return 3
+        return 4   # phrase / collocation / pragmatic
+    if first in TIER_WORD_FIRST_CHARS:
+        if n == 2:
+            return 1
+        if n == 3:
+            return 2
+        if n == 4:
+            return 3
     raise ValueError(f"Unknown tier for ID: {token_id!r}")
 
 
 # ---------------------------------------------------------------------------
-# Tier 0 — 64 primitive slots
-# ---------------------------------------------------------------------------
-
-PRIMITIVES = {
-    # SYSTEM / RESERVED (4)
-    'A': 'NULL',
-    'B': 'STREAM_START',
-    'C': 'STREAM_END',
-    'D': 'CHUNK_BOUNDARY',
-
-    # PROCESS STAGES — Surov (2022) (6)
-    'E': 'STAGE_PERCEPTION',
-    'F': 'STAGE_NOVELTY',
-    'G': 'STAGE_GOAL_PLAN',
-    'H': 'STAGE_ACTION',
-    'I': 'STAGE_PROGRESS',
-    'J': 'STAGE_RESULT',
-
-    # EPA POLES (6)
-    'K': 'EPA_EVAL_POS',       # +Evaluation
-    'L': 'EPA_EVAL_NEG',       # -Evaluation
-    'M': 'EPA_POTENCY_POS',    # +Potency (strong)
-    'N': 'EPA_POTENCY_NEG',    # -Potency (weak)
-    'O': 'EPA_ACTIVITY_POS',   # +Activity (active)
-    'P': 'EPA_ACTIVITY_NEG',   # -Activity (passive)
-
-    # FILLER CLASSES — always preserved, never stripped (6)
-    'Q': 'FILLER_COGNITIVE',   # um, uh, er, hmm       → cognitive load / processing
-    'R': 'FILLER_DISCOURSE',   # like, so, right, okay → turn management
-    'S': 'FILLER_VALIDATION',  # you know, know what i mean → seeking confirmation
-    'T': 'FILLER_HEDGE',       # kind of, sort of, basically → softening claim
-    'U': 'FILLER_EMPHASIS',    # literally, honestly, actually → amplifying claim
-    'V': 'FILLER_EMOTIONAL',   # i mean, look, listen  → emotional state shift incoming
-
-    # TENSE (3)
-    'W': 'TENSE_PAST',
-    'X': 'TENSE_PRESENT',
-    'Y': 'TENSE_FUTURE',
-
-    # LOGIC / BOOLEAN (4)
-    'Z': 'AFFIRM',             # true / yes / agree
-    '0': 'DENY',               # false / no / disagree
-    '1': 'QUESTION',
-    '2': 'CONTRAST',           # but / however / although
-
-    # POLARITY (2)
-    '3': 'POLARITY_POS',
-    '4': 'POLARITY_NEG',
-
-    # CERTAINTY (2)
-    '5': 'CERTAIN',
-    '6': 'UNCERTAIN',
-
-    # STRUCTURAL (3)
-    '7': 'SENTENCE_BOUNDARY',
-    '8': 'TOPIC_SHIFT',
-    '9': 'REPETITION',         # this concept was stated before
-
-    # SEPARATORS (2)
-    '-': 'ATTR_DELIMITER',     # separates ID from attribute list
-    '_': 'CONTINUATION',       # token continues on next unit
-
-    # OPEN RESERVED (14) — do not assign until System 2
-    # a b c d e f g h i j k l m n
-}
-
-# Reverse lookup: semantic name → primitive char
-PRIMITIVE_REVERSE = {v: k for k, v in PRIMITIVES.items()}
-
-# Filler primitive chars (always preserved in compression output)
-FILLER_PRIMITIVES = {'Q', 'R', 'S', 'T', 'U', 'V'}
-
-assert len(PRIMITIVES) == 38, f"Expected 38 defined primitives, got {len(PRIMITIVES)}"
-assert len(set(PRIMITIVES.keys())) == len(PRIMITIVES), "Duplicate primitive keys"
-
-
-# ---------------------------------------------------------------------------
 # Filler classification
+# (Fillers are regular words in the library — no special Tier 0 slot.
+#  filler_detector.py uses these maps to tag filler occurrences for System 2.)
 # ---------------------------------------------------------------------------
 
-# Ordered longest-match first within each class to prevent partial matches
 FILLER_MAP = {
-    'Q': [  # Cognitive load — processing delay
+    'COGNITIVE': [    # um, uh, er, hmm — processing delay / cognitive load
         'uhh', 'umm', 'uhm', 'um', 'uh', 'er', 'hmm',
     ],
-    'R': [  # Discourse management — turn-holding
-        'alright', 'okay', 'right', 'well', 'like', 'now', 'and', 'so',
+    'DISCOURSE': [    # like, so, right — turn management / floor-holding
+        'alright', 'okay', 'right', 'well', 'like', 'now', 'so',
     ],
-    'S': [  # Validation seeking
+    'VALIDATION': [   # you know — seeking listener confirmation
         'you know what i mean', 'know what i mean', 'know what im saying',
         'you feel me', 'you see what i mean', 'you know',
     ],
-    'T': [  # Hedging — epistemic uncertainty
+    'HEDGE': [        # kind of, sort of — softening a claim
         'more or less', 'something like', 'pretty much', 'kind of',
         'sort of', 'basically', 'in a way', 'almost',
     ],
-    'U': [  # Emphasis / certainty amplifier
+    'EMPHASIS': [     # literally, honestly — amplifying a claim
         'i mean it', 'absolutely', 'definitely', 'seriously', 'genuinely',
         'literally', 'honestly', 'actually', 'truly',
     ],
-    'V': [  # Emotional marker — high-valence content incoming
+    'EMOTIONAL': [    # i mean, look — signalling emotional/important content ahead
         'here is the thing', 'let me tell you', 'i will say this',
         'hear me out', 'the thing is', 'i mean', 'listen', 'look',
     ],
 }
 
-# Probability weight deltas applied to adjacent Tier 3 tokens
+# Weight deltas for System 2 probability adjustment on adjacent tokens
 FILLER_WEIGHT_DELTA = {
-    'Q': {'certainty': -0.2, 'cognitive_load': +0.3},
-    'R': {'certainty':  0.0, 'transition':     +0.2},
-    'S': {'certainty': -0.1, 'validation_need': +0.3},
-    'T': {'certainty': -0.3, 'commitment':     -0.2},
-    'U': {'certainty': +0.3, 'commitment':     +0.3},
-    'V': {'emotional_signal': +0.4, 'importance': +0.3},
+    'COGNITIVE':  {'certainty': -0.2, 'cognitive_load':   +0.3},
+    'DISCOURSE':  {'certainty':  0.0, 'transition':        +0.2},
+    'VALIDATION': {'certainty': -0.1, 'validation_need':  +0.3},
+    'HEDGE':      {'certainty': -0.3, 'commitment':        -0.2},
+    'EMPHASIS':   {'certainty': +0.3, 'commitment':        +0.3},
+    'EMOTIONAL':  {'emotional_signal': +0.4, 'importance': +0.3},
 }
 
 # Flat set of all filler surface forms for fast membership testing
-ALL_FILLERS: set[str] = {form for forms in FILLER_MAP.values() for form in forms}
+ALL_FILLERS: set[str] = {f for forms in FILLER_MAP.values() for f in forms}
 
-# Sorted list of multi-word fillers (longest first) for greedy matching
+# Multi-word fillers sorted longest-first for greedy matching
 MULTI_WORD_FILLERS: list[tuple[str, str]] = sorted(
-    [(form, cls) for cls, forms in FILLER_MAP.items() for form in forms if ' ' in form],
+    [(f, cls) for cls, forms in FILLER_MAP.items() for f in forms if ' ' in f],
     key=lambda x: -len(x[0].split()),
 )
 
-# Single-word fillers as a dict: surface → class
+# Single-word fillers: surface → class
 SINGLE_WORD_FILLERS: dict[str, str] = {
-    form: cls
+    f: cls
     for cls, forms in FILLER_MAP.items()
-    for form in forms
-    if ' ' not in form
+    for f in forms
+    if ' ' not in f
 }
 
 
@@ -190,35 +202,33 @@ SINGLE_WORD_FILLERS: dict[str, str] = {
 
 COMPRESSION_MODES = {
     'STABLE': {
-        'filler_handling':  'collapse_to_primitive',  # "um um um" → "Q3"
+        # Fast, deterministic — IDs only, no attributes
+        'filler_handling':  'word_id_only',    # fillers get their Tier 1/2/3 word ID
         'phrase_detection': 'exact_match',
         'word_lookup':      'lemma_direct',
-        'attributes':       'base_only',
-        'output_format':    'flat_stream',
+        'output_format':    'flat_stream',     # "0|T|N|gA|gB|1"
     },
     'FLEX': {
-        'filler_handling':  'preserve_full',           # primitive + count + position + next
+        # Richer — word IDs + inline attributes for System 2
+        'filler_handling':  'word_id_plus_class',  # word ID + filler class attribute
         'phrase_detection': 'fuzzy_match',
         'word_lookup':      'semantic_nearest',
-        'attributes':       'full_dynamic',
-        'output_format':    'attributed_stream',
+        'output_format':    'attributed_stream',   # "0|T|gA-filler:COGNITIVE|1"
     },
 }
 
 
 # ---------------------------------------------------------------------------
-# Database paths (relative to project root)
+# Paths and model constants
 # ---------------------------------------------------------------------------
 
 DB_PATH    = 'semantic_compression/db/canonical.db'
 FAISS_PATH = 'semantic_compression/db/faiss.index'
 
-TRANSCRIPT_DIR  = 'Resources/transcripts'
-COMPRESSED_DIR  = 'semantic_compression/data/compressed'
+TRANSCRIPT_DIR = 'Resources/transcripts'
+COMPRESSED_DIR = 'semantic_compression/data/compressed'
 
-# Embedding model (sentence-transformers)
 EMBEDDING_MODEL = 'all-mpnet-base-v2'
 EMBEDDING_DIM   = 768
 
-# spaCy model
 SPACY_MODEL = 'en_core_web_sm'

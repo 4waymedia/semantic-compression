@@ -27,7 +27,8 @@ from tqdm import tqdm
 
 from semantic_compression.config import (
     BASE64_CHARS, DB_PATH, EMBEDDING_MODEL, FAISS_PATH,
-    SPACY_MODEL, TIER_FREQ_RANK, TRANSCRIPT_DIR,
+    SPACY_MODEL, TIER_CAPACITY, TIER_FREQ_RANK, TIER_WORD_FIRST_CHARS,
+    TRANSCRIPT_DIR,
 )
 from semantic_compression.corpus_scanner import scan_transcripts
 
@@ -37,27 +38,26 @@ log = logging.getLogger(__name__)
 # Tier ID spaces
 # ---------------------------------------------------------------------------
 
-_TIER_FIRST = {
-    1: BASE64_CHARS[0:10],   # A-J  (10 chars × 64 = 640 IDs)
-    2: BASE64_CHARS[10:36],  # K-Z + a-j  (26 × 64^2 = 106,496 IDs)
-    3: BASE64_CHARS[36:62],  # k-z + 0-9  (26 × 64^3 IDs)
-}
-
-_TIER_CAPACITY = {1: 640, 2: 106_496, 3: 6_815_744}
+# All tiers use TIER_WORD_FIRST_CHARS (g-z, 20 chars) as first char.
+# Tier is distinguished by length: 2=Tier1, 3=Tier2, 4=Tier3.
+_TIER_FIRST = TIER_WORD_FIRST_CHARS   # 'ghijklmnopqrstuvwxyz'
+_TIER_CAPACITY = TIER_CAPACITY
 
 
 def _encode_id(tier: int, counter: int) -> str:
-    """Convert sequential counter to a tier-appropriate Base64 ID."""
-    first_chars = _TIER_FIRST[tier]
-    length = tier + 1  # tier 1→2-char, tier 2→3-char, tier 3→4-char
+    """
+    Convert sequential counter to a tier-appropriate Base64 ID.
+    All tiers use g-z as first char; length encodes tier (2/3/4).
+    """
+    length = tier + 1   # tier1→2-char, tier2→3-char, tier3→4-char
     chars = []
     remaining = counter
     for _ in range(length - 1):
         chars.append(BASE64_CHARS[remaining % 64])
         remaining //= 64
-    if remaining >= len(first_chars):
+    if remaining >= len(_TIER_FIRST):
         raise OverflowError(f"Tier {tier} ID space exhausted (counter={counter})")
-    chars.append(first_chars[remaining])
+    chars.append(_TIER_FIRST[remaining])
     return ''.join(reversed(chars))
 
 
@@ -229,8 +229,8 @@ def assign_ids(lemma_data: dict, conn: sqlite3.Connection) -> list[dict]:
     # Sort by frequency descending
     sorted_lemmas = sorted(lemma_data.items(), key=lambda x: -x[1]['frequency'])
 
-    # Tier rank boundaries — cap Tier 1 at actual ID-space capacity (640)
-    tier1_max = min(TIER_FREQ_RANK[1][1], _TIER_CAPACITY[1])  # 640
+    # Tier rank boundaries — cap Tier 1 at actual ID-space capacity (1,280)
+    tier1_max = min(TIER_FREQ_RANK[1][1], _TIER_CAPACITY[1])  # 1,000 (fits in 1,280 slots)
     tier2_max = TIER_FREQ_RANK[2][1]                           # 10000
 
     counters = {1: 0, 2: 0, 3: 0}

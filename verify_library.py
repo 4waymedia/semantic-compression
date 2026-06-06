@@ -21,32 +21,35 @@ from semantic_compression.library_builder import (
 )
 from sentence_transformers import SentenceTransformer
 
+import os
 SAMPLE_DIR  = "Resources/transcripts/jocko_podcast"
 TEST_DB     = "semantic_compression/db/test_canonical.db"
 TEST_FAISS  = "semantic_compression/db/test_faiss.index"
+# Always start fresh so stale rows from prior runs don't interfere
+for p in (TEST_DB, TEST_FAISS):
+    if os.path.exists(p):
+        os.remove(p)
 
 # ── 1. ID encoding ──────────────────────────────────────────────────────────
-assert _encode_id(1, 0)   == "AA",   f"Got {_encode_id(1, 0)!r}"
-assert _encode_id(1, 63)  == "A_",   f"Got {_encode_id(1, 63)!r}"
-assert _encode_id(1, 64)  == "BA",   f"Got {_encode_id(1, 64)!r}"
-assert _encode_id(2, 0)   == "KAA",  f"Got {_encode_id(2, 0)!r}"
-assert _encode_id(3, 0)   == "kAAA", f"Got {_encode_id(3, 0)!r}"
-print("[OK] ID encoding: tier-prefix and sequential counters correct")
+assert _encode_id(1, 0)   == "gA",   f"Got {_encode_id(1, 0)!r}"
+assert _encode_id(1, 63)  == "g_",   f"Got {_encode_id(1, 63)!r}"
+assert _encode_id(1, 64)  == "hA",   f"Got {_encode_id(1, 64)!r}"
+assert _encode_id(2, 0)   == "gAA",  f"Got {_encode_id(2, 0)!r}"
+assert _encode_id(3, 0)   == "gAAA", f"Got {_encode_id(3, 0)!r}"
+print("[OK] ID encoding: g-z first char, length encodes tier")
 
 # ── 2. Tier first-char contract ─────────────────────────────────────────────
-tier1_first = set(BASE64_CHARS[0:10])
-tier2_first = set(BASE64_CHARS[10:36])
-tier3_first = set(BASE64_CHARS[36:62])
-for c in (0, 63, 200, 639):
+tier_word_first = set('ghijklmnopqrstuvwxyz')
+for c in (0, 63, 200, 1000):
     tid = _encode_id(1, c)
-    assert len(tid) == 2 and tid[0] in tier1_first, f"Tier1 ID bad: {tid}"
+    assert len(tid) == 2 and tid[0] in tier_word_first, f"Tier1 ID bad: {tid}"
 for c in (0, 100, 1000):
     tid = _encode_id(2, c)
-    assert len(tid) == 3 and tid[0] in tier2_first, f"Tier2 ID bad: {tid}"
+    assert len(tid) == 3 and tid[0] in tier_word_first, f"Tier2 ID bad: {tid}"
 for c in (0, 500, 10000):
     tid = _encode_id(3, c)
-    assert len(tid) == 4 and tid[0] in tier3_first, f"Tier3 ID bad: {tid}"
-print("[OK] ID first-char encodes tier correctly for all checked values")
+    assert len(tid) == 4 and tid[0] in tier_word_first, f"Tier3 ID bad: {tid}"
+print("[OK] All tier IDs use g-z first char, no collision with Tier 0")
 
 # ── 3. Run build phases on sample transcript ─────────────────────────────────
 print("\nRunning build phases on sample transcript (1 file)...")
