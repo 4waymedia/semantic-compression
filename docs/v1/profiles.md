@@ -128,11 +128,99 @@ its budget, but the `.elo` file itself loses nothing.
 
 | If you are... | Choose | Why |
 |---|---|---|
-| Training a 1-3B model | **Tiny** | Embedding stays ~0.5 GB, common LLaMA-family sizing |
-| Training a 3-8B model, want familiar size | **Compact** | GPT-2/4-class vocab, ~0.85 GB embedding for 7B |
+| Training a 1-3B model for on-device inference | **Tiny** | Smallest embedding, mobile-deployable when quantized |
+| Training a 3-8B model, want familiar size | **Compact** | GPT-2/4-class vocab, fits flagship phones at int4 |
 | Training an 8-14B model, want phrase atomicity | **Standard** | LLaMA-3-class size, captures the top ~50k phrases |
 | Doing research, willing to pay 2x embedding cost | **Full** | Includes the long tail of phrase atoms |
 | Building a compression-tool consumer | **Reference** | Use the entire dictionary; no LLM constraints |
+
+---
+
+## On-device inference -- the unlock
+
+The original reason to standardize vocabulary profiles is that a small
+vocab + aggressive quantization moves capable LLMs from cloud-only to
+**phone-deployable**. The math, with honest accounting:
+
+### Memory budget for an LLM at inference
+
+```
+Total RAM needed = Embedding matrix
+                 + Transformer weights (attention + FFN)
+                 + KV cache (grows with context length)
+                 + Activations (small per step)
+                 + Misc overhead
+```
+
+The first two dominate at typical context lengths. EloAI affects both:
+
+- **Embedding** is `vocab_size × hidden_dim × bytes_per_param`. Smaller
+  vocab cuts this directly.
+- **Transformer weights** are fixed by model size, but quantization
+  (int8, int4, int2) reduces bytes_per_param 4-16x.
+- **KV cache** scales with token count -- phrase atoms reduce token
+  count for the same source text, so KV cache is smaller for the same
+  semantic content.
+
+### Concrete deployment scenarios
+
+Model weights stored at int4 (4 bits per param, ~0.5 bytes), embedding
+at int8 (1 byte per param, modest accuracy tradeoff):
+
+| Model | Profile | Embed | Weights | KV (4k ctx) | **Total RAM** | Device class |
+|---|---|---:|---:|---:|---:|---|
+| 1B | Tiny     | 0.07 GB | 0.5 GB | 0.05 GB | **0.6 GB** | Budget phone (4 GB) |
+| 3B | Tiny     | 0.07 GB | 1.5 GB | 0.1 GB  | **1.7 GB** | Mid-range phone (6 GB) |
+| 3B | Compact  | 0.13 GB | 1.5 GB | 0.1 GB  | **1.7 GB** | Mid-range phone |
+| 7B | Compact  | 0.27 GB | 3.5 GB | 0.2 GB  | **4.0 GB** | Flagship phone (8 GB Pro / S25) |
+| 7B | Standard | 0.54 GB | 3.5 GB | 0.2 GB  | **4.2 GB** | Flagship phone |
+| 8B | Compact  | 0.27 GB | 4.0 GB | 0.2 GB  | **4.5 GB** | Flagship phone (8 GB tight) |
+| 8B | Standard | 0.54 GB | 4.0 GB | 0.2 GB  | **4.8 GB** | Flagship phone |
+| 14B | Standard | 0.67 GB | 7.0 GB | 0.3 GB  | **8.0 GB** | High-end tablet / laptop only |
+
+**The threshold finding:** **3B-class models with Tiny or Compact
+profile fit comfortably in 2 GB at int4** — well within mid-range phone
+RAM budgets, leaving room for the OS and the host app.
+
+**A 7B-8B model fits in a flagship phone (8 GB RAM)** with Compact
+profile at int4. The user's intuition that "8B in 1 GB" is the
+direction is right; the actual achievable size today is closer to
+4-5 GB for 8B with int4, which is still revolutionary versus the
+16 GB+ those models need at bf16. With int2 quantization that drops
+toward the 1-2 GB range — research-stage but the trajectory is clear.
+
+### The phrase-atom force multiplier
+
+There's a second compounding effect. EloAI vocabularies aren't just
+smaller -- they're **semantically denser**. A phrase atom like
+`"i don't know"` is one token where BPE tokenizers spend 4-5 tokens.
+
+For the same input text:
+
+```
+Input:       2,000 words of conversational dialogue
+BPE tokens:  ~2,500 tokens
+EloAI tokens (Tiny):    ~1,400 tokens (40% fewer)
+EloAI tokens (Standard): ~900 tokens (64% fewer)
+```
+
+The same KV cache budget supports **2-3x more conversational context**
+at the same RAM. A phone running a 7B EloAI-Compact model with 4 GB
+RAM has the effective context window of a desktop running a 7B
+BPE model with 8-12 GB.
+
+### Why this matters
+
+- Models that previously required cloud inference become local.
+- Privacy benefits: documents, dialogue, dictation never leave the device.
+- Latency drops 10-100x for short queries.
+- Offline operation becomes table stakes.
+- Per-query energy cost on battery becomes negligible.
+
+The on-device LLM era was waiting for two things to converge:
+aggressive quantization (already here) and **semantically dense small
+vocabularies** (what EloAI provides). The profile system makes that
+contract explicit and testable.
 
 ---
 

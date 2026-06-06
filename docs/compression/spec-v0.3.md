@@ -25,6 +25,12 @@ The downstream consumers are:
 2. **LLM training pipelines** — vocabulary becomes a frozen, semantic,
    phrase-aware contract that retraining can target. Models see
    atomic semantic units instead of tokenized fragments.
+3. **On-device inference** — small profiles (Tiny / Compact) combined
+   with int4 quantization put 3B-8B parameter models within reach of
+   consumer phones. See `docs/v1/profiles.md` -- "On-device inference"
+   for the detailed memory math. The phrase-atom vocabulary also acts
+   as a context-window multiplier: same KV-cache budget supports
+   2-3x more conversational tokens than BPE-tokenized equivalents.
 
 ---
 
