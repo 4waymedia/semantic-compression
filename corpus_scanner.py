@@ -11,6 +11,7 @@ YouTube ASR produces two distinct duplication artifacts:
   2. Cross-chunk: the last N words of chunk K appear again at the start of chunk K+1.
 """
 
+import html
 import json
 import logging
 import re
@@ -55,8 +56,8 @@ def _init_db(db_path: str) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def clean_text(text: str) -> str:
-    """Lowercase and collapse whitespace."""
-    return _WHITESPACE.sub(' ', text.lower()).strip()
+    """Decode HTML entities, lowercase, and collapse whitespace."""
+    return _WHITESPACE.sub(' ', html.unescape(text).lower()).strip()
 
 
 # ---------------------------------------------------------------------------

@@ -60,7 +60,8 @@ def count_via_scanner(transcript_dir: str, db_path: str, limit: int | None) -> C
         limit=limit,
         show_progress=True,
     ):
-        counts.update(text.split())
+        # Only count tokens that contain at least one letter (filters >>, numbers, etc.)
+        counts.update(w for w in text.split() if any(c.isalpha() for c in w))
     return counts
 
 
