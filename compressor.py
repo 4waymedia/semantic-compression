@@ -63,12 +63,62 @@ from semantic_compression.caps_codec import (
     OOV_SEP,
 )
 from semantic_compression.config import (
+    BASE64_CHARS, BASE64_INDEX,
     FORMAT_VERSION, STREAM_ENCODING,
 )
 from semantic_compression.format_adapters import (
     detect_format, get_adapter, read_file,
 )
-from semantic_compression.tokenizer import tokenize
+from semantic_compression.tokenizer import tokenize, classify, CLASS_WORD
+
+
+# ---------------------------------------------------------------------------
+# Implicit whitespace transform (Option 2)
+#
+# Single space (' ') is ~47% of all tokens in the YouTube corpus. Removing
+# it from the stream when it sits between two word-class tokens cuts both
+# the token count and per-token overhead substantially.
+#
+# Rule: drop a single-space token at position i iff
+#       tokens[i] == ' ' AND
+#       classify(tokens[i-1]) == WORD AND
+#       classify(tokens[i+1]) == WORD
+#
+# Decoder restores by inserting ' ' between any two consecutive word tokens
+# that are not already separated by a whitespace token in the stream.
+#
+# This transform sits BEFORE the token-by-token encoder so it composes
+# cleanly with both the text-mode wire format and the binary wire format.
+# ---------------------------------------------------------------------------
+
+def _strip_implicit_spaces(tokens: list[str]) -> list[str]:
+    """Remove single-space tokens between two word-class tokens."""
+    n = len(tokens)
+    if n < 3:
+        return tokens
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        if (
+            tok == ' '
+            and 0 < i < n - 1
+            and classify(tokens[i - 1]) == CLASS_WORD
+            and classify(tokens[i + 1]) == CLASS_WORD
+        ):
+            continue
+        out.append(tok)
+    return out
+
+
+def _restore_implicit_spaces(tokens: list[str]) -> list[str]:
+    """Insert single space between consecutive word-class tokens."""
+    if not tokens:
+        return tokens
+    out: list[str] = [tokens[0]]
+    for tok in tokens[1:]:
+        if classify(out[-1]) == CLASS_WORD and classify(tok) == CLASS_WORD:
+            out.append(' ')
+        out.append(tok)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +129,26 @@ ELO_MAGIC      = 'ELO'
 ELO_DELIMITER  = '|'                                  # PIPE_BYTE = 0x7C
 DEFAULT_LMDB   = Path('semantic_compression/db/dictionary.lmdb')
 ELO_EXTENSION  = '.elo'
+
+# -- Binary stream constants (Option 1 experiment) ---------------------------
+ELO_MAGIC_BIN     = b'ELO'
+ELO_BIN_VERSION   = 2
+ELO_BIN_EXTENSION = '.eloB'
+
+# Binary stream tag encoding:
+#   0x00-0x3F : Tier 0  -- byte value IS the Base64 char index (0-63)        (1 byte total)
+#   0x40-0x7F : Tier 1  -- byte1 low 6 bits = first char index               (2 bytes total)
+#                          byte2 = second char index
+#   0x80-0xBF : Tier 2  -- byte1 low 6 bits = first char index               (3 bytes total)
+#   0xC0-0xFD : Tier 3  -- byte1 low 6 bits = first char index               (4 bytes total)
+#               (active first-char range g-z = base64 index 32-51)
+#   0xFE      : CAP-PREFIX marker  [0xFE][cap_len][cap_chars...][next token]
+#   0xFF      : OOV marker         [0xFF][cap_len][cap_chars...][body_len LE u16][body...]
+TAG_T1     = 0x40
+TAG_T2     = 0x80
+TAG_T3     = 0xC0
+TAG_CAP    = 0xFE
+TAG_OOV    = 0xFF
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +307,12 @@ class Compressor:
 
         ext = _normalize_ext(fmt)
 
+        tokens = tokenize(text)
+        tokens = _strip_implicit_spaces(tokens)        # Option 2
+
         parts: list[str] = []
         with self._env.begin() as txn:
-            for tok in tokenize(text):
+            for tok in tokens:
                 parts.append(self._encode_token(tok, txn, stats))
 
         stream = ELO_DELIMITER.join(parts)
@@ -277,6 +350,8 @@ class Compressor:
                 for st in stream.split(ELO_DELIMITER):
                     out.append(self._decode_token(st, txn))
 
+        out = _restore_implicit_spaces(out)            # Option 2
+
         return _denormalize_ext(ext), ''.join(out)
 
     # ------------------------------------------------------------------
@@ -288,6 +363,69 @@ class Compressor:
         text = src_bytes.decode(STREAM_ENCODING)
         elo_text = self.encode_text(text, fmt=fmt)
         return elo_text.encode(STREAM_ENCODING)
+
+    # ------------------------------------------------------------------
+    # BINARY stream API (Option 1 experiment, v2 / .eloB)
+    # ------------------------------------------------------------------
+
+    def encode_bytes_binary(
+        self,
+        src_bytes: bytes,
+        fmt: str,
+        *,
+        stats: EncodeStats | None = None,
+    ) -> bytes:
+        """Encode raw bytes to compact binary .eloB representation."""
+        self.open()
+        text = src_bytes.decode(STREAM_ENCODING)
+        if stats is None:
+            stats = EncodeStats()
+
+        ext = _normalize_ext(fmt)
+        ext_bytes = ext.encode(STREAM_ENCODING)
+        if len(ext_bytes) > 255:
+            raise ValueError(f"format extension too long: {ext!r}")
+
+        # Header
+        out = bytearray()
+        out += ELO_MAGIC_BIN
+        out.append(ELO_BIN_VERSION)
+        out.append(len(ext_bytes))
+        out += ext_bytes
+
+        # Token stream
+        tokens = tokenize(text)
+        tokens = _strip_implicit_spaces(tokens)        # Option 2
+
+        with self._env.begin() as txn:
+            for tok in tokens:
+                _emit_token_binary(tok, out, txn, self._fwd_db, stats)
+
+        return bytes(out)
+
+    def decode_bytes_binary(self, elo_bytes: bytes) -> tuple[str, bytes]:
+        """Decode .eloB bytes -> (source_ext, source_bytes)."""
+        self.open()
+        if len(elo_bytes) < 5 or elo_bytes[:3] != ELO_MAGIC_BIN:
+            raise ValueError("Not an .eloB stream (missing magic)")
+        version = elo_bytes[3]
+        if version != ELO_BIN_VERSION:
+            raise ValueError(
+                f"Unsupported .eloB version: file={version} reader={ELO_BIN_VERSION}"
+            )
+        ext_len = elo_bytes[4]
+        ext = elo_bytes[5:5 + ext_len].decode(STREAM_ENCODING)
+        stream = elo_bytes[5 + ext_len:]
+
+        out_parts: list[str] = []
+        with self._env.begin() as txn:
+            _consume_stream_binary(stream, out_parts, txn, self._rev_db)
+
+        # Option 2: restore implicit single-spaces between word-class tokens
+        out_parts = _restore_implicit_spaces(out_parts)
+
+        text = ''.join(out_parts)
+        return _denormalize_ext(ext), text.encode(STREAM_ENCODING)
 
     def decode_bytes(self, elo_bytes: bytes) -> tuple[str, bytes]:
         """
@@ -377,6 +515,139 @@ class Compressor:
             f.write(src_bytes)
 
         return dst
+
+
+# ---------------------------------------------------------------------------
+# Binary stream encoding helpers (Option 1 experiment)
+# ---------------------------------------------------------------------------
+
+def _encode_id_to_binary(out: bytearray, token_id: str) -> None:
+    """Pack a 1-4 char Base64 token ID into 1-4 binary bytes."""
+    n = len(token_id)
+    indices = [BASE64_INDEX[c] for c in token_id]
+    if n == 1:
+        # Tier 0: byte value = base64 index (0-63), top 2 bits already 00
+        out.append(indices[0])
+    elif n == 2:
+        out.append(TAG_T1 | indices[0])     # 0x40-0x7F (low 6 bits = first char)
+        out.append(indices[1])
+    elif n == 3:
+        out.append(TAG_T2 | indices[0])     # 0x80-0xBF
+        out.append(indices[1])
+        out.append(indices[2])
+    elif n == 4:
+        out.append(TAG_T3 | indices[0])     # 0xC0-0xFD
+        out.append(indices[1])
+        out.append(indices[2])
+        out.append(indices[3])
+    else:
+        raise ValueError(f"unexpected token ID length: {token_id!r}")
+
+
+def _emit_token_binary(token: str, out: bytearray, txn, fwd_db, stats: EncodeStats) -> None:
+    """Encode one source token directly to the binary stream."""
+    stats.total_tokens += 1
+    lower = token.lower()
+    bytes_id = txn.get(lower.encode(STREAM_ENCODING), db=fwd_db)
+
+    if bytes_id is not None:
+        token_id = bytes_id.decode(STREAM_ENCODING)
+        n = len(token_id)
+        if   n == 1: stats.tier0 += 1
+        elif n == 2: stats.tier1 += 1
+        elif n == 3: stats.tier2 += 1
+        elif n == 4: stats.tier3 += 1
+
+        if token == lower:
+            _encode_id_to_binary(out, token_id)
+            return
+
+        # Cap-prefixed in-vocab token
+        _, cap = encode_caps(token)
+        cap_bytes = cap.encode(STREAM_ENCODING)
+        if len(cap_bytes) > 255:
+            raise ValueError("cap chars exceed 255 bytes")
+        stats.cap_prefix += 1
+        out.append(TAG_CAP)
+        out.append(len(cap_bytes))
+        out += cap_bytes
+        _encode_id_to_binary(out, token_id)
+        return
+
+    # OOV path  -- store raw lowered word verbatim
+    stats.oov += 1
+    lower_token, cap = encode_caps(token)
+    cap_bytes = cap.encode(STREAM_ENCODING)
+    body_bytes = lower_token.encode(STREAM_ENCODING)
+    if len(cap_bytes) > 255 or len(body_bytes) > 65535:
+        raise ValueError(
+            f"OOV token too large: cap_len={len(cap_bytes)} body_len={len(body_bytes)}"
+        )
+    out.append(TAG_OOV)
+    out.append(len(cap_bytes))
+    out += cap_bytes
+    out.append(len(body_bytes) & 0xFF)
+    out.append((len(body_bytes) >> 8) & 0xFF)
+    out += body_bytes
+
+
+def _read_id_from_binary(stream: bytes, i: int) -> tuple[str, int]:
+    """Read an in-vocab token ID at offset i. Returns (id_string, new_offset)."""
+    tag = stream[i]
+    if tag < TAG_T1:                                    # Tier 0
+        return BASE64_CHARS[tag], i + 1
+    if tag < TAG_T2:                                    # Tier 1
+        c1 = BASE64_CHARS[tag & 0x3F]
+        c2 = BASE64_CHARS[stream[i + 1]]
+        return c1 + c2, i + 2
+    if tag < TAG_T3:                                    # Tier 2
+        c1 = BASE64_CHARS[tag & 0x3F]
+        c2 = BASE64_CHARS[stream[i + 1]]
+        c3 = BASE64_CHARS[stream[i + 2]]
+        return c1 + c2 + c3, i + 3
+    if tag < TAG_CAP:                                   # Tier 3
+        c1 = BASE64_CHARS[tag & 0x3F]
+        c2 = BASE64_CHARS[stream[i + 1]]
+        c3 = BASE64_CHARS[stream[i + 2]]
+        c4 = BASE64_CHARS[stream[i + 3]]
+        return c1 + c2 + c3 + c4, i + 4
+    raise ValueError(f"unexpected ID tag byte 0x{tag:02X} at offset {i}")
+
+
+def _consume_stream_binary(stream: bytes, out_parts: list[str], txn, rev_db) -> None:
+    """Walk the binary stream and append decoded source text to out_parts."""
+    n = len(stream)
+    i = 0
+    while i < n:
+        tag = stream[i]
+        if tag == TAG_CAP:
+            # Cap-prefix wrapping the next in-vocab ID
+            cap_len = stream[i + 1]
+            cap = stream[i + 2:i + 2 + cap_len].decode(STREAM_ENCODING)
+            i += 2 + cap_len
+            token_id, i = _read_id_from_binary(stream, i)
+            bw = txn.get(token_id.encode(STREAM_ENCODING), db=rev_db)
+            if bw is None:
+                raise ValueError(f"Unknown ID after cap prefix: {token_id!r}")
+            out_parts.append(decode_caps(bw.decode(STREAM_ENCODING), cap))
+            continue
+
+        if tag == TAG_OOV:
+            cap_len = stream[i + 1]
+            cap = stream[i + 2:i + 2 + cap_len].decode(STREAM_ENCODING)
+            j = i + 2 + cap_len
+            body_len = stream[j] | (stream[j + 1] << 8)
+            body = stream[j + 2:j + 2 + body_len].decode(STREAM_ENCODING)
+            out_parts.append(decode_caps(body, cap))
+            i = j + 2 + body_len
+            continue
+
+        # In-vocab token, no cap prefix
+        token_id, i = _read_id_from_binary(stream, i)
+        bw = txn.get(token_id.encode(STREAM_ENCODING), db=rev_db)
+        if bw is None:
+            raise ValueError(f"Unknown stream token: {token_id!r}")
+        out_parts.append(bw.decode(STREAM_ENCODING))
 
 
 # ---------------------------------------------------------------------------
