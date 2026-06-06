@@ -168,44 +168,43 @@ Tier 2  81,920 active    (mid-frequency words + phrases)
 Tier 3  ~500,000 active  (deep tail + rare phrases + per-channel proper nouns)
 ```
 
-### D8 — Special tokens get 6 reserved Tier 0 slots
+### D8 — Tier 0 reserved slots stay reserved for System 2
 
-The 6 reserved slots (`a-f`) currently labeled `RESERVED_STAGE_*` for
-System 2 are repurposed for LLM special tokens:
+The 6 reserved Tier 0 slots (`a-f`) remain reserved for System 2 process
+stages (`RESERVED_STAGE_*`) as originally specced. They are NOT consumed
+by phrase atoms, LLM special tokens, or any other v0.3 work.
 
-```
-a → <PAD>     padding for batched tensors
-b → <BOS>     beginning of sequence
-c → <EOS>     end of sequence
-d → <UNK>     reserved; OOV mechanism is the real fallback
-e → <SEP>     segment / document separator
-f → <MASK>    masked-LM placeholder
-```
+High-frequency phrase atoms enter Tier 1 / 2 / 3 by frequency ranking
+under D6 — no special Tier 0 reservation is required.
 
-System 2 stage labels move to a Tier 1 allocation if/when needed.
-Special tokens are higher priority for v1 vocabulary freeze.
+### D9 — LLM special tokens live in a separate auxiliary namespace
 
-### D9 — Byte fallback for true OOV at LLM training time
+LLM training requires bookkeeping tokens (`<PAD>`, `<BOS>`, `<EOS>`,
+`<SEP>`, `<MASK>`, etc.). These are model-side training infrastructure,
+not natural-language content, and they have **no presence in the .elo
+file dictionary**.
 
-Current v0.2 OOV mechanism stores UTF-8 verbatim with a length prefix.
-That works for file compression but not for LLM tensors (variable-length
-tokens).
-
-For LLM use, we publish an **auxiliary byte-fallback table**: 256
-fixed integer IDs mapping to bytes `0x00`-`0xFF`. Training-time
-tokenization that hits a true OOV decomposes the byte sequence into
-this fallback alphabet. Compression-time .elo files continue to use
-the variable-length OOV format.
+When a model is trained against the v1 vocabulary, the trainer maps:
 
 ```
-Vocabulary tiers for LLM use:
-    [0, 52]              Tier 0: words + structural
-    [53, 58]             Special tokens (PAD, BOS, EOS, UNK, SEP, MASK)
-    [59, 314]            Byte fallback (256 IDs for bytes 0x00-0xFF)
-    [315, 1594]          Tier 1
-    [1595, 83514]        Tier 2
-    [83515, ~600000]     Tier 3 (depends on final phrase miner output)
+LLM integer ID range          Maps to
+─────────────────────         ──────────────────────────────────
+[0, V-1]                      Dictionary IDs (Tier 0-3 from .elo dict)
+[V, V+255]                    256-byte fallback table
+[V+256, V+256+K]              K special tokens (PAD/BOS/EOS/SEP/MASK/...)
 ```
+
+Where `V` is the total dictionary entry count at v1 freeze.
+
+The byte fallback table is published once as part of the v1 vocabulary
+artifact. The special-token list is a separate publishable spec for
+LLM consumers; the exact set of special tokens is deferred to the
+LLM training stage (post-v0.3) since it depends on the model
+architecture chosen.
+
+`.elo` files never contain special tokens. Special tokens never enter
+the dictionary. The two namespaces share an integer ID space only at
+LLM tensor construction time.
 
 ### D10 — Vocabulary is frozen and additive-only
 
@@ -268,11 +267,16 @@ A2  3/3 transcript files round-trip byte-exact
 A3  Average transcript ratio >= 2.5x  (>33% improvement over v0.2's 1.84x)
 A4  Encode throughput >= 1.5 MB/s (no worse than 2x slowdown from v0.2)
 A5  Decode throughput >= 2.0 MB/s
-A6  Vocabulary frozen: token-ids.csv exported and committed
-A7  Special tokens reserved in dictionary (PAD/BOS/EOS/UNK/SEP/MASK)
-A8  Byte fallback table defined and committed
+A6  Vocabulary frozen: token-ids.csv.gz exported and committed at
+    data/token-ids.csv.gz
+A7  Byte fallback table defined and committed at
+    data/byte-fallback-v1.csv  (256 fixed integer IDs for bytes 0x00-0xFF)
+A8  Mining excludes the 3 measurement transcripts; held-out ratio
+    measurement is honest, not memorized
 A9  v0.2 .elo files still decodable via the v0.3 reader (backwards compat)
 A10 ELO_FILE_FORMAT.md updated to v1.0 magic + flags layout
+A11 Top 6 phrases promoted naturally into Tier 1 via the unified
+    frequency ranking; Tier 0 a-f slots remain reserved for System 2
 ```
 
 Failure of A1/A2 is a blocker. A3-A5 are reportable but not blockers — if
@@ -377,27 +381,34 @@ unfilled tier slots, not for re-ranking existing words.
 
 ---
 
-## Open Questions
+## Resolved Questions
 
 ```
-Q1  Should phrase mining run on the full 14,806-file corpus or on a
-    held-out training split, leaving a test split for ratio
-    measurement?  Answer needed before Step 11.
+Q1  Corpus + held-out split.
+    RESOLVED: Mine on the full 14,806-file corpus EXCEPT the 3
+    measurement transcripts (KhyQCU6oqE8.json, KOhbGjmidgs.json,
+    bRwFb8JmznE.json). Excluding 3 files of 14,806 has no measurable
+    effect on the vocabulary but keeps the benchmark numbers honest.
 
-Q2  What is the publication strategy for token-ids.csv? Bundled in
-    the repo at hundreds of MB, or hosted separately (e.g. HuggingFace
-    Datasets) with a checksum in the repo?
+Q2  Publication strategy for the frozen vocabulary.
+    RESOLVED: Commit to the repo at data/token-ids.csv.gz (gzipped,
+    ~3 MB). Plain CSV would be ~18 MB; gzipped travels better in
+    git history and stays directly inspectable via standard tools.
 
-Q3  At what point do we register the .elo MIME type with IANA? Could
-    be after v0.3 milestone or deferred to v1.1.
+Q3  MIME type registration with IANA.
+    DEFERRED: After proof-of-concept, validation, testing. Not in
+    v0.3 scope.
 
-Q4  Does the C/C++ port target v0.2 (already proven) or wait for v0.3
-    (the production vocabulary)?
+Q4  C/C++ port target version.
+    DEFERRED: C/C++ optimization happens in a stage after v0.3.
+    The port will target the v0.3 frozen vocabulary (the production
+    contract), not the v0.2 intermediate.
 
-Q5  Do special tokens need their own reserved magic-byte range in the
-    binary stream, separate from regular Tier 0? Answer probably no
-    (special tokens are just Tier 0 IDs in slots a-f), but want to
-    confirm the encoder/decoder handles them gracefully.
+Q5  Special tokens reserved magic-byte range.
+    RESOLVED VIA D9: Special tokens live in the LLM auxiliary
+    namespace, not the .elo file dictionary. There is nothing for
+    the encoder/decoder to handle — special tokens never appear in
+    .elo files. No reserved magic-byte range needed.
 ```
 
 ---
