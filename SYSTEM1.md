@@ -296,11 +296,27 @@ This is the ONLY acceptance criterion for System 1 completion.
 
 ---
 
+## REBUILD CHECKLIST (after Steps 6 + 7 land)
+
+```
+[ ] delete  semantic_compression/db/dictionary.lmdb
+[ ] delete  semantic_compression/data/word_frequencies.txt
+[ ] rerun   python -m semantic_compression.word_frequency_counter
+[ ] rerun   python -m semantic_compression.dictionary_builder
+```
+
+The current LMDB and frequency file were produced before the universal
+tokenizer existed and contain punctuation-attached entries
+("rabbits.", "it's,", '"chris,'). They must be regenerated against the
+new tokenizer output before Step 9 (compressor).
+
+---
+
 ## Build Order — Revised
 
 ```
-Step  4  word_frequency_counter.py    ✓ DONE
-Step  5  dictionary_builder.py        ✓ DONE  (will re-run)
+Step  4  word_frequency_counter.py    ✓ DONE  (will re-run after Step 6)
+Step  5  dictionary_builder.py        ✓ DONE  (will re-run after Step 6)
 
 Step  6  tokenizer.py                  ← NEXT
          Universal tokenization, format-agnostic

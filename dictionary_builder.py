@@ -1,6 +1,21 @@
 """
 dictionary_builder.py -- Step 5 of System 1
 
+========================================================================
+REBUILD REQUIRED after Step 6 (tokenizer.py) + Step 7 (format adapters).
+========================================================================
+The current LMDB at db/dictionary.lmdb was built before the universal
+tokenizer existed. It contains punctuation-attached entries like
+"rabbits.", "it's,", '"chris,' that should be split into clean tokens.
+
+Once tokenizer.py is in place:
+    1. Delete db/dictionary.lmdb
+    2. Re-run word_frequency_counter.py through the universal tokenizer
+    3. Re-run this file:  python -m semantic_compression.dictionary_builder
+
+See SYSTEM1.md Step 8 for the full rebuild waterfall.
+========================================================================
+
 Builds the canonical Base64 dictionary from corpus frequency data.
 Writes to LMDB for production use (~100ns lookup, RAM-resident).
 
