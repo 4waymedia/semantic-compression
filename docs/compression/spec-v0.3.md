@@ -184,6 +184,12 @@ LLM training requires bookkeeping tokens (`<PAD>`, `<BOS>`, `<EOS>`,
 not natural-language content, and they have **no presence in the .elo
 file dictionary**.
 
+The integer ID layout for LLM use is standardized by the **Dictionary
+Profiles** system (see `docs/v1/profiles.md`). Five named profiles
+ship with v1: Tiny (32k), Compact (64k), Standard (128k), Full (256k),
+and Reference (the entire dictionary). Each profile is a strict
+frequency-ranked subset; users can retrain at any profile.
+
 When a model is trained against the v1 vocabulary, the trainer maps:
 
 ```
