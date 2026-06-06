@@ -1,0 +1,10 @@
+2026-06-06 10:15:32 INFO  Server started on port 8080
+2026-06-06 10:15:32 INFO  Loading dictionary from /var/lib/eloai/dictionary.lmdb
+2026-06-06 10:15:33 INFO  Dictionary loaded: 83226 entries
+2026-06-06 10:15:33 WARN  config.yaml: deprecated option 'legacy_mode' ignored
+2026-06-06 10:15:34 ERROR Failed to connect to upstream: timeout after 30s
+2026-06-06 10:15:35 INFO  Retrying upstream connection (attempt 2/5)
+2026-06-06 10:15:38 INFO  Upstream connection established
+2026-06-06 10:15:40 INFO  Processed 1024 requests (avg 12.3ms/req)
+2026-06-06 10:16:00 INFO  Health check passed
+2026-06-06 10:16:10 DEBUG cache hit ratio: 0.847

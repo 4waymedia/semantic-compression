@@ -1,0 +1,8 @@
+The quick brown fox jumps over the lazy dog.
+I said "don't do that!" but he ignored me.
+Pi is 3.14 and e is 2.71828.
+
+This is a second paragraph with some punctuation:
+commas, periods. semicolons; and question marks?
+
+Mixed case: Hello, World! Welcome to the EloAI Project.

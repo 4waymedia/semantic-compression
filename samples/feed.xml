@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>EloAI Updates</title>
+    <link>https://eloai.dev</link>
+    <description>News and updates from the EloAI project</description>
+    <language>en-us</language>
+    <item>
+      <title>System 1 Tokenizer Complete</title>
+      <link>https://eloai.dev/posts/tokenizer</link>
+      <description>Universal tokenizer works across all 10 v1 formats.</description>
+      <pubDate>Sat, 06 Jun 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Dictionary Build Reaches 99% Coverage</title>
+      <link>https://eloai.dev/posts/dictionary</link>
+      <description>LMDB dictionary covers 99.25% of corpus tokens.</description>
+      <pubDate>Fri, 05 Jun 2026 18:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

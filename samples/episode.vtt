@@ -1,0 +1,17 @@
+WEBVTT
+
+1
+00:00:01.000 --> 00:00:04.000
+Hello, this is the first cue.
+
+2
+00:00:04.500 --> 00:00:07.000
+And here's the second cue.
+
+3
+00:00:07.500 --> 00:00:11.000
+WEBVTT uses periods instead of commas in timestamps.
+
+4
+00:00:11.500 --> 00:00:14.000
+Numbers like 3.14 are still parseable correctly.

@@ -1,0 +1,18 @@
+{
+  "name": "eloai-sample",
+  "version": "1.2.3",
+  "description": "A sample JSON file for round-trip testing",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm test",
+    "build": "npm run build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "lmdb": "^2.7.0"
+  },
+  "keywords": ["compression", "encoding", "dictionary"],
+  "author": "Paul G",
+  "license": "MIT"
+}
