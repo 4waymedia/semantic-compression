@@ -56,8 +56,20 @@ def _init_db(db_path: str) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def clean_text(text: str) -> str:
-    """Decode HTML entities, lowercase, and collapse whitespace."""
-    return _WHITESPACE.sub(' ', html.unescape(text).lower()).strip()
+    """
+    Minimal cleanup for transcript text — only HTML entity decoding.
+
+    v1 byte-exact policy: do NOT lowercase, do NOT collapse whitespace.
+    Case is handled by caps_codec at encode time. Whitespace runs are
+    preserved as their own tokens by the universal tokenizer.
+
+    Note: dedup_within_chunk / dedup_boundary below still operate on
+    word-level splits and re-join with single spaces. That's acceptable
+    for YouTube ASR (which only has single-space separation in source),
+    but means this scanner is YouTube-specific. Real file formats use
+    format_adapters + tokenize directly.
+    """
+    return html.unescape(text)
 
 
 # ---------------------------------------------------------------------------

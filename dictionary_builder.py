@@ -56,23 +56,32 @@ sys.path.insert(0, '.')
 
 from semantic_compression.config import (
     BASE64_CHARS, FORMAT_VERSION, STREAM_ENCODING,
-    TIER_WORD_FIRST_CHARS, WORD_IDS,
+    TIER_WORD_FIRST_CHARS, WORD_IDS, STRUCTURAL_IDS,
 )
 
 FREQ_FILE   = Path('semantic_compression/data/word_frequencies.txt')
 LMDB_PATH   = Path('semantic_compression/db/dictionary.lmdb')
 STATS_FILE  = Path('semantic_compression/db/dict_stats.json')
-MAP_SIZE_GB = 1   # LMDB map ceiling — actual usage is ~few MB
+MAP_SIZE_GB = 1
+
+# Tokens that MUST be in the dictionary at known IDs because they would
+# break stream parsing if they appeared as OOV body content.
+#   '|' (PIPE_BYTE)  — stream delimiter; cannot appear inside an OOV body
+# These get assigned the first available Tier 1 IDs at build time.
+FORCED_DICT_TOKENS = ['|']
 
 
 # ---------------------------------------------------------------------------
-# ID encoder  (same logic as library_builder, kept self-contained here)
+# ID encoder
 # ---------------------------------------------------------------------------
 
 def _encode_id(tier: int, counter: int) -> str:
     """
     Encode sequential counter to Base64 ID.
-    Tier 1 -> 2-char, Tier 2 -> 3-char. First char always from g-z.
+    Tier 1 -> 2-char, Tier 2 -> 3-char, Tier 3 -> 4-char.
+    First char always from TIER_WORD_FIRST_CHARS (g-z).
+    Tier detection on decode is unambiguous: length encodes tier
+    (Tier 0 is always length 1, so g-z single-char IDs do not collide).
     """
     length = tier + 1
     chars = []
@@ -87,8 +96,9 @@ def _encode_id(tier: int, counter: int) -> str:
 
 
 TIER_CAPACITY = {
-    1: len(TIER_WORD_FIRST_CHARS) * 64,        # 1,280
-    2: len(TIER_WORD_FIRST_CHARS) * 64 ** 2,   # 81,920
+    1: len(TIER_WORD_FIRST_CHARS) * 64,         # 1,280
+    2: len(TIER_WORD_FIRST_CHARS) * 64 ** 2,    # 81,920
+    3: len(TIER_WORD_FIRST_CHARS) * 64 ** 3,    # 5,242,880
 }
 
 
@@ -96,19 +106,40 @@ TIER_CAPACITY = {
 # Load frequency file
 # ---------------------------------------------------------------------------
 
+def decode_frequency_token(raw: str) -> str:
+    """
+    Decode escaped token text from word_frequencies.txt.
+
+    Needed because the frequency file may contain escaped whitespace tokens:
+      \\x20  -> space
+      \\n    -> newline
+      \\t    -> tab
+    """
+    return raw.encode("ascii").decode("unicode_escape")
+
+
 def load_frequencies(freq_file: Path) -> Counter:
     """
     Read word_frequencies.txt into a Counter.
-    Format: <count>TAB<word>  (header lines start with #, skipped).
+
+    Format:
+        <count>TAB<escaped_token>
+
+    Header lines start with # and are skipped.
     """
     counts: Counter = Counter()
-    with open(freq_file, 'r', encoding=STREAM_ENCODING) as f:
+
+    with open(freq_file, "r", encoding=STREAM_ENCODING) as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
+            if line.startswith("#") or not line.strip():
                 continue
-            count_str, word = line.split('\t', 1)
-            counts[word] = int(count_str)
+
+            count_raw, token_raw = line.rstrip("\n").split("\t", 1)
+            token = decode_frequency_token(token_raw)
+            count = int(count_raw)
+
+            counts[token] = count
+
     return counts
 
 
@@ -132,8 +163,16 @@ def build(
     total_corpus_tokens = sum(all_counts.values())
     print(f'  {len(all_counts):,} unique surface forms  |  {total_corpus_tokens:,} total tokens')
 
-    # Tier 0: hardcoded universal words (word -> single-char ID)
-    tier0_map = {word: char for char, word in WORD_IDS.items()}   # e.g. 'the' -> 'T'
+    # ----------------------------------------------------------------------
+    # Tier 0 seed map: every Tier 0 source token -> its single-char ID.
+    # Includes WORD_IDS (26 universal words) and STRUCTURAL_IDS (27 chars:
+    # whitespace + punctuation + symbols).
+    # ----------------------------------------------------------------------
+    tier0_map: dict[str, str] = {}
+    for char_id, token in WORD_IDS.items():
+        tier0_map[token] = char_id
+    for char_id, token in STRUCTURAL_IDS.items():
+        tier0_map[token] = char_id
     tier0_set = set(tier0_map.keys())
 
     # Open LMDB
@@ -143,29 +182,47 @@ def build(
         map_size=map_size_gb * 1024 ** 3,
         max_dbs=2,
     )
-    fwd_db = env.open_db(b'forward')   # word  -> id
-    rev_db = env.open_db(b'reverse')   # id    -> word
+    fwd_db = env.open_db(b'forward')   # token -> id
+    rev_db = env.open_db(b'reverse')   # id    -> token
 
-    tier_counts  = {0: 0, 1: 0, 2: 0}
-    tier_tokens  = {0: 0, 1: 0, 2: 0}   # token coverage per tier
+    tier_counts  = {0: 0, 1: 0, 2: 0, 3: 0}
+    tier_tokens  = {0: 0, 1: 0, 2: 0, 3: 0}
     oov_tokens   = 0
     t1_counter   = 0
     t2_counter   = 0
+    t3_counter   = 0
+    forced_assigned: dict[str, str] = {}   # diagnostic record
 
     with env.begin(write=True) as txn:
 
-        # -- Tier 0: seed from config.WORD_IDS --
-        for word, char_id in tier0_map.items():
-            txn.put(word.encode(STREAM_ENCODING), char_id.encode(STREAM_ENCODING), db=fwd_db)
-            txn.put(char_id.encode(STREAM_ENCODING), word.encode(STREAM_ENCODING), db=rev_db)
+        # ---- Tier 0: seed from WORD_IDS + STRUCTURAL_IDS ----
+        for token, char_id in tier0_map.items():
+            txn.put(token.encode(STREAM_ENCODING), char_id.encode(STREAM_ENCODING), db=fwd_db)
+            txn.put(char_id.encode(STREAM_ENCODING), token.encode(STREAM_ENCODING), db=rev_db)
             tier_counts[0] += 1
-            tier_tokens[0] += all_counts.get(word, 0)
+            tier_tokens[0] += all_counts.get(token, 0)
 
-        # -- Tier 1 + 2: corpus frequency ranked --
-        for word, freq in tqdm(
-            all_counts.most_common(), desc='Assigning IDs', unit='word'
+        # ---- Forced Tier 1 seeds (e.g. '|') ----
+        # These tokens must have a known ID so they cannot appear as OOV body
+        # content (which would break stream delimiter parsing).
+        already_seeded: set[str] = set()
+        for token in FORCED_DICT_TOKENS:
+            if token in tier0_set or token in already_seeded:
+                continue
+            token_id = _encode_id(1, t1_counter)
+            t1_counter += 1
+            tier_counts[1] += 1
+            tier_tokens[1] += all_counts.get(token, 0)
+            txn.put(token.encode(STREAM_ENCODING), token_id.encode(STREAM_ENCODING), db=fwd_db)
+            txn.put(token_id.encode(STREAM_ENCODING), token.encode(STREAM_ENCODING), db=rev_db)
+            forced_assigned[token] = token_id
+            already_seeded.add(token)
+
+        # ---- Tier 1 + 2 + 3: corpus frequency ranked ----
+        for token, freq in tqdm(
+            all_counts.most_common(), desc='Assigning IDs', unit='token'
         ):
-            if word in tier0_set:
+            if token in tier0_set or token in already_seeded:
                 continue   # already assigned
 
             if t1_counter < TIER_CAPACITY[1]:
@@ -178,12 +235,17 @@ def build(
                 t2_counter += 1
                 tier_counts[2] += 1
                 tier_tokens[2] += freq
+            elif t3_counter < TIER_CAPACITY[3]:
+                token_id = _encode_id(3, t3_counter)
+                t3_counter += 1
+                tier_counts[3] += 1
+                tier_tokens[3] += freq
             else:
                 oov_tokens += freq
-                continue   # beyond 3-char space — OOV at runtime
+                continue   # beyond 4-char space — OOV at runtime
 
-            txn.put(word.encode(STREAM_ENCODING), token_id.encode(STREAM_ENCODING), db=fwd_db)
-            txn.put(token_id.encode(STREAM_ENCODING), word.encode(STREAM_ENCODING), db=rev_db)
+            txn.put(token.encode(STREAM_ENCODING), token_id.encode(STREAM_ENCODING), db=fwd_db)
+            txn.put(token_id.encode(STREAM_ENCODING), token.encode(STREAM_ENCODING), db=rev_db)
 
     env.close()
 
@@ -202,14 +264,18 @@ def build(
         'tier0_words':           tier_counts[0],
         'tier1_words':           tier_counts[1],
         'tier2_words':           tier_counts[2],
+        'tier3_words':           tier_counts[3],
         'oov_surface_forms':     len(all_counts) - sum(tier_counts.values()),
         'token_coverage_pct':    round(coverage_pct, 4),
         'tier0_token_coverage':  round(100 * tier_tokens[0] / total_corpus_tokens, 4),
         'tier1_token_coverage':  round(100 * tier_tokens[1] / total_corpus_tokens, 4),
         'tier2_token_coverage':  round(100 * tier_tokens[2] / total_corpus_tokens, 4),
+        'tier3_token_coverage':  round(100 * tier_tokens[3] / total_corpus_tokens, 4),
         'oov_token_pct':         round(100 * oov_tokens / total_corpus_tokens, 4),
         'tier1_capacity':        TIER_CAPACITY[1],
         'tier2_capacity':        TIER_CAPACITY[2],
+        'tier3_capacity':        TIER_CAPACITY[3],
+        'forced_assigned':       forced_assigned,
     }
 
     stats_file.parent.mkdir(parents=True, exist_ok=True)
@@ -229,8 +295,11 @@ def _print_stats(s: dict) -> None:
     print(f"    Tier 0 (1-char):  {s['tier0_words']:>10,}   {s['tier0_token_coverage']:5.1f}% token coverage")
     print(f"    Tier 1 (2-char):  {s['tier1_words']:>10,}   {s['tier1_token_coverage']:5.1f}% token coverage")
     print(f"    Tier 2 (3-char):  {s['tier2_words']:>10,}   {s['tier2_token_coverage']:5.1f}% token coverage")
+    print(f"    Tier 3 (4-char):  {s['tier3_words']:>10,}   {s['tier3_token_coverage']:5.1f}% token coverage")
     print(f"  OOV surface forms:  {s['oov_surface_forms']:>10,}   {s['oov_token_pct']:5.1f}% of tokens (handled losslessly)")
     print(f"  Total token coverage: {s['token_coverage_pct']:.2f}%")
+    if s.get('forced_assigned'):
+        print(f"  Forced Tier 1 seeds: {s['forced_assigned']}")
     print(f"  LMDB: {s['lmdb_path']}")
     print(f"  Stats: {STATS_FILE}")
 

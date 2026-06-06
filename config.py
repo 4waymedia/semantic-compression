@@ -22,86 +22,110 @@ BASE64_INDEX = {ch: i for i, ch in enumerate(BASE64_CHARS)}
 # ---------------------------------------------------------------------------
 # Tier 0 — single-char IDs
 #
-# Design principle: IDs are lossless variable pointers to words.
-# No semantic annotations in the stream — those live in the DB.
-# Every single-char ID decodes back to exactly one word or system signal.
+# System 1 v1 principle:
+#   Surface form = ID lookup key.
+#   No lemmatization.
+#   No lowercasing before tokenization.
+#   No whitespace collapse.
 #
-# Slot allocation (64 total):
-#   A-Z  (26) — Essential 26 word IDs (100% lossless word pointers)
-#   0-2   (3) — System stream markers
-#   - _   (2) — Stream format separators
-#   a-f   (6) — RESERVED: System 2 process stages (do not assign)
-#   g-z  (20) — OPEN: future Tier 0 expansion
-#   3-9   (7) — OPEN: future Tier 0 expansion
+# Tier 0 should prioritize:
+#   1. System stream markers
+#   2. High-frequency universal words
+#   3. Byte-exact structural tokens: whitespace + punctuation
+#   4. Reserved System 2 process slots
 # ---------------------------------------------------------------------------
 
-# System markers
 SYSTEM_IDS = {
     '0': 'STREAM_START',
     '1': 'STREAM_END',
     '2': 'CHUNK_BOUNDARY',
-    '-': 'ATTR_DELIMITER',    # separates word ID from attribute list in FLEX mode
-    '_': 'CONTINUATION',      # token spans next unit
+    '-': 'ATTR_DELIMITER',
+    '_': 'CONTINUATION',
 }
 
-# Essential 26 — the highest-frequency words in English, one ID each.
-# a/an share one ID (same lemma). All others are distinct lemmas.
 WORD_IDS = {
-    'A': 'a',      # a / an     — general pointer (article)
-    'B': 'be',     # be         — existence / state (is, was, am, are, been)
-    'C': 'we',     # we         — collective perspective
-    'D': 'do',     # do         — primary action verb (does, did)
-    'E': 'he',     # he         — third person masculine
-    'F': 'of',     # of         — belonging / composition / origin
-    'G': 'to',     # to         — direction / intention / infinitive marker
-    'H': 'have',   # have       — possession / past timeline (has, had)
-    'I': 'in',     # in         — spatial anchor (interior)
-    'J': 'on',     # on         — spatial anchor (surface)
-    'K': 'for',    # for        — purpose / reason / benefit
-    'L': 'they',   # they       — third person plural
-    'M': 'i',      # I          — self / speaker (first person)
-    'N': 'and',    # and        — pure addition / bridge
-    'O': 'or',     # or         — choice / alternative
-    'P': 'not',    # not        — negation
-    'Q': 'all',    # all        — maximum scale / entire set
-    'R': 'she',    # she        — third person feminine
-    'S': 'this',   # this       — near demonstrative pointer
-    'T': 'the',    # the        — specific definite pointer (most common word)
-    'U': 'it',     # it         — non-human / abstract entity
-    'V': 'with',   # with       — accompaniment / tool / connection
-    'W': 'will',   # will       — future gateway
-    'X': 'but',    # but        — contrast / conflict
-    'Y': 'you',    # you        — audience / listener
-    'Z': 'that',   # that       — far demonstrative pointer / subordinator
+    'A': 'a',
+    'B': 'be',
+    'C': 'we',
+    'D': 'do',
+    'E': 'he',
+    'F': 'of',
+    'G': 'to',
+    'H': 'have',
+    'I': 'in',
+    'J': 'on',
+    'K': 'for',
+    'L': 'they',
+    'M': 'i',
+    'N': 'and',
+    'O': 'or',
+    'P': 'not',
+    'Q': 'all',
+    'R': 'she',
+    'S': 'this',
+    'T': 'the',
+    'U': 'it',
+    'V': 'with',
+    'W': 'will',
+    'X': 'but',
+    'Y': 'you',
+    'Z': 'that',
 }
 
-# Reserved — labeled but NOT active. Do not use in compression until promoted.
+STRUCTURAL_IDS = {
+    'g': ' ',
+    'h': '\n',
+    'i': '\t',
+    'j': '.',
+    'k': ',',
+    'l': ':',
+    'm': ';',
+    'n': '!',
+    'o': '?',
+    'p': "'",
+    'q': '"',
+    'r': '(',
+    's': ')',
+    't': '[',
+    'u': ']',
+    'v': '/',
+    'w': '\\',
+    'x': '-',
+    'y': '—',
+    'z': '&',
+    '3': '%',
+    '4': '$',
+    '5': '#',
+    '6': '@',
+    '7': '*',
+    '8': '+',
+    '9': '=',
+}
+
 RESERVED_IDS = {
-    # System 2 — process stages (Surov 2022). Claim these 6 slots when ready.
     'a': 'RESERVED_STAGE_PERCEPTION',
     'b': 'RESERVED_STAGE_NOVELTY',
     'c': 'RESERVED_STAGE_GOAL_PLAN',
     'd': 'RESERVED_STAGE_ACTION',
     'e': 'RESERVED_STAGE_PROGRESS',
     'f': 'RESERVED_STAGE_RESULT',
-    # Open — g-z (20 slots), 3-9 (7 slots): unclaimed
 }
 
-# All active single-char IDs (system + words). Reserved are NOT included.
-PRIMITIVES = {**SYSTEM_IDS, **WORD_IDS}
+PRIMITIVES = {
+    **SYSTEM_IDS,
+    **WORD_IDS,
+    **STRUCTURAL_IDS,
+}
 
-# Reverse lookup: word/signal → char ID
 PRIMITIVES_REVERSE = {v: k for k, v in PRIMITIVES.items()}
 
-# Fast lookup: lemma string → single-char ID (for the compressor)
 WORD_TO_ID = {v: k for k, v in WORD_IDS.items()}
+STRUCTURAL_TO_ID = {v: k for k, v in STRUCTURAL_IDS.items()}
 
-# Validate: no collisions, all chars are valid Base64
-assert len(PRIMITIVES) == 31, f"Expected 31 active primitives, got {len(PRIMITIVES)}"
+assert len(PRIMITIVES) == 58, f"Expected 58 active primitives, got {len(PRIMITIVES)}"
 assert all(k in BASE64_CHARS for k in PRIMITIVES), "Primitive key outside Base64 charset"
 assert all(k in BASE64_CHARS for k in RESERVED_IDS), "Reserved key outside Base64 charset"
 assert not (set(PRIMITIVES) & set(RESERVED_IDS)), "Collision between active and reserved IDs"
-
 
 # ---------------------------------------------------------------------------
 # Tier system — word library ID tiers
@@ -116,9 +140,12 @@ assert not (set(PRIMITIVES) & set(RESERVED_IDS)), "Collision between active and 
 # active Tier 0 uses A-Z + 0-2 + -_, and Tier 1-3 use g-z as first char).
 # ---------------------------------------------------------------------------
 
-# First chars for Tier 1/2/3 word IDs — lowercase g-z only.
-# Skips a-f (reserved for System 2 Tier 0 promotion).
-TIER_WORD_FIRST_CHARS = 'ghijklmnopqrstuvwxyz'  # 20 chars
+# First chars for Tier 1/2/3 dictionary IDs.
+# Important:
+#   g-z and 3-9 are now active Tier 0 structural IDs when length == 1.
+#   They are still valid first chars for multi-character Tier 1/2/3 IDs.
+#   Tier detection remains unambiguous because length determines Tier 0.
+TIER_WORD_FIRST_CHARS = 'ghijklmnopqrstuvwxyz'
 
 TIER_CAPACITY = {
     1: len(TIER_WORD_FIRST_CHARS) * 64,            # 1,280
@@ -216,18 +243,20 @@ SINGLE_WORD_FILLERS: dict[str, str] = {
 
 COMPRESSION_MODES = {
     'STABLE': {
-        # Fast, deterministic — IDs only, no attributes
-        'filler_handling':  'word_id_only',    # fillers get their Tier 1/2/3 word ID
+        'filler_handling':  'word_id_only',
         'phrase_detection': 'exact_match',
-        'word_lookup':      'lemma_direct',
-        'output_format':    'flat_stream',     # "0|T|N|gA|gB|1"
+        'word_lookup':      'surface_direct',
+        'output_format':    'flat_stream',
+        'preserve_case':    True,
+        'preserve_whitespace': True,
     },
     'FLEX': {
-        # Richer — word IDs + inline attributes for System 2
-        'filler_handling':  'word_id_plus_class',  # word ID + filler class attribute
+        'filler_handling':  'word_id_plus_class',
         'phrase_detection': 'fuzzy_match',
-        'word_lookup':      'semantic_nearest',
-        'output_format':    'attributed_stream',   # "0|T|gA-filler:COGNITIVE|1"
+        'word_lookup':      'surface_direct',
+        'output_format':    'attributed_stream',
+        'preserve_case':    True,
+        'preserve_whitespace': True,
     },
 }
 
