@@ -1,7 +1,35 @@
 # EloAI — System 1: Base64 Canonical Library
 ### Status Document + Remaining Build Spec
 > Reflects actual code at github.com/4waymedia/semantic-compression
-> Last reviewed: June 2026 — updated after full design session
+> Last revised: June 2026 — universal-format scope expansion
+
+---
+
+## V1 Scope — Universal Format Coverage
+
+System 1 must compress and decompress **10 file formats** losslessly:
+
+```
+.txt    primary — natural language, maximum dictionary coverage
+.md     markdown — natural language + simple punctuation patterns
+.json   structured — key repetition compresses extremely well
+.csv    tabular — column headers repeat every row
+.xml    structured — tag vocabulary is small and very repetitive
+.html   structured — known fixed tag set, natural language body
+.yaml   structured — config files, very repetitive keys
+.log    operational — timestamp + status patterns compress hard
+.srt    subtitle — timestamp format + natural language
+.vtt    subtitle — same as .srt, already in the YouTube pipeline
+```
+
+**Acceptance criterion (per format):**
+```
+decode(encode(file_bytes)) == file_bytes      # byte-exact round trip
+```
+
+This drives several architectural decisions that supersede earlier choices:
+case preservation for ALL tokens, whitespace preservation, universal
+tokenizer, expanded Tier 0 for punctuation and whitespace.
 
 ---
 
@@ -11,655 +39,321 @@
 1. NO LEMMATIZATION
    Surface form = ID. Direct lookup. No NLP processing.
    "running", "ran", "run" each get their own ID.
-   Simple, fast, mechanical. Optimize later if needed.
 
 2. UNIFIED FREQUENCY MODEL
-   Words, phrases, and sentences all compete in one frequency ranking.
-   Most frequent unit → shortest ID. Regardless of unit type or length.
-   "aaa" can map to "the cat climbed the tree" if it appears enough.
-   No separate word_library vs phrase_library concept at the miner level.
+   Words, phrases, sentences, punctuation, whitespace runs all compete
+   in one frequency ranking. Most frequent unit gets the shortest ID.
 
-3. TOP 50 UNIVERSAL WORDS → 1-CHAR IDs
-   Based on global English frequency data (not corpus-specific).
-   These 50 words cover ~50% of all tokens in any English text.
-   Remaining single-char slots: 3 system markers + reserved.
+3. ESSENTIAL 26 WORDS → 1-CHAR IDs (A-Z)
+   Hardcoded from English universal frequency data.
+   Cover ~31% of corpus tokens immediately.
 
-4. 3-CHAR IS THE PRODUCTION BOUNDARY
-   262,144 IDs in 3-char space = ~14MB LMDB = fits entirely in RAM.
-   Covers all target LLM vocabularies + 100,000+ phrases + common sentences.
-   4-char reserved for future expansion only — not built in System 1.
+4. TIER 0 ALSO HOLDS PUNCTUATION + WHITESPACE
+   Common punctuation (. , ? ! " ( )) and whitespace (space, \n, \t)
+   get 1-char IDs. Required to keep .json / .xml / .yaml lossless.
 
-5. LMDB IS PRODUCTION STORAGE
-   Memory-mapped. ~100ns lookup. Entire dictionary in RAM.
+5. 3-CHAR IS THE PRODUCTION BOUNDARY
+   ~80,000 IDs in 3-char space = entire dictionary in RAM via LMDB.
+
+6. LMDB IS PRODUCTION STORAGE
+   Memory-mapped. ~100ns lookup. C-readable directly.
    SQLite used only for inspection and development tooling.
 
-6. 100% LOSSLESS — NON-NEGOTIABLE
-   encode(text) → stream
-   decode(stream) == text   # exactly, always
-   OOV marker preserves any word not yet in dictionary.
-   The compressor is a dictionary lookup, not a transformation.
+7. 100% LOSSLESS — NON-NEGOTIABLE, ALL FORMATS, ALL BYTES
+   encode(file_bytes) → stream
+   decode(stream) == file_bytes
+   Round-trip test is the only acceptance criterion.
+
+8. UNIVERSAL TOKENIZER
+   Same tokenization rule for English text, code, JSON, markdown, YAML.
+   Apostrophe rule handles English contractions AND code string delimiters.
+   Whitespace runs are tokens, not separators.
+
+9. CASE PRESERVATION FOR EVERY TOKEN
+   caps_codec applies to in-vocab tokens as well as OOV.
+   Fast path: all-lowercase tokens emit no case prefix (no overhead).
+   Stream cost for typical English: ~0 bytes added.
 ```
+
+---
+
+## Stream Token Format (locked for v1)
+
+```
+lowercase in-vocab:    {ID}                  e.g. "T"           → "the"
+capitalized in-vocab:  {capchars}:{ID}       e.g. "g:T"         → "The"
+lowercase OOV:         OOV:A:{word}          e.g. OOV:A:foo     → "foo"
+capitalized OOV:       OOV:{capchars}:{word} e.g. OOV:g:foo     → "Foo"
+```
+
+- Stream tokens are separated by `|` (PIPE_BYTE = 0x7C).
+- The `:` inside an in-vocab token is unambiguous: word IDs never contain `:`.
+- Fast path: lowercase token is one ID, no prefix, no overhead.
+- All-lowercase OOV: capchars = "A" (000000), decoder fast-skips.
+- FORMAT_VERSION = 1 is written into every .elo file header.
+
+---
+
+## Tier 0 — Final Layout (64 slots)
+
+```
+A-Z   (26)  Essential 26 word IDs               LOCKED
+0-2    (3)  STREAM_START, STREAM_END, CHUNK_BOUNDARY  LOCKED
+- _    (2)  ATTR_DELIMITER, CONTINUATION        LOCKED
+3-9    (7)  Punctuation:  . , ? ! " ( )         NEW
+g h    (2)  Code structure:  { }                NEW
+i j k  (3)  Whitespace: " " "\n" "\t"           NEW
+a-f    (6)  RESERVED for System 2 stages        UNCHANGED
+l-z   (15)  TIER 1/2 word ID prefixes           NEW (was g-z, 20 chars)
+```
+
+**Tier 1/2 capacity revised:**
+- Tier 1: 15 × 64       = 960    IDs   (was 1,280)
+- Tier 2: 15 × 64²      = 61,440 IDs   (was 81,920)
+- Tier 3: 15 × 64³      = 3.9M   IDs
+
+Still abundant for the corpus (~83k unique forms today).
+
+---
+
+## Universal Tokenization Rules
+
+```
+Apostrophe (')   Keep interior:  "don't", "it's", "world's" → one token
+                 Split boundary: "'hello'" → "'" + "hello" + "'"
+                 Rule: letter-on-both-sides → part of word
+                       otherwise → standalone token
+
+Double quote (") Always split — never interior to a word in any language
+
+Other punctuation  Strip leading/trailing and emit as standalone token
+( . , ? ! ; : ( ) { } [ ] < > = + * / \ @ # $ % & ^ ~ )
+                 "rabbits."  → "rabbits" + "."
+                 "(hello,"   → "(" + "hello" + ","
+
+Whitespace       Each contiguous whitespace run = one token
+                 " " "\n" "\t" "\n\n" "    " etc.
+                 Single space, single \n, single \t are Tier 0
+                 Other runs flow into Tier 1 by frequency
+
+Numbers          Stay together as one token: "2024", "3.14", "0xFF"
+                 Mixed alphanumeric stays together: "v1.2.3"
+
+Unicode          UTF-8 throughout. Multi-byte chars are valid token bytes.
+```
+
+These rules are pure character-class logic — no language model needed,
+trivially translatable to C.
 
 ---
 
 ## What Is Already Built ✓
 
-### config.py — COMPLETE (needs TOP 50 update)
-- URL-safe Base64 charset (A-Za-z0-9-_)
-- 26 single-char word IDs (A-Z) — **needs expanding to top 50**
-- 3 system stream markers (0=STREAM_START, 1=STREAM_END, 2=CHUNK_BOUNDARY)
-- 2 stream format separators (- and _)
-- 6 reserved slots (a-f) held for System 2 process stages
-- Filler classification map (COGNITIVE/DISCOURSE/VALIDATION/HEDGE/EMPHASIS/EMOTIONAL)
-- STABLE and FLEX compression mode configs
+### caps_codec.py — COMPLETE, but scope expands
+- Currently used for OOV only
+- v1 will use it on in-vocab tokens too (via `{cap}:{ID}` form)
+- No code changes required — encode_caps / decode_caps already pure functions
 
-**One pending update:**
-Expand WORD_IDS from 26 (A-Z) to top 50 universal English words.
-Use remaining available single-char slots from g-z and 3-9.
-Source: global English frequency corpus (Oxford/Google Ngram data).
+### config.py — COMPLETE, needs Tier 0 expansion
+- 26 word IDs locked, system markers locked
+- **Pending:** add 12 new Tier 0 entries (7 punctuation + 2 code + 3 whitespace)
+- **Pending:** shrink TIER_WORD_FIRST_CHARS from `g-z` to `l-z`
 
----
+### corpus_scanner.py — PARTIALLY DEFERRED
+- ASR dedup logic stays — useful for .vtt and any timestamped transcript
+- `clean_text()` lowercase + whitespace collapse is **wrong for v1**
+- Becomes a JSON-format input adapter only
+- Must NOT be used as the universal tokenizer
 
-### corpus_scanner.py — COMPLETE
-- JSON transcript ingestion with recursive directory scan
-- Two-pass ASR deduplication:
-  - Pass 1: within-chunk rolling-window phrase repetition removal
-  - Pass 2: cross-chunk boundary overlap removal
-- Text cleaning: lowercase + whitespace normalization
-- Yields (video_id, chunk_id, clean_text, metadata) tuples
-- Resumable: corpus_stats table tracks processed files
-- scan_single() for unit test spot-checks
+### word_frequency_counter.py — COMPLETE for current corpus
+- Will be re-run after tokenizer is in place
+- Per-format counters added as adapters become available
 
----
+### dictionary_builder.py — COMPLETE
+- Format-agnostic, no changes
+- Will be re-run after vocabulary shifts (punctuation tokenized separately)
 
-### library_builder.py — PARTIALLY SUPERSEDED
-Built but contains lemmatization + EPA + FAISS phases that are
-deferred to System 2. For System 1, the relevant phases are:
-
-```
-Phase 1: count_frequencies  ← KEEP  (surface form counting)
-Phase 2: lemmatize_vocab    ← SKIP  (no lemmatization in System 1)
-Phase 3: assign_ids         ← KEEP  (frequency rank → ID)
-Phase 4: embed_words        ← DEFER (System 2)
-Phase 5: project_epa        ← DEFER (System 2)
-Phase 6: classify_stages    ← DEFER (System 2)
-Phase 7: write_db           ← REPLACE with LMDB writer
-Phase 8: build_faiss        ← DEFER (System 2)
-```
-
-System 1 needs a simplified `dictionary_builder.py` that runs
-Phase 1 + Phase 3 only, then writes to LMDB.
-
----
-
-### verify_config.py — EXISTS
-### verify_scanner.py — EXISTS
-### verify_library.py — EXISTS (tests old library_builder — needs updating)
+### library_builder.py — SUPERSEDED
+- Original phases 4-8 (EPA, FAISS, stages) remain System 2 territory
+- Will be deleted or marked deprecated once dictionary_builder is canonical
 
 ---
 
 ## What Remains To Build
 
-### Step 4 — word_frequency_counter.py  ← NEXT
+### Step 6 — tokenizer.py (NEW — was not in original spec)
 
-Simple script. Scans all transcripts. Counts every surface form.
-Outputs sorted frequency list. No NLP. Just counting.
+Pure character-class tokenizer. No language model. Stateless. Direct C-portable.
 
 ```python
-"""
-word_frequency_counter.py — Step 4 of System 1
-
-Scans all transcript JSON files.
-Counts every surface form word frequency.
-Outputs word_frequencies.txt sorted by frequency descending.
-
-Run this first to see:
-  - Total unique surface forms in corpus
-  - Actual top words (validate against hardcoded TOP 50)
-  - Natural tier boundary points
-
-Usage:
-    python word_frequency_counter.py
-    → outputs word_frequencies.txt
-    → prints summary stats
-"""
-
-from collections import Counter
-from pathlib import Path
-import json
-from tqdm import tqdm
-
-def count_words(transcript_dir: str, output_path: str = "word_frequencies.txt"):
-    counts = Counter()
-
-    files = list(Path(transcript_dir).rglob("*.json"))
-    for path in tqdm(files, desc="Counting"):
-        try:
-            data = json.load(open(path))
-            for chunk in data.get("chunks", []):
-                words = chunk.get("text", "").lower().split()
-                counts.update(words)
-        except Exception:
-            continue
-
-    with open(output_path, "w") as f:
-        for word, count in counts.most_common():
-            f.write(f"{count}\t{word}\n")
-
-    print(f"Total unique surface forms: {len(counts):,}")
-    print(f"Total tokens:               {sum(counts.values()):,}")
-    print(f"Top 10:")
-    for word, count in counts.most_common(10):
-        print(f"  {count:>10,}  {word}")
-
-    return counts
-
-if __name__ == "__main__":
-    count_words("Resources/transcripts")
+def tokenize(text: str) -> list[str]:
+    """
+    Universal token producer.
+    Whitespace runs are preserved as their own tokens.
+    Apostrophe stays interior between letters, splits at boundaries.
+    Other punctuation always splits.
+    decode == "".join(tokenize(text))   — invariant
+    """
 ```
+
+Verify: `"".join(tokenize(s)) == s` for any UTF-8 string.
 
 ---
 
-### Step 5 — dictionary_builder.py  ← CORE BUILD
+### Step 7 — format_adapters.py
 
-Replaces the relevant parts of library_builder.py.
-Builds the unified frequency dictionary in LMDB.
-No lemmatization. No embeddings. Pure frequency → ID assignment.
+Per-format input/output normalization. Each adapter is a small function pair:
 
 ```python
-"""
-dictionary_builder.py — Step 5 of System 1
-
-Builds the canonical Base64 dictionary from corpus frequency data.
-Writes to LMDB for production use.
-
-UNIFIED MODEL:
-  All text units (words, phrases, sentences) compete in one
-  frequency ranking. Most frequent → shortest ID.
-  No distinction between "word" and "phrase" at this layer.
-
-ID ASSIGNMENT:
-  Rank 1-50:        top 50 hardcoded universal words → 1-char IDs
-                    (from config.WORD_IDS — global English frequency)
-  Rank 51-4,096:    next most frequent → 2-char IDs (g-z first char)
-  Rank 4,097-266,303: next most frequent → 3-char IDs (g-z first char)
-  Rank 266,304+:    excluded from System 1 dictionary (OOV at runtime)
-
-STORAGE:
-  Primary:   LMDB — two databases
-             forward: unit_text → id_bytes  (encode)
-             reverse: id_bytes  → unit_text (decode)
-  Secondary: word_frequencies.txt (human inspection)
-             dictionary_stats.json (build metadata)
-
-OUTPUT:
-  dictionary.lmdb   ~14MB   production encode/decode store
-  dict_stats.json           build metadata + coverage stats
-"""
-
-import lmdb
-import struct
-from pathlib import Path
-from collections import Counter
-from tqdm import tqdm
-from config import BASE64_CHARS, WORD_IDS, TIER_WORD_FIRST_CHARS
-
-
-# ID space boundaries
-TIER0_MAX = 50            # hardcoded TOP 50 universal words
-TIER1_MAX = 4_096         # 2-char IDs: rank 51-4,096
-TIER2_MAX = 266_304       # 3-char IDs: rank 4,097-266,303
-# Ranks above TIER2_MAX → OOV at encode time
-
-
-def build_dictionary(
-    frequency_file: str = "word_frequencies.txt",
-    ngram_file: str = "ngram_frequencies.txt",
-    lmdb_path: str = "dictionary.lmdb",
-    map_size_gb: int = 1,
-) -> dict:
-    """
-    Build LMDB dictionary from frequency files.
-
-    Args:
-        frequency_file:  word_frequencies.txt from word_frequency_counter.py
-        ngram_file:      ngram_frequencies.txt from ngram_counter.py
-        lmdb_path:       output LMDB directory
-        map_size_gb:     LMDB map size in GB (1GB >> actual 14MB usage)
-
-    Returns:
-        stats dict with coverage information
-    """
-    # 1. Load all frequency counts into unified ranking
-    all_units = Counter()
-
-    # Load word frequencies
-    with open(frequency_file) as f:
-        for line in f:
-            count, word = line.strip().split('\t', 1)
-            all_units[word] = int(count)
-
-    # Load n-gram frequencies (if available)
-    if Path(ngram_file).exists():
-        with open(ngram_file) as f:
-            for line in f:
-                count, ngram = line.strip().split('\t', 1)
-                all_units[ngram] = int(count)
-
-    # 2. Assign IDs in frequency order
-    Path(lmdb_path).mkdir(parents=True, exist_ok=True)
-    env = lmdb.open(
-        lmdb_path,
-        map_size=map_size_gb * 1024**3,
-        max_dbs=2,
-    )
-
-    forward_db = env.open_db(b'forward')  # text → id
-    reverse_db = env.open_db(b'reverse')  # id → text
-
-    # Pre-seed Tier 0: hardcoded TOP 50 universal words
-    tier0_assignments = {v: k for k, v in WORD_IDS.items()}  # word → char
-
-    assigned = 0
-    tier_counts = {0: 0, 1: 0, 2: 0}
-
-    with env.begin(write=True) as txn:
-        # Tier 0 — hardcoded TOP 50
-        for word, char_id in tier0_assignments.items():
-            key = word.encode('utf-8')
-            val = char_id.encode('utf-8')
-            txn.put(key, val, db=forward_db)
-            txn.put(val, key, db=reverse_db)
-            tier_counts[0] += 1
-
-        # Tier 1 + 2 — corpus frequency ranked
-        tier1_counter = 0
-        tier2_counter = 0
-
-        for rank, (unit, count) in enumerate(
-            tqdm(all_units.most_common(), desc="Assigning IDs"), start=1
-        ):
-            # Skip if already in Tier 0
-            if unit in tier0_assignments:
-                continue
-
-            # Assign tier by rank
-            if rank <= TIER1_MAX:
-                token_id = _encode_id(1, tier1_counter)
-                tier1_counter += 1
-                tier_counts[1] += 1
-            elif rank <= TIER2_MAX:
-                token_id = _encode_id(2, tier2_counter)
-                tier2_counter += 1
-                tier_counts[2] += 1
-            else:
-                break  # beyond 3-char space — OOV at runtime
-
-            key = unit.encode('utf-8')
-            val = token_id.encode('utf-8')
-            txn.put(key, val, db=forward_db)
-            txn.put(val, key, db=reverse_db)
-            assigned += 1
-
-    env.close()
-
-    stats = {
-        'total_units_in_corpus': len(all_units),
-        'total_assigned':        assigned + tier_counts[0],
-        'tier0_count':           tier_counts[0],
-        'tier1_count':           tier_counts[1],
-        'tier2_count':           tier_counts[2],
-        'lmdb_path':             lmdb_path,
-    }
-    return stats
-
-
-def _encode_id(tier: int, counter: int) -> str:
-    """
-    Encode sequential counter to Base64 ID for given tier.
-    Tier 1 → 2-char, Tier 2 → 3-char.
-    First char always from TIER_WORD_FIRST_CHARS (g-z).
-    """
-    length = tier + 1
-    chars = []
-    remaining = counter
-    for _ in range(length - 1):
-        chars.append(BASE64_CHARS[remaining % 64])
-        remaining //= 64
-    if remaining >= len(TIER_WORD_FIRST_CHARS):
-        raise OverflowError(f"Tier {tier} ID space exhausted")
-    chars.append(TIER_WORD_FIRST_CHARS[remaining])
-    return ''.join(reversed(chars))
+def to_text(path: Path) -> str:      # read file, return text suitable for tokenizer
+def from_text(text: str, path: Path): # write text back, format-specific
 ```
+
+| Format | Adapter complexity |
+|---|---|
+| .txt  | identity — read bytes, decode UTF-8 |
+| .md   | identity |
+| .vtt  | identity (whitespace preservation is enough) |
+| .srt  | identity |
+| .log  | identity |
+| .csv  | identity (quoting/escapes preserved as raw bytes) |
+| .json | identity (whitespace in formatting matters — preserve all) |
+| .xml  | identity |
+| .html | identity |
+| .yaml | identity (indentation meaningful — preserve all) |
+
+Most are identity functions because the universal tokenizer + whitespace
+preservation already handles them. Per-format adapters exist for future
+extension (CDATA-aware splitting, code-block awareness in .md, etc.).
 
 ---
 
-### Step 6 — ngram_counter.py  ← PHRASE MINING
+### Step 8 — dictionary_builder.py (re-run after tokenizer ready)
 
-Counts all 2-9 word n-grams across the corpus.
-Same pattern as word_frequency_counter.py but for multi-word units.
-Output feeds directly into dictionary_builder.py alongside word frequencies.
-
-```python
-"""
-ngram_counter.py — Step 6 of System 1
-
-Counts all 2-9 word n-grams across transcript corpus.
-Output: ngram_frequencies.txt sorted by frequency descending.
-
-These n-grams compete with single words in the unified frequency
-ranking. High-frequency phrases earn shorter IDs than rare words.
-
-Examples of what earns a short ID:
-  "you know"                 → very high frequency → 2-char ID
-  "at the end of the day"    → high frequency → 2 or 3-char ID
-  "what i want to say"       → moderate frequency → 3-char ID
-  "i already told you that"  → moderate frequency → 3-char ID
-
-Usage:
-    python ngram_counter.py
-    → outputs ngram_frequencies.txt
-    → prints top 20 most common phrases
-"""
-
-from collections import Counter
-from pathlib import Path
-import json
-from tqdm import tqdm
-
-NGRAM_MIN = 2
-NGRAM_MAX = 9
-MIN_FREQUENCY = 10   # discard n-grams below this threshold
-
-
-def count_ngrams(
-    transcript_dir: str,
-    output_path: str = "ngram_frequencies.txt",
-):
-    counts = Counter()
-
-    files = list(Path(transcript_dir).rglob("*.json"))
-    for path in tqdm(files, desc="Counting n-grams"):
-        try:
-            data = json.load(open(path))
-            for chunk in data.get("chunks", []):
-                words = chunk.get("text", "").lower().split()
-                n = len(words)
-                for size in range(NGRAM_MIN, min(NGRAM_MAX + 1, n + 1)):
-                    for i in range(n - size + 1):
-                        ngram = ' '.join(words[i:i + size])
-                        counts[ngram] += 1
-        except Exception:
-            continue
-
-    # Filter below minimum frequency
-    counts = Counter({k: v for k, v in counts.items() if v >= MIN_FREQUENCY})
-
-    with open(output_path, "w") as f:
-        for ngram, count in counts.most_common():
-            f.write(f"{count}\t{ngram}\n")
-
-    print(f"Total unique n-grams (freq≥{MIN_FREQUENCY}): {len(counts):,}")
-    print(f"Top 20 phrases:")
-    for ngram, count in counts.most_common(20):
-        print(f"  {count:>10,}  {ngram!r}")
-
-    return counts
-```
+No code changes — just re-execute with the new universal tokenization
+so punctuation and whitespace get proper IDs by frequency.
 
 ---
 
-### Step 7 — compressor.py  ← CORE DELIVERABLE
-
-Lossless encode/decode using the LMDB dictionary.
-No lemmatization. Surface form lookup only.
-Longest-match-first for phrase detection.
+### Step 9 — compressor.py
 
 ```python
-"""
-compressor.py — Step 7 of System 1
-
-encode(text) → Base64 stream    (lossless)
-decode(stream) → original text  (perfect reconstruction)
-
-ENCODE ALGORITHM:
-  Pass 1: longest-match scan
-          at each position, try 9-word phrase first, down to 1 word
-          first match → emit ID → advance position
-          no match possible → emit OOV marker + raw word
-
-  Pass 2: stream assembly
-          join IDs with | delimiter
-          prepend STREAM_START (0), append STREAM_END (1)
-
-DECODE ALGORITHM:
-  split on |
-  for each token:
-    single char         → config.PRIMITIVES reverse lookup
-    OOV:word            → strip marker, return raw word
-    anything else       → LMDB reverse lookup → original unit
-  rejoin tokens with space
-
-OOV FORMAT:
-  "OOV:surface_form"
-  Guarantees 100% lossless for any word not in dictionary.
-  OOV tokens are candidates for next dictionary build cycle.
-
-ACCEPTANCE TEST:
-  decode(encode(text)) == text   # must be true for ALL inputs
-"""
-
-import lmdb
-from config import WORD_IDS, DB_PATH
-
-STREAM_START    = '0'
-STREAM_END      = '1'
-CHUNK_BOUNDARY  = '2'
-DELIMITER       = '|'
-OOV_PREFIX      = 'OOV:'
-LMDB_PATH       = 'dictionary.lmdb'
-
-
 class Compressor:
-
-    def __init__(self, lmdb_path: str = LMDB_PATH):
-        self.lmdb_path = lmdb_path
-        self._env = None
-        self._forward = None
-        self._reverse = None
-
-    def _open(self):
-        if self._env is None:
-            self._env = lmdb.open(self.lmdb_path, readonly=True, max_dbs=2)
-            self._fwd_db = self._env.open_db(b'forward')
-            self._rev_db = self._env.open_db(b'reverse')
-            self._txn = self._env.begin()
-
-    def _lookup_forward(self, unit: str) -> str | None:
-        """text → ID. Returns None if OOV."""
-        self._open()
-        val = self._txn.get(unit.encode('utf-8'), db=self._fwd_db)
-        return val.decode('utf-8') if val else None
-
-    def _lookup_reverse(self, token_id: str) -> str | None:
-        """ID → text. Returns None if unknown."""
-        self._open()
-        val = self._txn.get(token_id.encode('utf-8'), db=self._rev_db)
-        return val.decode('utf-8') if val else None
-
-    def encode(self, text: str) -> str:
-        """
-        Encode English text to Base64 ID stream.
-        100% lossless — OOV words preserved with OOV: prefix.
-        """
-        words = text.lower().split()
-        tokens = []
-        i = 0
-
-        while i < len(words):
-            matched = False
-            # Try longest phrase first (9 words down to 1)
-            for length in range(min(9, len(words) - i), 0, -1):
-                unit = ' '.join(words[i:i + length])
-                token_id = self._lookup_forward(unit)
-                if token_id is not None:
-                    tokens.append(token_id)
-                    i += length
-                    matched = True
-                    break
-            if not matched:
-                # OOV — preserve raw surface form
-                tokens.append(f"{OOV_PREFIX}{words[i]}")
-                i += 1
-
-        stream = DELIMITER.join(tokens)
-        return f"{STREAM_START}{DELIMITER}{stream}{DELIMITER}{STREAM_END}"
-
-    def decode(self, stream: str) -> str:
-        """
-        Decode Base64 stream to original text.
-        Perfect reconstruction guaranteed.
-        """
-        tokens = stream.split(DELIMITER)
-        units = []
-
-        for token in tokens:
-            # Skip stream markers
-            if token in (STREAM_START, STREAM_END, CHUNK_BOUNDARY):
-                continue
-            # OOV marker
-            if token.startswith(OOV_PREFIX):
-                units.append(token[len(OOV_PREFIX):])
-                continue
-            # Dictionary reverse lookup
-            original = self._lookup_reverse(token)
-            if original is None:
-                raise ValueError(
-                    f"Unknown token: {token!r} — "
-                    f"dictionary mismatch or corrupt stream"
-                )
-            units.append(original)
-
-        return ' '.join(units)
-
-
-# Module-level convenience functions
-_default = Compressor()
-
-def encode(text: str) -> str:
-    return _default.encode(text)
-
-def decode(stream: str) -> str:
-    return _default.decode(stream)
-
-def round_trip_test(text: str) -> bool:
-    """Encode then decode. Must equal original. The acceptance test."""
-    return decode(encode(text)) == text
+    def encode_file(self, path: Path) -> bytes:
+        """Read file, tokenize, encode, return .elo bytes."""
+    def decode_file(self, elo_bytes: bytes, out_path: Path) -> None:
+        """Decode .elo back to original file."""
+    def encode_text(self, text: str) -> str:    # in-memory variant
+    def decode_text(self, stream: str) -> str:
 ```
+
+Pipeline:
+```
+file_bytes
+  → format_adapter.to_text()              (read + decode UTF-8)
+  → tokenize()                            (universal tokenizer)
+  → for each token:
+       lookup in LMDB              hit → emit ID (with cap prefix if needed)
+                                   miss → emit OOV:cap:lower
+  → join with "|"
+  → prepend FORMAT_VERSION header + STREAM_START
+  → append STREAM_END
+  → return bytes
+```
+
+Decode is the inverse, byte-exact.
 
 ---
 
-### Step 8 — benchmarks.py  ← FINAL VALIDATION
+### Step 10 — round_trip_test_suite.py
+
+Per-format acceptance. Each format gets at least one sample file with
+the requirement `decode(encode(x)) == x` enforced byte-exact.
 
 ```python
-"""
-benchmarks.py — Step 8 of System 1
+SAMPLES = {
+    '.txt':  ['samples/plain.txt', 'samples/lipsum.txt'],
+    '.md':   ['samples/readme.md', 'samples/article.md'],
+    '.json': ['samples/config.json', 'samples/big_array.json'],
+    '.csv':  ['samples/contacts.csv', 'samples/large.csv'],
+    '.xml':  ['samples/svg_icon.xml', 'samples/feed.xml'],
+    '.html': ['samples/page.html'],
+    '.yaml': ['samples/k8s_pod.yaml'],
+    '.log':  ['samples/nginx.log'],
+    '.srt':  ['samples/episode.srt'],
+    '.vtt':  ['samples/youtube.vtt'],
+}
 
-Runs against sample transcripts and reports:
-
-1. Round-trip accuracy    — MUST be 100% on all transcripts
-2. Compression ratio      — chars before / chars after
-3. Token reduction        — tokens before / tokens after
-4. Dictionary coverage    — % of tokens found in library vs OOV
-5. Tier distribution      — % of tokens at each tier (0/1/2/OOV)
-6. Processing speed       — tokens/second
-7. OOV word list          — candidates for next dictionary build cycle
-
-Outputs: benchmarks/report.json
-"""
+for fmt, paths in SAMPLES.items():
+    for p in paths:
+        original = Path(p).read_bytes()
+        compressed = Compressor().encode_file(p)
+        recovered  = Compressor().decode_bytes(compressed)
+        assert recovered == original, f'{fmt} failed: {p}'
 ```
 
----
-
-## Revised File Structure
-
-```
-semantic_compression/
-  ├── config.py                  ✓ DONE (update TOP 50 → 1-char IDs)
-  ├── corpus_scanner.py          ✓ DONE
-  ├── library_builder.py         ✓ EXISTS (phases 1+3 reused, rest deferred)
-  ├── verify_config.py           ✓ DONE
-  ├── verify_scanner.py          ✓ DONE
-  ├── verify_library.py          ✓ EXISTS (update for new model)
-  │
-  ├── word_frequency_counter.py  ← BUILD NEXT (Step 4)
-  ├── dictionary_builder.py      ← Step 5 (LMDB, unified model)
-  ├── ngram_counter.py           ← Step 6 (phrase mining 2-9 words)
-  ├── compressor.py              ← Step 7 (encode/decode — CORE)
-  ├── benchmarks.py              ← Step 8 (final proof)
-  │
-  ├── db/
-  │   ├── dictionary.lmdb        ← PRIMARY: built by dictionary_builder.py
-  │   ├── canonical.db           ← SECONDARY: SQLite for inspection only
-  │   └── faiss.index            ← DEFERRED: System 2
-  ├── data/
-  │   ├── transcripts/           ← input JSON
-  │   ├── word_frequencies.txt   ← output of word_frequency_counter.py
-  │   ├── ngram_frequencies.txt  ← output of ngram_counter.py
-  │   └── compressed/            ← output of compressor.py
-  └── tests/
-      ├── test_compressor.py     ← round_trip_test is THE critical test
-      ├── test_dictionary.py
-      └── sample_transcript.json
-```
+This is the ONLY acceptance criterion for System 1 completion.
 
 ---
 
 ## Build Order — Revised
 
 ```
-Step 4  word_frequency_counter.py
-        Scan corpus → count all surface form frequencies
-        Output: word_frequencies.txt
-        Verify: top 10 words match expected universal English words
+Step  4  word_frequency_counter.py    ✓ DONE
+Step  5  dictionary_builder.py        ✓ DONE  (will re-run)
 
-Step 5  dictionary_builder.py
-        Read word_frequencies.txt
-        Assign IDs: TOP 50 → 1-char, next → 2-char, next → 3-char
-        Write to dictionary.lmdb (forward + reverse)
-        Verify: spot-check 20 words decode correctly
+Step  6  tokenizer.py                  ← NEXT
+         Universal tokenization, format-agnostic
+         Verify: join(tokenize(x)) == x  for diverse strings
 
-Step 6  ngram_counter.py
-        Scan corpus → count all 2-9 word n-grams
-        Output: ngram_frequencies.txt
-        Re-run dictionary_builder.py with both frequency files
-        Verify: common phrases decode correctly
+Step  7  format_adapters.py
+         One read/write pair per format
+         Most are identity functions
 
-Step 7  compressor.py
-        Build encode() + decode() using LMDB
-        Longest-match-first phrase detection
-        OOV handling for unknown words
-        Verify: round_trip_test() passes on 100 sample transcripts
+Step  8  Tier 0 expansion + dictionary rebuild
+         Update config.py with new Tier 0 entries
+         Re-run word_frequency_counter through the universal tokenizer
+         Re-run dictionary_builder for the updated vocabulary
 
-Step 8  benchmarks.py
-        Run against full sample set
-        Report: accuracy, ratio, coverage, speed, OOV list
-        PASS criteria: 100% round-trip accuracy on all inputs
+Step  9  compressor.py
+         encode_file / decode_file / encode_text / decode_text
+         Pipe stream format with case preservation everywhere
+
+Step 10  round_trip_test_suite.py
+         10 formats × multiple samples
+         Byte-exact decode(encode(x)) == x
 ```
 
 ---
 
-## Critical Requirement: 100% Lossless
+## Per-Format Compression Expectations
 
 ```
-encode(text) → stream
-decode(stream) == text      # EXACTLY. Every time.
+.txt    natural language    expect ~4-6× compression
+.md     mostly text         ~4-6×
+.json   key repetition      ~6-10× (heavy structural compression)
+.csv    column headers      ~5-8×
+.xml    tag vocabulary      ~6-10×
+.html   tag + text mix      ~5-8×
+.yaml   key repetition      ~6-10×
+.log    timestamp patterns  ~5-8× (timestamps + statuses very repetitive)
+.srt    timestamp + text    ~5-7×
+.vtt    timestamp + text    ~5-7×
+```
 
-This is the only acceptance criterion for System 1.
-Everything else (compression ratio, speed, coverage)
-is reported but does not block completion.
+These are targets, not gates. Round-trip correctness is the gate.
 
-Only round_trip_test() failing blocks completion.
+---
+
+## Critical Requirement: 100% Lossless, All Formats
+
+```
+For each of the 10 formats listed above:
+    decode(encode(file_bytes)) == file_bytes      # byte-exact
+
+This is the ONLY acceptance criterion for System 1.
+Compression ratio, speed, coverage are reported but do not block.
+Only round-trip failure blocks completion.
 ```
 
 ---
@@ -667,31 +361,48 @@ Only round_trip_test() failing blocks completion.
 ## System 1 Contract (Delivery to System 2)
 
 ```
-dictionary.lmdb     LMDB — forward + reverse lookup, ~14MB
-compressor.py       encode(text) + decode(stream) — validated lossless
-benchmarks/         accuracy proof, compression stats, OOV word list
-word_frequencies.txt + ngram_frequencies.txt — corpus frequency data
+dictionary.lmdb              LMDB — forward + reverse, ~few MB
+compressor.py                encode_file + decode_file (10 formats)
+tokenizer.py                 universal tokenizer (stateless, C-portable)
+format_adapters.py           per-format adapters
+caps_codec.py                case preservation (all tokens)
+benchmarks/                  accuracy proof + ratio stats per format
+word_frequencies.txt         corpus frequency data
+samples/                     test files, one per format minimum
 ```
 
-System 2 (semantic formula + matrix models) receives these.
-It does not need to know how compression works internally.
+System 2 receives these and adds semantic intelligence on top of the
+compressed streams.
 
 ---
 
 ## Deferred To System 2
 
-These exist in library_builder.py but are NOT part of System 1:
+```
+EPA projection           (seed-word embedding projection)
+Process stage labels     (Surov 2022 stage classification)
+FAISS index              (vector similarity search)
+Sentence-transformers    (embedding model)
+Filler weight deltas     (probability modifiers on adjacent tokens)
+n-gram phrase mining     (advanced phrase capture beyond unified frequencies)
+```
+
+System 1 compresses byte-exact, nothing more.
+
+---
+
+## C/C++ Migration Rules (enforced now)
 
 ```
-EPA projection        (seed-word embedding projection)
-Process stage labels  (Surov 2022 stage classification)
-FAISS index           (vector similarity search)
-Sentence-transformers (embedding model)
-Filler weight deltas  (probability modifiers on adjacent tokens)
+1. FORMAT_VERSION embedded in every .elo file header
+2. struct.pack('<I', n) for all stored integers — no pickle
+3. Codec functions stateless across module boundaries
+4. caps_codec is pure base64 arithmetic — no Python idioms in the math
+5. Public API returns (value, error_code) — no exceptions across boundary
+6. Module structure mirrors planned C API surface
 ```
 
-System 2 reads the compressed streams and adds semantic intelligence.
-System 1 just compresses. Nothing more.
+See CLAUDE.md "C/C++ Migration Readiness" section for details.
 
 ---
 
@@ -699,8 +410,7 @@ System 1 just compresses. Nothing more.
 
 ```
 Repository:     github.com/4waymedia/semantic-compression
-.elo format:    github.com/4waymedia/elo-format (create next)
+.elo format:    github.com/4waymedia/elo-format
 EloAI:          https://eloai.dev
-Design session: claude.ai — search "semantic compression base64 eloai"
-CLAUDE.md:      full architectural north star document
+Architecture:   ../CLAUDE.md
 ```
