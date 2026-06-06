@@ -69,7 +69,56 @@ from semantic_compression.config import (
 from semantic_compression.format_adapters import (
     detect_format, get_adapter, read_file,
 )
-from semantic_compression.tokenizer import tokenize
+from semantic_compression.tokenizer import tokenize, classify, CLASS_WORD
+
+
+# ---------------------------------------------------------------------------
+# Implicit whitespace transform (Option 2)
+#
+# Single space (' ') is ~47% of all tokens in the YouTube corpus. Removing
+# it from the stream when it sits between two word-class tokens cuts both
+# the token count and per-token overhead substantially.
+#
+# Rule: drop a single-space token at position i iff
+#       tokens[i] == ' ' AND
+#       classify(tokens[i-1]) == WORD AND
+#       classify(tokens[i+1]) == WORD
+#
+# Decoder restores by inserting ' ' between any two consecutive word tokens
+# that are not already separated by a whitespace token in the stream.
+#
+# This transform sits BEFORE the token-by-token encoder so it composes
+# cleanly with both the text-mode wire format and the binary wire format.
+# ---------------------------------------------------------------------------
+
+def _strip_implicit_spaces(tokens: list[str]) -> list[str]:
+    """Remove single-space tokens between two word-class tokens."""
+    n = len(tokens)
+    if n < 3:
+        return tokens
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        if (
+            tok == ' '
+            and 0 < i < n - 1
+            and classify(tokens[i - 1]) == CLASS_WORD
+            and classify(tokens[i + 1]) == CLASS_WORD
+        ):
+            continue
+        out.append(tok)
+    return out
+
+
+def _restore_implicit_spaces(tokens: list[str]) -> list[str]:
+    """Insert single space between consecutive word-class tokens."""
+    if not tokens:
+        return tokens
+    out: list[str] = [tokens[0]]
+    for tok in tokens[1:]:
+        if classify(out[-1]) == CLASS_WORD and classify(tok) == CLASS_WORD:
+            out.append(' ')
+        out.append(tok)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +307,12 @@ class Compressor:
 
         ext = _normalize_ext(fmt)
 
+        tokens = tokenize(text)
+        tokens = _strip_implicit_spaces(tokens)        # Option 2
+
         parts: list[str] = []
         with self._env.begin() as txn:
-            for tok in tokenize(text):
+            for tok in tokens:
                 parts.append(self._encode_token(tok, txn, stats))
 
         stream = ELO_DELIMITER.join(parts)
@@ -297,6 +349,8 @@ class Compressor:
             if stream:
                 for st in stream.split(ELO_DELIMITER):
                     out.append(self._decode_token(st, txn))
+
+        out = _restore_implicit_spaces(out)            # Option 2
 
         return _denormalize_ext(ext), ''.join(out)
 
@@ -340,8 +394,11 @@ class Compressor:
         out += ext_bytes
 
         # Token stream
+        tokens = tokenize(text)
+        tokens = _strip_implicit_spaces(tokens)        # Option 2
+
         with self._env.begin() as txn:
-            for tok in tokenize(text):
+            for tok in tokens:
                 _emit_token_binary(tok, out, txn, self._fwd_db, stats)
 
         return bytes(out)
@@ -363,6 +420,9 @@ class Compressor:
         out_parts: list[str] = []
         with self._env.begin() as txn:
             _consume_stream_binary(stream, out_parts, txn, self._rev_db)
+
+        # Option 2: restore implicit single-spaces between word-class tokens
+        out_parts = _restore_implicit_spaces(out_parts)
 
         text = ''.join(out_parts)
         return _denormalize_ext(ext), text.encode(STREAM_ENCODING)
