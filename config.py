@@ -1,4 +1,18 @@
+# ---------------------------------------------------------------------------
+# Format versioning — increment if stream format changes (C reader checks this)
+# ---------------------------------------------------------------------------
+FORMAT_VERSION  = 1        # embedded in every .elo file header
+STREAM_ENCODING = 'utf-8'  # all text in streams and LMDB keys/values
+PIPE_BYTE       = 0x7C     # b'|' — stream token delimiter, never changes
+OOV_SEP_BYTE    = 0x3A     # b':' — OOV internal field delimiter
+
+# Storage convention: all integer values packed as little-endian uint32
+# import struct; struct.pack('<I', frequency)   — C can read this
+# Never use pickle for stored values.
+
+# ---------------------------------------------------------------------------
 # URL-safe Base64 charset (no +, no /)
+# ---------------------------------------------------------------------------
 BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 # Reverse lookup: char → index
