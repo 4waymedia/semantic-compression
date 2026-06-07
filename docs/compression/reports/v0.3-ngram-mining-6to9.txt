@@ -1,0 +1,61 @@
+v0.3 n-gram mining (6-9 grams) — full corpus run
+Captured from `python -m semantic_compression.ngram_counter --nmin 6 --nmax 9 --min 100`
+
+Runtime: 9:09
+Held-out: same 3 video_ids excluded as 2-5 run
+
+Mining stats:
+  chunks_used:        911,686
+  chunks_excluded:      2,949
+
+Unique n-grams (post-prune):
+  6-gram:  1,202,008
+  7-gram:  1,193,267
+  8-gram:  1,183,134
+  9-gram:  1,172,386
+
+=== PHRASE MINING -- TOTAL CANDIDATES: 33,020 ===
+
+Cumulative estimated bytes saved by promoting top N:
+  top   100:          457,368 bytes  (0.44 MB)
+  top   250:          942,785 bytes  (0.90 MB)
+  top   500:        1,748,962 bytes  (1.67 MB)
+  top 1,000:        3,344,293 bytes  (3.19 MB)
+
+Top 30 phrases by total estimated savings:
+  RANK   N        FREQ    BYTES SAVED  PHRASE
+  ------------------------------------------------------------
+     1   6       2,309         18,010  'at the end of the day'
+     2   6       2,055         16,029  'the president of the united states'
+     3   6       1,447         11,286  'you know what i mean like'
+     4   6       1,019          7,948  'i think a lot of people'
+     5   6         930          7,254  'and then all of a sudden'
+     6   9         538          7,101  'by going to the link in the description below'
+     7   8         598          6,817  'to the link in the description below or'
+     8   9         510          6,732  'going to the link in the description below or'
+     9   6         854          6,661  'the office of management and budget'
+    10   9         497          6,560  'to the link in the description below or heading'
+    11   9         495          6,534  'the link in the description below or heading to'
+    12   7         669          6,422  'by going to the link in the'
+    13   8         548          6,247  'going to the link in the description below'
+    14   7         648          6,220  'to the link in the description below'
+    15   8         543          6,190  'by going to the link in the description'
+    16   6         792          6,177  'on the other side of the'
+    17   6         781          6,091  'you know what i mean and'
+    18   7         619          5,942  'the link in the description below or'
+    19   8         507          5,779  'the link in the description below or heading'
+    20   8         499          5,688  'link in the description below or heading to'
+    21   6         729          5,686  'the link in the description below'
+    22   6         699          5,452  'one of the things that i'
+    23   6         698          5,444  'not going to be able to'
+    24   6         681          5,311  'going to the link in the'
+    25   7         553          5,308  'going to the link in the description'
+    26   6         670          5,226  'by going to the link in'
+    27   6         660          5,148  'to the link in the description'
+    28   6         643          5,015  'what are you going to do'
+    29   6         635          4,953  'in the united states of america'
+    30   7         511          4,905  'link in the description below or heading'
+
+Note: raw output contained many sliding-window duplicates from YouTube
+"link in the description" template phrases. The maximal-phrase filter
+in phrase_miner.py collapses these in the next stage.

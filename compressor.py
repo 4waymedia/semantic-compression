@@ -122,6 +122,70 @@ def _restore_implicit_spaces(tokens: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Longest-match phrase scan (v0.3 -- enables phrase atom IDs)
+#
+# After tokenization + implicit-space stripping, consecutive WORD tokens
+# form a "word run". We greedily match the longest phrase from the
+# dictionary that starts at each position in the run.
+#
+# Phrase keys in the dictionary are space-joined word sequences:
+#     'you know'              (2-gram)
+#     "i don't know"          (3-gram, apostrophe is an interior joiner)
+#     'at the end of the day' (6-gram)
+#
+# A non-WORD token (whitespace, punctuation, structural) breaks the run;
+# we look it up individually as before.
+# ---------------------------------------------------------------------------
+
+MAX_PHRASE_TOKENS = 9   # matches ngram_counter NGRAM_MAX
+
+
+def _longest_match_scan(
+    tokens: list[str],
+    txn,
+    fwd_db,
+) -> list[str]:
+    """
+    Greedy longest-match scan against the v0.3 dictionary.
+
+    Returns a list of "stream tokens" -- surface strings that each have
+    a single ID in the dictionary. Multi-word phrases collapse into one
+    entry; non-matching word runs decompose to individual word tokens;
+    non-WORD tokens pass through unchanged.
+
+    The caller then encodes each stream token via _encode_token.
+    """
+    out: list[str] = []
+    n = len(tokens)
+    i = 0
+    while i < n:
+        tok = tokens[i]
+        if classify(tok) != CLASS_WORD:
+            out.append(tok)
+            i += 1
+            continue
+
+        # Find extent of the consecutive word run
+        j = i
+        while j < n and classify(tokens[j]) == CLASS_WORD and (j - i) < MAX_PHRASE_TOKENS:
+            j += 1
+
+        # Try matching longest phrase first; fall back to shorter
+        matched = False
+        for span in range(j - i, 1, -1):
+            candidate = ' '.join(tokens[i:i + span]).lower()
+            if txn.get(candidate.encode(STREAM_ENCODING), db=fwd_db) is not None:
+                out.append(' '.join(tokens[i:i + span]))
+                i += span
+                matched = True
+                break
+        if not matched:
+            out.append(tok)
+            i += 1
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -312,7 +376,8 @@ class Compressor:
 
         parts: list[str] = []
         with self._env.begin() as txn:
-            for tok in tokens:
+            scanned = _longest_match_scan(tokens, txn, self._fwd_db)   # v0.3
+            for tok in scanned:
                 parts.append(self._encode_token(tok, txn, stats))
 
         stream = ELO_DELIMITER.join(parts)
@@ -398,7 +463,8 @@ class Compressor:
         tokens = _strip_implicit_spaces(tokens)        # Option 2
 
         with self._env.begin() as txn:
-            for tok in tokens:
+            scanned = _longest_match_scan(tokens, txn, self._fwd_db)   # v0.3
+            for tok in scanned:
                 _emit_token_binary(tok, out, txn, self._fwd_db, stats)
 
         return bytes(out)

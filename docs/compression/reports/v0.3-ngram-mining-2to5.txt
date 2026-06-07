@@ -1,0 +1,60 @@
+v0.3 n-gram mining (2-5 grams) — full corpus run
+Captured from `python -m semantic_compression.ngram_counter --nmax 5 --min 100`
+
+Runtime: 9:53
+Held-out video_ids excluded from mining:
+  KhyQCU6oqE8 (times_now)
+  KOhbGjmidgs (jocko_podcast)
+  bRwFb8JmznE (julian_dorey)
+
+Mining stats:
+  chunks_used:        911,686
+  chunks_excluded:      2,949 (held-out)
+
+Unique n-grams (post-prune):
+  2-gram:    457,017
+  3-gram:    966,111
+  4-gram:  1,173,918
+  5-gram:  1,205,866
+
+=== PHRASE MINING -- TOTAL CANDIDATES: 199,963 ===
+
+Cumulative estimated bytes saved by promoting top N (conservative Tier 2 cost):
+  top   100:        6,960,507 bytes  (6.64 MB)
+  top   250:       11,508,143 bytes  (10.98 MB)
+  top   500:       16,337,391 bytes  (15.58 MB)
+  top 1,000:       22,604,962 bytes  (21.56 MB)
+
+Top 30 phrases by total estimated savings:
+  RANK   N        FREQ    BYTES SAVED  PHRASE
+  ------------------------------------------------------------
+     1   2     539,244        323,546  'you know'
+     2   3     100,511        241,226  'a lot of'
+     3   2     295,254        177,152  'in the'
+     4   2     287,605        172,563  'of the'
+     5   2     275,046        165,027  'going to'
+     6   2     232,102        139,261  'and i'
+     7   3      54,124        129,897  'going to be'
+     8   3      51,518        123,643  "i don't know"
+     9   2     203,886        122,331  'to be'
+    10   2     198,449        119,069  'i think'
+    11   3      42,513        102,031  'one of the'
+    12   2     163,470         98,082  'this is'
+    13   2     162,657         97,594  'i was'
+    14   3      39,264         94,233  'i want to'
+    15   2     156,456         93,873  'and then'
+    16   2     155,295         93,177  'want to'
+    17   3      38,179         91,629  'you know i'
+    18   3      37,426         89,822  'you want to'
+    19   2     148,040         88,824  'it was'
+    20   3      36,100         86,640  "i'm going to"
+    21   2     142,586         85,551  "i don't"
+    22   3      35,525         85,260  'a little bit'
+    23   2     140,897         84,538  'if you'
+    24   3      34,804         83,529  'and you know'
+    25   2     137,977         82,786  'to the'
+    26   2     133,338         80,002  'kind of'
+    27   2     132,123         79,273  'a lot'
+    28   2     132,071         79,242  'on the'
+    29   3      32,898         78,955  "we're going to"
+    30   2     123,718         74,230  'to do'

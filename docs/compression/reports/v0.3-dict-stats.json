@@ -1,0 +1,41 @@
+{
+  "format_version": 3,
+  "captured_at_commit": "bf4fbd3",
+  "branch": "v0.3-phrase-dictionary",
+  "build_config": {
+    "min_freq_threshold": 1,
+    "tier1_word_reserve": 1024,
+    "drop_tier0_bigrams": true
+  },
+  "corpus_inputs": {
+    "total_corpus_tokens": 186403791,
+    "unique_words": 206639,
+    "unique_phrase_candidates": 167876,
+    "phrase_filter_dropped_tier0_bigrams": 601
+  },
+  "dictionary_inventory": {
+    "total_entries": 373918,
+    "words_in_dict": 206616,
+    "phrases_in_dict": 167275,
+    "tier0_count": 53,
+    "tier1_count": 1280,
+    "tier2_count": 81920,
+    "tier3_count": 290665,
+    "overflow_dropped": 0,
+    "forced_assigned": {"|": "gA"}
+  },
+  "profile_cuts": {
+    "tiny":      {"content_size":  32496, "byte_fallback_start":  32496, "special_tokens_start":  32752, "total_vocab":  32768},
+    "compact":   {"content_size":  65264, "byte_fallback_start":  65264, "special_tokens_start":  65520, "total_vocab":  65536},
+    "standard":  {"content_size": 130800, "byte_fallback_start": 130800, "special_tokens_start": 131056, "total_vocab": 131072},
+    "full":      {"content_size": 261872, "byte_fallback_start": 261872, "special_tokens_start": 262128, "total_vocab": 262144},
+    "reference": {"content_size": 373891, "byte_fallback_start": 373891, "special_tokens_start": 374147, "total_vocab": 374163}
+  },
+  "byte_fallback_size": 256,
+  "special_token_count": 16,
+  "tier_capacity": {
+    "1": 1280,
+    "2": 81920,
+    "3": 5242880
+  }
+}

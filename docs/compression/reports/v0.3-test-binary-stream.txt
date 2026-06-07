@@ -1,0 +1,40 @@
+v0.3 binary stream test — captured from `python test_binary_stream.py`
+Run at commit bf4fbd3 on branch v0.3-phrase-dictionary
+
+=== BINARY STREAM (.eloB) on 10 v1 samples ===
+FILE                        SRC    BIN   RATIO  STATUS
+------------------------------------------------------------
+plain.txt                   274    199   1.38x  PASS
+readme.md                   451    463   0.97x  PASS
+config.json                 410    487   0.84x  PASS
+contacts.csv                298    343   0.87x  PASS
+feed.xml                    798    885   0.90x  PASS
+page.html                   659    823   0.80x  PASS
+service.yaml                537    628   0.86x  PASS
+server.log                  637    641   0.99x  PASS
+episode.srt                 401    357   1.12x  PASS
+episode.vtt                 298    333   0.89x  PASS
+
+=== BINARY STREAM (.eloB) on 3 real transcripts ===
+== Resources\transcripts\times_now\KhyQCU6oqE8.json
+   source: 2.38 MB (2,491,529 bytes)
+   binary: 1.19 MB (1,250,193 bytes)  ratio=1.99x  (+49.8%)
+   encode 1.48 s (1.6 MB/s)  decode 395 ms (6.0 MB/s)
+   ROUND-TRIP: PASS byte-exact
+   tiers T0=172,518 T1=46,795 T2=116,939 T3=45,967  cap=43,454 oov=24,582
+
+== Resources\transcripts\jocko_podcast\KOhbGjmidgs.json
+   source: 1.03 MB (1,076,554 bytes)
+   binary: 520.5 KB (532,959 bytes)  ratio=2.02x  (+50.5%)
+   encode 812 ms (1.3 MB/s)  decode 155 ms (6.6 MB/s)
+   ROUND-TRIP: PASS byte-exact
+   tiers T0=43,703 T1=21,981 T2=66,078 T3=18,729  cap=13,409 oov=11,402
+
+== Resources\transcripts\julian_dorey\bRwFb8JmznE.json
+   source: 798.4 KB (817,549 bytes)
+   binary: 404.4 KB (414,089 bytes)  ratio=1.97x  (+49.3%)
+   encode 585 ms (1.3 MB/s)  decode 117 ms (6.7 MB/s)
+   ROUND-TRIP: PASS byte-exact
+   tiers T0=34,857 T1=14,892 T2=48,414 T3=13,021  cap=9,573 oov=10,489
+
+All round-trips PASS byte-exact.
