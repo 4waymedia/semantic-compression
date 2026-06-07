@@ -1,9 +1,29 @@
 # ELO Compressor v0.3 Specification
 ### Phrase-Atom Vocabulary + LLM Readiness
 
-> Status: design — implementation pending
+> Status: implementation complete on branch `v0.3-phrase-dictionary` at
+> commit `bf4fbd3`. Final results below; lossless preserved; A3 ratio
+> target missed; LLM-vocabulary contract delivered.
+>
 > Predecessor: v0.2 (commit `7fc9152`, tag `v0.2`)
-> Target milestone: "Phrase-Atom Compression + Vocabulary Freeze"
+> Milestone: "Vocabulary Contract + Token-Count Reduction"
+>            (rebranded from "Phrase-Atom Compression" -- see results)
+
+## Results — quick reference
+
+| Metric | Target (A3-A5) | Result | Status |
+|---|---|---|---|
+| Transcript ratio | ≥ 2.5x | 1.99x | ❌ structurally bounded |
+| Encode speed | ≥ 1.5 MB/s | 1.4 MB/s | ⚠️ near miss |
+| Decode speed | ≥ 2.0 MB/s | 6.5 MB/s | ✅ exceeded |
+| **Stream token reduction** | not in spec | **-55%** | **✅ new headline win** |
+| Byte-exact round-trip | required | 13/13 | ✅ |
+| LLM vocab contract | required | published | ✅ |
+
+For full detail see:
+- `benchmark-v0.3.md` — the formal benchmark report
+- `v0.3-analysis.md` — theory vs practice retrospective
+- `reports/` — raw captured outputs
 
 ---
 
