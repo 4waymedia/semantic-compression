@@ -1,9 +1,36 @@
 # ELO Compressor v0.3 Benchmark
-### Phrase-Atom Vocabulary + Compression-Aware Filters
+### Phrase Dictionary and LLM Vocabulary Contract
 
-> Status: completed on branch `v0.3-phrase-dictionary` at commit `bf4fbd3`
+> Status: ACCEPTED. Tagged `v0.3.0`.
 > Date: 2026-06-07
-> Predecessors: v0.2 release at commit `7fc9152`, tag `v0.2`
+> Predecessor: v0.2 release at commit `7fc9152`, tag `v0.2`
+
+---
+
+## Milestone status
+
+The original 2.5x compression acceptance target was **not met** — the
+v0.3 fixed-tier byte arithmetic structurally caps phrase savings at
+1-3 bytes per occurrence, and the achievable ratio plateaued at ~1.99x.
+
+The branch is **accepted** because it:
+
+- establishes the phrase dictionary (167,275 phrase atoms)
+- cuts stream-token count by 55% (a major LLM input-density win)
+- doubles decode throughput (3.5 → 6.5 MB/s)
+- preserves byte-exact round-trip on 13/13 test files
+- delivers the frozen LLM vocabulary contract (`token-ids-v1.csv.gz`
+  + 5 standardized profiles + special-token + byte-fallback tables)
+
+File compression improves from **1.84x → 1.99x** average. Modest but
+real, with no correctness regression.
+
+The 2.5x file-compression target moves to a future milestone:
+
+> **v0.4 — Structure-Aware Transcript JSON Codec.**
+> Target the JSON-specific redundancies (repeated keys, segment
+> templates, timestamp delta encoding, speaker dictionaries, known
+> record shapes) that fixed-tier dictionary compression cannot reach.
 
 ---
 
