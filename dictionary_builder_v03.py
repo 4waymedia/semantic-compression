@@ -71,10 +71,20 @@ BYTE_FALLBACK_CSV = DATA_DIR / 'byte-fallback-v1.csv'
 PROFILE_CUTS_JSON = DATA_DIR / 'profile-cuts-v1.json'
 
 MAP_SIZE_GB = 1
-MIN_FREQ_FOR_DICT = 5   # don't promote hapaxes and near-hapaxes
+MIN_FREQ_FOR_DICT = 1   # include all words (match v0.2 coverage); phrases are filtered separately
 
 # Forced first-Tier-1 seeds (cannot appear in OOV body)
 FORCED_DICT_TOKENS = ['|']
+
+# Compression-aware phrase filter and Tier 1 reservation defaults.
+# These convert v0.3's compression gain from +8% to +15-20% by:
+#   1. Dropping phrases whose promotion saves zero bytes (2-grams of Tier 0
+#      words: 1+1 byte-cost equals the Tier 1 phrase-cost of 2 bytes -- no win)
+#   2. Reserving the top N Tier 1 slots exclusively for single words so the
+#      most-frequent words keep their 2-byte IDs instead of being demoted to
+#      Tier 2 by ambitious phrases.
+TIER1_WORD_RESERVE_DEFAULT = 1024     # of 1280 Tier 1 slots, reserve 1024 for words
+DROP_TIER0_BIGRAMS_DEFAULT = True     # filter zero-savings 2-grams
 
 # Tier capacity from g-z first chars (20 prefixes)
 TIER_CAPACITY = {
@@ -170,6 +180,8 @@ def build(
     stats_file: Path = STATS_FILE,
     map_size_gb: int = MAP_SIZE_GB,
     min_freq: int = MIN_FREQ_FOR_DICT,
+    drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
+    tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
 ) -> dict:
     print('Loading word frequencies...')
     word_freq = load_word_frequencies(word_freq_file)
@@ -188,38 +200,66 @@ def build(
         tier0_map[token] = char_id
     for char_id, token in STRUCTURAL_IDS.items():
         tier0_map[token] = char_id
-
-    # ----------------------------------------------------------------------
-    # Build unified candidate pool: words + phrases (excluding Tier 0)
-    # Each entry: (surface, freq, kind, n_words)
-    #   kind: 'word' or 'phrase'
-    # ----------------------------------------------------------------------
-    pool: list[tuple[str, int, str, int]] = []
-
-    # Words (excluding Tier 0 pre-seeded set)
     tier0_set = set(tier0_map.keys())
+
+    # ----------------------------------------------------------------------
+    # Phrase filter: drop entries that would save zero bytes when promoted.
+    # A 2-gram of two Tier 0 words costs 1+1 = 2 bytes today; a Tier 1
+    # phrase ID also costs 2 bytes. Promoting yields ZERO byte savings
+    # while taking a Tier 1 slot away from a more valuable single word.
+    # ----------------------------------------------------------------------
+    filtered_phrases: list[tuple[str, int, int]] = []   # (phrase, freq, n)
+    dropped_tier0_bigrams = 0
+
+    for phrase, n, freq, _pmi in phrase_records:
+        if freq < min_freq:
+            continue
+        if phrase in word_freq:
+            continue   # collides with existing word entry
+        if drop_tier0_bigrams and n == 2:
+            words = phrase.split(' ')
+            if all(w in tier0_set for w in words):
+                dropped_tier0_bigrams += 1
+                continue
+        filtered_phrases.append((phrase, freq, n))
+
+    print(f'  Phrase filter: dropped {dropped_tier0_bigrams:,} Tier-0 bigrams '
+          f'(zero-savings); kept {len(filtered_phrases):,}')
+
+    # ----------------------------------------------------------------------
+    # Build non-tier0 word pool
+    # ----------------------------------------------------------------------
+    word_pool: list[tuple[str, int, str, int]] = []
     for w, f in word_freq.items():
         if w in tier0_set:
             continue
         if f < min_freq:
             continue
-        pool.append((w, f, 'word', 1))
+        word_pool.append((w, f, 'word', 1))
+    word_pool.sort(key=lambda e: -e[1])
 
-    # Phrases (already have freq; filter by min_freq)
-    for phrase, n, freq, _pmi in phrase_records:
-        if freq < min_freq:
-            continue
-        # Don't add if collides with an existing word entry (rare)
-        if phrase in word_freq:
-            continue
-        pool.append((phrase, freq, 'phrase', n))
+    phrase_pool: list[tuple[str, int, str, int]] = [
+        (p, f, 'phrase', n) for (p, f, n) in filtered_phrases
+    ]
+    phrase_pool.sort(key=lambda e: -e[1])
 
-    # Sort unified pool by frequency descending
+    # ----------------------------------------------------------------------
+    # Tier 1 reservation: top tier1_word_reserve WORDS get reserved Tier 1
+    # slots BEFORE phrases compete. Remaining Tier 1 slots are filled by
+    # frequency-ranked mix of remaining words + filtered phrases.
+    # ----------------------------------------------------------------------
+    reserved_words = word_pool[:tier1_word_reserve]
+    remaining_words = word_pool[tier1_word_reserve:]
+
+    # Pool that competes for tier slots AFTER reserved-Tier-1 words:
+    pool: list[tuple[str, int, str, int]] = remaining_words + phrase_pool
     pool.sort(key=lambda e: -e[1])
 
-    print(f'  Unified pool: {len(pool):,} entries  '
-          f'({sum(1 for _,_,k,_ in pool if k=="word"):,} words + '
-          f'{sum(1 for _,_,k,_ in pool if k=="phrase"):,} phrases)')
+    word_count_in_pool   = sum(1 for _,_,k,_ in pool if k == 'word')
+    phrase_count_in_pool = sum(1 for _,_,k,_ in pool if k == 'phrase')
+    print(f'  Tier 1 word reserve: {len(reserved_words):,} top words pre-claimed')
+    print(f'  Competing pool: {len(pool):,} entries  '
+          f'({word_count_in_pool:,} words + {phrase_count_in_pool:,} phrases)')
 
     # ----------------------------------------------------------------------
     # Open LMDB
@@ -256,11 +296,9 @@ def build(
     # natural frequency positions among the rest).
     tier0_records: list[tuple[str, int, str, int]] = []
     for char_id, token in tier0_map.items():
-        # Pull frequency from word_freq if present (e.g. 'the', 'and')
-        # Otherwise use 0 (e.g. '\n' might not appear in word_freq if punctuation-only)
         tier0_records.append((token, word_freq.get(token, 0), 'tier0', 1))
 
-    all_records: list[tuple[str, int, str, int]] = tier0_records + pool
+    all_records: list[tuple[str, int, str, int]] = tier0_records + reserved_words + pool
     all_records.sort(key=lambda e: -e[1])
 
     # ----------------------------------------------------------------------
@@ -291,10 +329,9 @@ def build(
     tier_counts = {0: len(tier0_map), 1: len(forced_assigned), 2: 0, 3: 0}
     skipped_overflow = 0
 
-    print('Assigning Tier 1/2/3 string IDs in frequency order...')
-    for surface, _freq, kind, _n in tqdm(pool, desc='assign'):
-        if surface in string_id_of:
-            continue   # already in tier0 (e.g. Tier 0 token also had a frequency)
+    def _assign(surface: str) -> None:
+        """Place 'surface' in the next available tier slot."""
+        nonlocal t1_counter, t2_counter, t3_counter, skipped_overflow
         if t1_counter < TIER_CAPACITY[1]:
             sid = _encode_id(1, t1_counter)
             t1_counter += 1
@@ -312,8 +349,21 @@ def build(
             tier_of[surface] = 3
         else:
             skipped_overflow += 1
-            continue
+            return
         string_id_of[surface] = sid
+
+    # Step A: reserved Tier 1 words first (guaranteed 2-byte IDs)
+    print(f'Reserving {len(reserved_words):,} top words for Tier 1...')
+    for surface, _freq, _kind, _n in tqdm(reserved_words, desc='reserve'):
+        if surface not in string_id_of:
+            _assign(surface)
+
+    # Step B: competing pool (remaining words + filtered phrases) in freq order
+    print('Assigning remaining Tier 1/2/3 slots in unified frequency order...')
+    for surface, _freq, _kind, _n in tqdm(pool, desc='assign'):
+        if surface in string_id_of:
+            continue
+        _assign(surface)
 
     # ----------------------------------------------------------------------
     # Write LMDB
@@ -439,6 +489,9 @@ def build(
         'unique_words':             len(word_freq),
         'unique_phrase_candidates': len(phrase_records),
         'min_freq_threshold':       min_freq,
+        'tier1_word_reserve':       tier1_word_reserve,
+        'drop_tier0_bigrams':       drop_tier0_bigrams,
+        'dropped_tier0_bigrams':    dropped_tier0_bigrams,
         'total_entries':            len(string_id_of),
         'tier0_count':              tier_counts[0],
         'tier1_count':              tier_counts[1],
@@ -517,8 +570,18 @@ def main() -> None:
     p = argparse.ArgumentParser(description='Build v0.3 dictionary with phrase atoms')
     p.add_argument('--min', type=int, default=MIN_FREQ_FOR_DICT,
                    help=f'minimum frequency to enter dict (default {MIN_FREQ_FOR_DICT})')
+    p.add_argument('--tier1-reserve', type=int, default=TIER1_WORD_RESERVE_DEFAULT,
+                   help=f'number of top Tier-1 slots reserved for single words '
+                        f'(default {TIER1_WORD_RESERVE_DEFAULT})')
+    p.add_argument('--keep-tier0-bigrams', action='store_true',
+                   help='retain 2-grams of Tier-0 words even though they save '
+                        'zero bytes (off by default)')
     args = p.parse_args()
-    build(min_freq=args.min)
+    build(
+        min_freq=args.min,
+        tier1_word_reserve=args.tier1_reserve,
+        drop_tier0_bigrams=not args.keep_tier0_bigrams,
+    )
 
 
 if __name__ == '__main__':
