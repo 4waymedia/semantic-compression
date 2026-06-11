@@ -1,0 +1,32 @@
+{
+  "tiny": {
+    "content_size": 32496,
+    "byte_fallback_start": 32496,
+    "special_tokens_start": 32752,
+    "total_vocab": 32768
+  },
+  "compact": {
+    "content_size": 65264,
+    "byte_fallback_start": 65264,
+    "special_tokens_start": 65520,
+    "total_vocab": 65536
+  },
+  "standard": {
+    "content_size": 130800,
+    "byte_fallback_start": 130800,
+    "special_tokens_start": 131056,
+    "total_vocab": 131072
+  },
+  "full": {
+    "content_size": 261872,
+    "byte_fallback_start": 261872,
+    "special_tokens_start": 262128,
+    "total_vocab": 262144
+  },
+  "reference": {
+    "content_size": 373891,
+    "byte_fallback_start": 373891,
+    "special_tokens_start": 374147,
+    "total_vocab": 374163
+  }
+}

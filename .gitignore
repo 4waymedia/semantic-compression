@@ -16,7 +16,13 @@ env/
 
 # Generated outputs (large binaries / data)
 db/
-data/compressed/
+data/*
+
+# Frozen vocabulary contract — must be distributed with the format
+!data/token-ids-v1.csv.gz
+!data/special-tokens-v1.json
+!data/byte-fallback-v1.csv
+!data/profile-cuts-v1.json
 
 # Jupyter
 .ipynb_checkpoints/
