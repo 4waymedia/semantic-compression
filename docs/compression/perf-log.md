@@ -159,3 +159,135 @@ an unmodified `main` reader.
   assumptions in `Memory/Memory.md` (read-path latency targets) against
   the new ~10 MB/s decode floor. Some sub-100 µs targets there were
   conservative against the 7 MB/s number; we now have meaningful margin.
+
+---
+
+## 2026-06-12 — Int-keyed reverse cache (decode-spec-v02)
+
+| Field | Value |
+|---|---|
+| **Branch** | `decode-spec-v02` (from `decode-spec-v01`) |
+| **Spec** | "Implement integer/list-backed reverse decode cache" (Jipity) |
+| **Target** | 30 MB/s pure-Python decode |
+| **Owner** | Paul G + Jipity (spec) + Claude Opus 4.7 (impl) |
+| **Files touched** | `compressor.py` (+~120/−~10), `test_decoder_cache.py` (+4 tests), `bench_decoder.py` (3-way compare), `bench_decode_results.json` |
+
+### Baseline
+
+Coming in from decode-spec-v01:
+
+| Config | decode_MBps |
+|---|---:|
+| UNCACHED  (LMDB GET per token) | 6.52 |
+| BYTES-CACHE (`dict[bytes,bytes]`) | 9.04 |
+
+### Hypothesis (per spec)
+
+`_read_id_from_binary` still allocates a fresh `bytes` object per token to
+build the LMDB-key shape. Even with the bytes cache, that allocation +
+hash on a 1–4-byte bytes object costs ~200 ns per token. The stream byte
+pattern can be packed directly into an `int` (the tag bits keep tier
+ranges non-overlapping), giving an int-keyed cache. Hypothesis: ~3×
+further speedup, pushing us toward 30 MB/s.
+
+### Path taken
+
+- **Direct stream→int mapping** without going through `bytes`:
+  - Tier 0 (1 B): `int_key = tag`
+  - Tier 1 (2 B): `int_key = (tag << 8) | stream[i+1]`
+  - Tier 2 (3 B): `int_key = (tag << 16) | (b1 << 8) | b2`
+  - Tier 3 (4 B): `int_key = (tag << 24) | (b1 << 16) | (b2 << 8) | b3`
+  Tag bits keep the four tier ranges disjoint, so a single
+  `dict[int, bytes]` works.
+- **Built at init from the same rev-cursor walk** that builds the bytes
+  cache (no second LMDB pass). `_build_int_keyed_cache(entries)` decodes
+  each LMDB Base64 key string into the equivalent stream int.
+- **New fast path** `_consume_stream_binary_int` exists alongside the
+  bytes-keyed `_consume_stream_binary`. Selected by `decode_bytes_binary`
+  based on which caches are available; falls back through:
+  `int cache → bytes cache → LMDB GET`. Zero behavioral change in any
+  path.
+- **Micro-tuning**: hoisted `id_to_surface.__getitem__` and
+  `out_parts.append` to local-variable aliases inside the hot loop —
+  CPython resolves `LOAD_FAST` (~30 ns) faster than `LOAD_GLOBAL` or
+  attribute lookups (~70 ns).
+
+### Implementation
+
+```python
+def _build_int_keyed_cache(entries):
+    bi = BASE64_INDEX
+    out = {}
+    for k, v in entries:
+        n = len(k)
+        if n == 1:
+            int_key = bi[chr(k[0])]
+        elif n == 2:
+            int_key = ((0x40 | bi[chr(k[0])]) << 8) | bi[chr(k[1])]
+        elif n == 3:
+            int_key = ((0x80 | bi[chr(k[0])]) << 16) | (bi[chr(k[1])] << 8) | bi[chr(k[2])]
+        elif n == 4:
+            int_key = ((0xC0 | bi[chr(k[0])]) << 24) | (bi[chr(k[1])] << 16) | (bi[chr(k[2])] << 8) | bi[chr(k[3])]
+        out[int_key] = v
+    return out
+```
+
+### Result
+
+3-sample average on the 3 transcripts (13.16 MB total source):
+
+| Config | decode_MBps | vs UNCACHED | vs BYTES-CACHE |
+|---|---:|---:|---:|
+| UNCACHED | 6.52 | 1.00× | 0.72× |
+| BYTES-CACHE (v01) | 9.04 | 1.39× | 1.00× |
+| **INT-CACHE (v02)** | **10.14** | **1.55×** | **1.12×** |
+
+Init cost: 609 ms (was 531 ms for v01) — building both caches in one
+LMDB walk. Memory: rev (5.3 MB) + fwd (5.3 MB) + int (6.9 MB) = ~17 MB total.
+
+### Verification
+
+- `verify_lossless.py` — 10/10 PASS byte-exact
+- `test_binary_stream.py` — 10/10 + 3/3 PASS byte-exact
+- `test_decoder_cache.py` — **11/11 PASS** (added 4 v02-specific tests:
+  `test_int_cache_matches_rev_cache_binary`, `test_int_cache_matches_lmdb_binary`,
+  `test_int_cache_fallback`, `test_int_cache_telemetry`)
+
+### Lessons / what's still on the table
+
+**Honest assessment vs the 30 MB/s target**
+
+We're at 10 MB/s. The 30 MB/s target appears to be **at or beyond the
+pure-Python interpreter ceiling** for this workload:
+
+- Per-token cost breakdown (~300–400 ns total):
+  - Bytecode dispatch + frame management: ~150 ns
+  - `dict.__getitem__`: ~80 ns
+  - Int arithmetic + byte indexing: ~50 ns
+  - `list.append` + loop tail: ~80 ns
+- At 4-byte avg token length, ~300 ns/token caps throughput at ~13 MB/s.
+
+The bytes-cache → int-cache step gave a real but modest gain (+12%)
+because LMDB-key allocation was already not the dominant cost once the
+hash was cached.
+
+**What we deliberately didn't do this round**
+
+- **Cython/PyO3 extension.** Would clear the interpreter overhead and
+  reach 30+ MB/s easily, but introduces a build step. Held for the
+  decision on whether to ship a wheel.
+- **Per-tier flat lists for Tier 0/1/2.** Computed memory cost (~8 MB
+  for Tier 2 alone, plus dict for Tier 3) for an expected ~10 ns
+  per-lookup saving. Not worth the complexity until measured to dominate.
+- **Bulk pre-pass with `struct.unpack`.** Variable-length tokens
+  defeat fixed-stride unpacks; would require an index-building pass.
+
+**Next likely milestone (if we keep pushing)**
+
+- **decode-spec-v03 (Cython)** — `compressor.pyx` for the hot
+  `_consume_stream_binary_int` function. Pure-Python ceiling is ~12
+  MB/s; Cython realistic target is 50–100 MB/s without sacrificing the
+  current bytes-format or test suite. Build cost: a wheel matrix.
+- **OR pivot to "use what we have"** — 10 MB/s is more than enough for
+  the Memory module's read-path targets (still sub-100 µs for typical
+  memory items). Stop optimizing the decoder and focus on consumers.

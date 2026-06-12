@@ -197,6 +197,93 @@ def test_oov_path() -> None:
 # cache) so they avoid two-instance overlap.
 
 
+def test_int_cache_matches_rev_cache_binary() -> None:
+    """decode-spec-v02: int-keyed fast path matches the bytes-keyed path."""
+    # Capture decode output via bytes-keyed cache (v01 behavior)
+    encoded_by_name: dict[str, bytes] = {}
+    v01_decoded: dict[str, bytes] = {}
+    with Compressor(
+        preload_rev_cache=True,
+        preload_fwd_cache=True,
+        preload_int_cache=False,    # explicitly disable int cache
+    ) as v01:
+        assert v01._id_to_surface is None, "int cache must be off"
+        for name, src in SAMPLES:
+            encoded_by_name[name] = v01.encode_bytes_binary(src, fmt='.txt')
+            _, dec = v01.decode_bytes_binary(encoded_by_name[name])
+            v01_decoded[name] = dec
+            assert_eq(dec, src, msg=f"[v01 {name}] round-trip failed")
+
+    # Decode the SAME bytes through the int-keyed cache and compare.
+    with Compressor(
+        preload_rev_cache=True,
+        preload_fwd_cache=True,
+        preload_int_cache=True,
+    ) as v02:
+        assert v02._id_to_surface is not None, "int cache must be on"
+        for name, src in SAMPLES:
+            _, dec = v02.decode_bytes_binary(encoded_by_name[name])
+            assert_eq(
+                dec, v01_decoded[name],
+                msg=f"[v02 {name}] int-cache decode differs from bytes-cache"
+            )
+            assert_eq(dec, src, msg=f"[v02 {name}] int-cache round-trip failed")
+    print('PASS  v02:    int-keyed cache matches bytes-keyed cache on all samples')
+
+
+def test_int_cache_matches_lmdb_binary() -> None:
+    """The fast path also matches the no-cache LMDB path byte-for-byte."""
+    encoded_by_name: dict[str, bytes] = {}
+    lmdb_decoded: dict[str, bytes] = {}
+    with Compressor(
+        preload_rev_cache=False,
+        preload_fwd_cache=False,
+        preload_int_cache=False,
+    ) as raw:
+        for name, src in SAMPLES:
+            encoded_by_name[name] = raw.encode_bytes_binary(src, fmt='.txt')
+            _, dec = raw.decode_bytes_binary(encoded_by_name[name])
+            lmdb_decoded[name] = dec
+
+    with Compressor(preload_int_cache=True) as v02:
+        for name, src in SAMPLES:
+            _, dec = v02.decode_bytes_binary(encoded_by_name[name])
+            assert_eq(
+                dec, lmdb_decoded[name],
+                msg=f"[v02 {name}] int-cache decode differs from LMDB"
+            )
+    print('PASS  v02:    int-keyed cache matches LMDB path on all samples')
+
+
+def test_int_cache_fallback() -> None:
+    """When int cache is disabled, behavior falls back cleanly to v01 path."""
+    src = b'The quick brown fox at the end of the day.'
+    with Compressor(preload_int_cache=False) as c:
+        assert c._id_to_surface is None
+        assert c._rev_cache is not None    # v01 cache still active
+        encoded = c.encode_bytes_binary(src, fmt='.txt')
+        _, decoded = c.decode_bytes_binary(encoded)
+        assert_eq(decoded, src, msg='fallback round-trip failed')
+    print('PASS  v02:    fallback path (int cache off) works correctly')
+
+
+def test_int_cache_telemetry() -> None:
+    """id_cache_bytes reflects cache state."""
+    with Compressor(preload_int_cache=True) as c:
+        assert c.id_cache_bytes > 0, 'expected positive id_cache_bytes'
+        # Sanity: the int cache should be in the same ballpark as the bytes
+        # cache (both index the same vocabulary). 0.5x to 2x is reasonable.
+        ratio = c.id_cache_bytes / max(c.rev_cache_bytes, 1)
+        assert 0.5 <= ratio <= 2.0, (
+            f'id_cache_bytes={c.id_cache_bytes:,} '
+            f'rev_cache_bytes={c.rev_cache_bytes:,} '
+            f'(ratio {ratio:.2f} outside expected 0.5-2.0)'
+        )
+    with Compressor(preload_int_cache=False) as c:
+        assert c.id_cache_bytes == 0
+    print('PASS  v02:    id_cache_bytes telemetry correct')
+
+
 def test_idempotent_open_close() -> None:
     """Re-opening after close rebuilds caches cleanly."""
     c = Compressor(preload_rev_cache=True, preload_fwd_cache=True)
@@ -225,6 +312,10 @@ def main() -> int:
         test_init_ms_reported,
         test_cap_prefix_path,
         test_oov_path,
+        test_int_cache_matches_rev_cache_binary,
+        test_int_cache_matches_lmdb_binary,
+        test_int_cache_fallback,
+        test_int_cache_telemetry,
         test_idempotent_open_close,
     ]
     failures = 0
