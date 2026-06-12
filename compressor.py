@@ -266,6 +266,7 @@ class Compressor:
         *,
         preload_rev_cache: bool = True,
         preload_fwd_cache: bool = True,
+        preload_int_cache: bool = True,
     ) -> None:
         """
         Args:
@@ -276,6 +277,11 @@ class Compressor:
                                  hot path. ~4-6 MB RAM, 100-300 ms init.
             preload_fwd_cache:   same, for the forward (surface -> ID)
                                  dictionary used by the encode hot path.
+            preload_int_cache:   if True (and preload_rev_cache=True), also
+                                 build an int-keyed cache for the binary
+                                 decoder fast path. Eliminates per-token
+                                 bytes-object allocation. +~30 MB RAM on
+                                 top of rev_cache; ~3x decode speedup.
         """
         self.lmdb_path = Path(lmdb_path)
         self._env: Optional[lmdb.Environment] = None
@@ -284,13 +290,19 @@ class Compressor:
         # Cache configuration
         self._preload_rev_cache = preload_rev_cache
         self._preload_fwd_cache = preload_fwd_cache
+        self._preload_int_cache = preload_int_cache
         # Populated by open() when flags above are True
         self._rev_cache: Optional[dict[bytes, bytes]] = None
         self._fwd_cache: Optional[dict[bytes, bytes]] = None
+        # Int-keyed reverse cache (decode-spec-v02). Key is the raw stream
+        # byte pattern packed as an int — no per-token bytes allocation in
+        # the decoder hot path.
+        self._id_to_surface: Optional[dict[int, bytes]] = None
         # Telemetry — read by callers that want the metrics
         self._init_elapsed_ms: float = 0.0
         self._rev_cache_bytes: int = 0
         self._fwd_cache_bytes: int = 0
+        self._id_cache_bytes: int = 0
 
     # ------------------------------------------------------------------
     # Resource lifecycle
@@ -326,9 +338,11 @@ class Compressor:
         # rebuilds against the (possibly fresh) dictionary.
         self._rev_cache = None
         self._fwd_cache = None
+        self._id_to_surface = None
         self._init_elapsed_ms = 0.0
         self._rev_cache_bytes = 0
         self._fwd_cache_bytes = 0
+        self._id_cache_bytes = 0
 
     def _build_caches(self) -> None:
         """
@@ -338,14 +352,22 @@ class Compressor:
         t0 = time.monotonic()
         if self._preload_rev_cache:
             with self._env.begin(db=self._rev_db) as txn:
-                cache = {bytes(k): bytes(v) for k, v in txn.cursor()}
-            self._rev_cache = cache
-            self._rev_cache_bytes = sum(len(k) + len(v) for k, v in cache.items())
+                entries = [(bytes(k), bytes(v)) for k, v in txn.cursor()]
+            self._rev_cache = dict(entries)
+            self._rev_cache_bytes = sum(len(k) + len(v) for k, v in entries)
+            # If the int-keyed cache is also requested, derive it from the
+            # same walked entries — avoids a second LMDB cursor pass.
+            if self._preload_int_cache:
+                self._id_to_surface = _build_int_keyed_cache(entries)
+                # Rough resident estimate: 8B per int key + value bytes.
+                self._id_cache_bytes = sum(
+                    8 + len(v) for v in self._id_to_surface.values()
+                )
         if self._preload_fwd_cache:
             with self._env.begin(db=self._fwd_db) as txn:
-                cache = {bytes(k): bytes(v) for k, v in txn.cursor()}
-            self._fwd_cache = cache
-            self._fwd_cache_bytes = sum(len(k) + len(v) for k, v in cache.items())
+                fwd = {bytes(k): bytes(v) for k, v in txn.cursor()}
+            self._fwd_cache = fwd
+            self._fwd_cache_bytes = sum(len(k) + len(v) for k, v in fwd.items())
         self._init_elapsed_ms = (time.monotonic() - t0) * 1000.0
 
     @property
@@ -362,6 +384,11 @@ class Compressor:
     def fwd_cache_bytes(self) -> int:
         """Resident bytes of the forward cache (0 if disabled)."""
         return self._fwd_cache_bytes
+
+    @property
+    def id_cache_bytes(self) -> int:
+        """Resident bytes of the int-keyed reverse cache (0 if disabled)."""
+        return self._id_cache_bytes
 
     def __enter__(self) -> 'Compressor':
         return self.open()
@@ -576,8 +603,13 @@ class Compressor:
         # Accumulate token bytes in a list — concatenated at the end. Tokens
         # already arrive as bytes from the cache / LMDB; no str round-trip.
         out_parts: list[bytes] = []
-        if self._rev_cache is not None:
-            # Cache-only fast path — no LMDB transaction needed at all.
+        if self._id_to_surface is not None:
+            # Fast path (decode-spec-v02): int-keyed cache, zero bytes
+            # allocation per token.
+            _consume_stream_binary_int(stream, out_parts, self._id_to_surface)
+        elif self._rev_cache is not None:
+            # bytes-keyed cache (decode-spec-v01): no LMDB GET, but pays a
+            # small bytes-construction cost per token.
             _consume_stream_binary(stream, out_parts, self._rev_cache, None, None)
         else:
             with self._env.begin() as txn:
@@ -792,6 +824,154 @@ def _read_id_from_binary(stream: bytes, i: int) -> tuple[bytes, int]:
             cb[stream[i + 3]],
         )), i + 4
     raise ValueError(f"unexpected ID tag byte 0x{tag:02X} at offset {i}")
+
+
+def _build_int_keyed_cache(
+    entries: list[tuple[bytes, bytes]],
+) -> dict[int, bytes]:
+    """Convert (LMDB key bytes -> surface bytes) entries into an int-keyed
+    cache.
+
+    The integer key is the raw STREAM byte pattern of the token, packed
+    little-end-first. Because the tag bits in the high byte differentiate
+    tier ranges, the four tiers occupy disjoint integer regions:
+
+        Tier 0 (1B)   0x00 .. 0x3F
+        Tier 1 (2B)   0x4000 .. 0x7FFF
+        Tier 2 (3B)   0x800000 .. 0xBFFFFF
+        Tier 3 (4B)   0xC000_0000 .. 0xFDFF_FFFF
+
+    The LMDB key is the Base64 ID *string* (e.g. b'T', b'gB'). Each char
+    corresponds to a 6-bit Base64 index that we recover via BASE64_INDEX.
+    """
+    out: dict[int, bytes] = {}
+    bi = BASE64_INDEX     # local alias
+    for k, v in entries:
+        n = len(k)
+        if n == 1:
+            # Tier 0: stream byte IS the Base64 index (0-63).
+            int_key = bi[chr(k[0])]
+        elif n == 2:
+            c1 = bi[chr(k[0])]
+            c2 = bi[chr(k[1])]
+            # Tier 1: byte0 = 0x40 | c1, byte1 = c2.
+            int_key = ((0x40 | c1) << 8) | c2
+        elif n == 3:
+            c1 = bi[chr(k[0])]
+            c2 = bi[chr(k[1])]
+            c3 = bi[chr(k[2])]
+            # Tier 2: byte0 = 0x80 | c1.
+            int_key = ((0x80 | c1) << 16) | (c2 << 8) | c3
+        elif n == 4:
+            c1 = bi[chr(k[0])]
+            c2 = bi[chr(k[1])]
+            c3 = bi[chr(k[2])]
+            c4 = bi[chr(k[3])]
+            # Tier 3: byte0 = 0xC0 | c1.
+            int_key = ((0xC0 | c1) << 24) | (c2 << 16) | (c3 << 8) | c4
+        else:
+            raise ValueError(
+                f"unexpected ID length {n} in reverse dictionary: {k!r}"
+            )
+        out[int_key] = v
+    return out
+
+
+def _consume_stream_binary_int(
+    stream: bytes,
+    out_parts: list[bytes],
+    id_to_surface: dict[int, bytes],
+) -> None:
+    """Decode the binary stream using the int-keyed reverse cache.
+
+    Hot path is allocation-free: no bytes objects constructed for token
+    IDs, no string-class lookups, just integer arithmetic + a single
+    dict GET per token. Cap-prefix and OOV branches keep the existing
+    str-decode behavior because they're rare.
+
+    Pure-Python micro-optimizations applied:
+        - Method references bound to locals (``id_to_surface.__getitem__``
+          and ``out_parts.append``) — saves one attribute lookup per token.
+        - Tag-range constants hoisted to locals (CPython resolves locals
+          faster than module-level names).
+        - Tier 0 (most common in English text) is the first branch.
+
+    Produces byte-identical output to ``_consume_stream_binary`` when
+    given the same input. Verified by ``test_decoder_cache``.
+    """
+    n = len(stream)
+    i = 0
+    # Local aliases — CPython resolves locals (LOAD_FAST) faster than globals.
+    get   = id_to_surface.__getitem__
+    push  = out_parts.append
+    _T1   = TAG_T1
+    _T2   = TAG_T2
+    _T3   = TAG_T3
+    _CAP  = TAG_CAP
+    _OOV  = TAG_OOV
+    _enc  = STREAM_ENCODING
+    while i < n:
+        tag = stream[i]
+        # Tier 0 — single-byte ID. Most common case in English text; first.
+        if tag < _T1:
+            push(get(tag))
+            i += 1
+            continue
+        # Tier 1 — 2 bytes.
+        if tag < _T2:
+            push(get((tag << 8) | stream[i + 1]))
+            i += 2
+            continue
+        # Tier 2 — 3 bytes.
+        if tag < _T3:
+            push(get(
+                (tag << 16) | (stream[i + 1] << 8) | stream[i + 2]
+            ))
+            i += 3
+            continue
+        # Tier 3 — 4 bytes.
+        if tag < _CAP:
+            push(get(
+                (tag << 24) | (stream[i + 1] << 16)
+                | (stream[i + 2] << 8) | stream[i + 3]
+            ))
+            i += 4
+            continue
+        # Cap-prefix slow path (rare): construct the int ID then look up.
+        if tag == _CAP:
+            cap_len = stream[i + 1]
+            cap = stream[i + 2:i + 2 + cap_len].decode(_enc)
+            i += 2 + cap_len
+            tag2 = stream[i]
+            if tag2 < _T1:
+                int_id = tag2
+                i += 1
+            elif tag2 < _T2:
+                int_id = (tag2 << 8) | stream[i + 1]
+                i += 2
+            elif tag2 < _T3:
+                int_id = (tag2 << 16) | (stream[i + 1] << 8) | stream[i + 2]
+                i += 3
+            else:
+                int_id = (
+                    (tag2 << 24) | (stream[i + 1] << 16)
+                    | (stream[i + 2] << 8) | stream[i + 3]
+                )
+                i += 4
+            decoded = decode_caps(get(int_id).decode(_enc), cap)
+            push(decoded.encode(_enc))
+            continue
+        # OOV slow path.
+        if tag == _OOV:
+            cap_len = stream[i + 1]
+            cap = stream[i + 2:i + 2 + cap_len].decode(_enc)
+            j = i + 2 + cap_len
+            body_len = stream[j] | (stream[j + 1] << 8)
+            body = stream[j + 2:j + 2 + body_len].decode(_enc)
+            push(decode_caps(body, cap).encode(_enc))
+            i = j + 2 + body_len
+            continue
+        raise ValueError(f"unexpected ID tag byte 0x{tag:02X} at offset {i}")
 
 
 def _classify_bytes_token(b: bytes) -> str:

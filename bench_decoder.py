@@ -116,6 +116,7 @@ def bench_compressor(
     preload_fwd_cache: bool,
     payloads: list[tuple[str, str, bytes]],   # (name, ext, src)
     warmup_payload: Optional[bytes] = None,
+    preload_int_cache: bool = False,
 ) -> dict:
     """
     Open a Compressor with the given cache settings, run all payloads,
@@ -123,13 +124,15 @@ def bench_compressor(
     """
     print(f'\n--- {label} '
           f'(preload_rev_cache={preload_rev_cache}, '
-          f'preload_fwd_cache={preload_fwd_cache}) ---')
+          f'preload_fwd_cache={preload_fwd_cache}, '
+          f'preload_int_cache={preload_int_cache}) ---')
 
     gc.collect()
 
     c = Compressor(
         preload_rev_cache=preload_rev_cache,
         preload_fwd_cache=preload_fwd_cache,
+        preload_int_cache=preload_int_cache,
     )
     # init_ms is captured automatically inside Compressor.open()
     c.open()
@@ -139,6 +142,7 @@ def bench_compressor(
         'init_ms':          c.init_ms,
         'rev_cache_bytes':  c.rev_cache_bytes,
         'fwd_cache_bytes':  c.fwd_cache_bytes,
+        'id_cache_bytes':   c.id_cache_bytes,
         'per_payload':      [],
         'totals': {
             'src_bytes':      0,
@@ -151,6 +155,7 @@ def bench_compressor(
     print(f'  init_ms:          {c.init_ms:>8.1f}')
     print(f'  rev_cache_bytes:  {c.rev_cache_bytes:>10,}')
     print(f'  fwd_cache_bytes:  {c.fwd_cache_bytes:>10,}')
+    print(f'  id_cache_bytes:   {c.id_cache_bytes:>10,}')
 
     # Warmup: encode/decode a small payload to pay any JIT/cache costs
     # that aren't fundamental to the per-payload work.
@@ -210,9 +215,8 @@ def bench_compressor(
 # Comparison + reporting
 # ---------------------------------------------------------------------------
 
-def print_comparison(uncached: dict, cached: dict) -> None:
-    u, ca = uncached['summary'], cached['summary']
-
+def print_comparison(*configs: dict) -> None:
+    """Print a side-by-side table of N configurations."""
     def pct_delta(after: float, before: float) -> str:
         if before == 0:
             return 'n/a'
@@ -220,38 +224,45 @@ def print_comparison(uncached: dict, cached: dict) -> None:
         sign = '+' if d >= 0 else ''
         return f'{sign}{d:.1f}%'
 
-    print()
-    print('=' * 72)
-    print('BEFORE / AFTER SUMMARY')
-    print('=' * 72)
-    print(f'  {"metric":<26} {"UNCACHED":>12} {"CACHED":>12} {"delta":>10}')
-    print(f'  {"-"*26} {"-"*12} {"-"*12} {"-"*10}')
-    print(f'  {"decode_MBps":<26} '
-          f'{u["decode_MBps"]:>12.2f} {ca["decode_MBps"]:>12.2f} '
-          f'{pct_delta(ca["decode_MBps"], u["decode_MBps"]):>10}')
-    print(f'  {"encode_MBps":<26} '
-          f'{u["encode_MBps"]:>12.2f} {ca["encode_MBps"]:>12.2f} '
-          f'{pct_delta(ca["encode_MBps"], u["encode_MBps"]):>10}')
-    print(f'  {"compression_ratio":<26} '
-          f'{u["compression_ratio"]:>12.3f} {ca["compression_ratio"]:>12.3f} '
-          f'{"(unchanged)":>10}')
-    print(f'  {"round_trip":<26} '
-          f'{u["round_trip"]:>12} {ca["round_trip"]:>12} {"":>10}')
-    print(f'  {"init_ms":<26} '
-          f'{uncached["init_ms"]:>12.1f} {cached["init_ms"]:>12.1f} {"":>10}')
-    print(f'  {"rev_cache_bytes":<26} '
-          f'{uncached["rev_cache_bytes"]:>12,} {cached["rev_cache_bytes"]:>12,} '
-          f'{"":>10}')
-    print(f'  {"fwd_cache_bytes":<26} '
-          f'{uncached["fwd_cache_bytes"]:>12,} {cached["fwd_cache_bytes"]:>12,} '
-          f'{"":>10}')
+    labels   = [c['label'].split()[0] for c in configs]
+    summary  = [c['summary'] for c in configs]
+    init_ms  = [c['init_ms']  for c in configs]
+    rev_b    = [c['rev_cache_bytes'] for c in configs]
+    fwd_b    = [c['fwd_cache_bytes'] for c in configs]
+    id_b     = [c.get('id_cache_bytes', 0) for c in configs]
 
-    speedup_decode = ca['decode_MBps'] / max(u['decode_MBps'], 1e-9)
-    speedup_encode = ca['encode_MBps'] / max(u['encode_MBps'], 1e-9)
     print()
-    print(f'  decode speedup: {speedup_decode:.2f}x  '
-          f'(headline number per the spec)')
-    print(f'  encode speedup: {speedup_encode:.2f}x  (symmetric — fwd_cache)')
+    print('=' * 78)
+    print('BEFORE / AFTER SUMMARY')
+    print('=' * 78)
+    header = f'  {"metric":<22}' + ''.join(f'{lbl:>14}' for lbl in labels)
+    print(header)
+    print(f'  {"-"*22}' + ''.join(' ' + '-' * 13 for _ in labels))
+
+    def row(name: str, values: list, fmt: str = '{:>14.2f}') -> str:
+        return f'  {name:<22}' + ''.join(fmt.format(v) for v in values)
+
+    print(row('decode_MBps',      [s['decode_MBps']      for s in summary]))
+    print(row('encode_MBps',      [s['encode_MBps']      for s in summary]))
+    print(row('compression_ratio',[s['compression_ratio'] for s in summary],
+              fmt='{:>14.3f}'))
+    rt_strs = [s['round_trip'] for s in summary]
+    print(f'  {"round_trip":<22}' + ''.join(f'{v:>14}' for v in rt_strs))
+    print(row('init_ms',          init_ms,    fmt='{:>14.1f}'))
+    print(f'  {"rev_cache_bytes":<22}' + ''.join(f'{v:>14,}' for v in rev_b))
+    print(f'  {"fwd_cache_bytes":<22}' + ''.join(f'{v:>14,}' for v in fwd_b))
+    print(f'  {"id_cache_bytes":<22}' + ''.join(f'{v:>14,}' for v in id_b))
+
+    # Speedup ladder vs the leftmost (assumed baseline)
+    base = summary[0]
+    print()
+    for c, s in zip(configs[1:], summary[1:]):
+        lbl = c['label'].split()[0]
+        sd = s['decode_MBps'] / max(base['decode_MBps'], 1e-9)
+        se = s['encode_MBps'] / max(base['encode_MBps'], 1e-9)
+        dd = pct_delta(s['decode_MBps'], base['decode_MBps'])
+        de = pct_delta(s['encode_MBps'], base['encode_MBps'])
+        print(f'  {lbl:<22}  decode {sd:.2f}x ({dd})   encode {se:.2f}x ({de})')
 
 
 # ---------------------------------------------------------------------------
@@ -326,25 +337,37 @@ def main(argv: list[str] | None = None) -> int:
     # Warmup target: smallest payload, to absorb first-call overhead
     warmup = min(payloads, key=lambda p: len(p[2]))[2]
 
-    # --- Run UNCACHED ---
+    # --- Run UNCACHED (LMDB per token) ---
     uncached_metrics = bench_compressor(
-        label='UNCACHED  (preload off — txn.get per token)',
+        label='UNCACHED   (preload off — txn.get per token)',
         preload_rev_cache=False,
         preload_fwd_cache=False,
+        preload_int_cache=False,
         payloads=repeated_payloads,
         warmup_payload=warmup,
     )
 
-    # --- Run CACHED ---
-    cached_metrics = bench_compressor(
-        label='CACHED    (preload on — in-memory dict.get per token)',
+    # --- Run BYTES-CACHED (decode-spec-v01) ---
+    bytes_cached_metrics = bench_compressor(
+        label='BYTES-CACHE  (decode-spec-v01 — dict[bytes,bytes].get)',
         preload_rev_cache=True,
         preload_fwd_cache=True,
+        preload_int_cache=False,
         payloads=repeated_payloads,
         warmup_payload=warmup,
     )
 
-    print_comparison(uncached_metrics, cached_metrics)
+    # --- Run INT-CACHED (decode-spec-v02) ---
+    int_cached_metrics = bench_compressor(
+        label='INT-CACHE   (decode-spec-v02 — dict[int,bytes][packed])',
+        preload_rev_cache=True,
+        preload_fwd_cache=True,
+        preload_int_cache=True,
+        payloads=repeated_payloads,
+        warmup_payload=warmup,
+    )
+
+    print_comparison(uncached_metrics, bytes_cached_metrics, int_cached_metrics)
 
     if args.out_json:
         out_path = Path(args.out_json)
@@ -352,14 +375,15 @@ def main(argv: list[str] | None = None) -> int:
         with open(out_path, 'w', encoding='utf-8') as f:
             json.dump(
                 {
-                    'uncached': uncached_metrics,
-                    'cached':   cached_metrics,
+                    'uncached':     uncached_metrics,
+                    'bytes_cache':  bytes_cached_metrics,
+                    'int_cache':    int_cached_metrics,
                 },
                 f, indent=2,
             )
         print(f'\nFull metrics written to: {out_path}')
 
-    return 0 if cached_metrics['summary']['round_trip'] == 'PASS' else 1
+    return 0 if int_cached_metrics['summary']['round_trip'] == 'PASS' else 1
 
 
 if __name__ == '__main__':

@@ -1,330 +1,499 @@
 {
   "uncached": {
-    "label": "UNCACHED  (preload off \u2014 txn.get per token)",
+    "label": "UNCACHED   (preload off \u2014 txn.get per token)",
     "init_ms": 0.0,
     "rev_cache_bytes": 0,
     "fwd_cache_bytes": 0,
+    "id_cache_bytes": 0,
     "per_payload": [
       {
         "name": "plain.txt",
         "src_bytes": 274,
         "encoded_bytes": 199,
-        "encode_seconds": 0.00023620000865776092,
-        "decode_seconds": 8.119999256450683e-05,
+        "encode_seconds": 0.00026790000265464187,
+        "decode_seconds": 9.529999806545675e-05,
         "compression_ratio": 1.3768844221105527,
         "round_trip": true,
-        "encode_MBps": 1.1600338270817294,
-        "decode_MBps": 3.374384545445976
+        "encode_MBps": 1.0227696800482,
+        "decode_MBps": 2.8751312231066706
       },
       {
         "name": "readme.md",
         "src_bytes": 451,
         "encoded_bytes": 463,
-        "encode_seconds": 0.012467400010791607,
-        "decode_seconds": 0.010220500000286847,
+        "encode_seconds": 0.012802699988242239,
+        "decode_seconds": 0.010547700003371574,
         "compression_ratio": 0.9740820734341252,
         "round_trip": true,
-        "encode_MBps": 0.03617434265441236,
-        "decode_MBps": 0.04412699965631254
+        "encode_MBps": 0.035226944348785025,
+        "decode_MBps": 0.042758136831331735
       },
       {
         "name": "config.json",
         "src_bytes": 410,
         "encoded_bytes": 487,
-        "encode_seconds": 0.007160399996791966,
-        "decode_seconds": 0.004722300000139512,
+        "encode_seconds": 0.007272899994859472,
+        "decode_seconds": 0.004684500003349967,
         "compression_ratio": 0.8418891170431212,
         "round_trip": true,
-        "encode_MBps": 0.05725937101051478,
-        "decode_MBps": 0.08682209939815075
+        "encode_MBps": 0.0563736611653935,
+        "decode_MBps": 0.08752268112003456
       },
       {
         "name": "contacts.csv",
         "src_bytes": 298,
         "encoded_bytes": 343,
-        "encode_seconds": 0.005206200003158301,
-        "decode_seconds": 0.004312099990784191,
+        "encode_seconds": 0.005437100000563078,
+        "decode_seconds": 0.00427289999788627,
         "compression_ratio": 0.8688046647230321,
         "round_trip": true,
-        "encode_MBps": 0.0572394452420615,
-        "decode_MBps": 0.06910785942739844
+        "encode_MBps": 0.05480862959466232,
+        "decode_MBps": 0.06974186153371609
       },
       {
         "name": "feed.xml",
         "src_bytes": 798,
         "encoded_bytes": 885,
-        "encode_seconds": 0.007077700007357635,
-        "decode_seconds": 0.004363399988505989,
+        "encode_seconds": 0.007489400013582781,
+        "decode_seconds": 0.00462409999454394,
         "compression_ratio": 0.9016949152542373,
         "round_trip": true,
-        "encode_MBps": 0.11274849162445962,
-        "decode_MBps": 0.18288490674750907
+        "encode_MBps": 0.10655059130941687,
+        "decode_MBps": 0.17257412273557554
       },
       {
         "name": "page.html",
         "src_bytes": 659,
         "encoded_bytes": 823,
-        "encode_seconds": 0.007150799996452406,
-        "decode_seconds": 0.004186399994068779,
+        "encode_seconds": 0.0074327000038465485,
+        "decode_seconds": 0.0045937000104459,
         "compression_ratio": 0.8007290400972054,
         "round_trip": true,
-        "encode_MBps": 0.09215752088254986,
-        "decode_MBps": 0.15741448522206672
+        "encode_MBps": 0.08866226265811297,
+        "decode_MBps": 0.14345734342718483
       },
       {
         "name": "service.yaml",
         "src_bytes": 537,
         "encoded_bytes": 628,
-        "encode_seconds": 0.0044679999991785735,
-        "decode_seconds": 0.0035868999984813854,
+        "encode_seconds": 0.004621300002327189,
+        "decode_seconds": 0.0036438999959500507,
         "compression_ratio": 0.8550955414012739,
         "round_trip": true,
-        "encode_MBps": 0.12018800360311674,
-        "decode_MBps": 0.14971145006199058
+        "encode_MBps": 0.11620106890476233,
+        "decode_MBps": 0.1473695767163861
       },
       {
         "name": "server.log",
         "src_bytes": 637,
         "encoded_bytes": 641,
-        "encode_seconds": 0.00502559999586083,
-        "decode_seconds": 0.002344499996979721,
+        "encode_seconds": 0.005742699999245815,
+        "decode_seconds": 0.002425400001811795,
         "compression_ratio": 0.9937597503900156,
         "round_trip": true,
-        "encode_MBps": 0.12675103480671843,
-        "decode_MBps": 0.27169972310539947
+        "encode_MBps": 0.11092343324283992,
+        "decode_MBps": 0.262637090592956
       },
       {
         "name": "episode.srt",
         "src_bytes": 401,
         "encoded_bytes": 357,
-        "encode_seconds": 0.004083799998625182,
-        "decode_seconds": 0.0018268999992869794,
+        "encode_seconds": 0.004004400005214848,
+        "decode_seconds": 0.0018764999986160547,
         "compression_ratio": 1.123249299719888,
         "round_trip": true,
-        "encode_MBps": 0.09819285962461369,
-        "decode_MBps": 0.21949750952789218
+        "encode_MBps": 0.10013984603880381,
+        "decode_MBps": 0.2136957102561914
       },
       {
         "name": "episode.vtt",
         "src_bytes": 298,
         "encoded_bytes": 333,
-        "encode_seconds": 0.0012743999977828935,
-        "decode_seconds": 0.0004693999944720417,
+        "encode_seconds": 0.0012661000073421746,
+        "decode_seconds": 0.0004481999931158498,
         "compression_ratio": 0.8948948948948949,
         "round_trip": true,
-        "encode_MBps": 0.23383553085250963,
-        "decode_MBps": 0.6348530113111226
+        "encode_MBps": 0.2353684529435935,
+        "decode_MBps": 0.6648817594313831
       },
       {
         "name": "times_now",
         "src_bytes": 2491529,
         "encoded_bytes": 1250193,
-        "encode_seconds": 1.4902231999876676,
-        "decode_seconds": 0.38023330000578426,
+        "encode_seconds": 1.6238764000008814,
+        "decode_seconds": 0.4234553000133019,
         "compression_ratio": 1.9929154938477498,
         "round_trip": true,
-        "encode_MBps": 1.6719166632358284,
-        "decode_MBps": 6.552632291706428
+        "encode_MBps": 1.5343095077917552,
+        "decode_MBps": 5.883806389769438
       },
       {
         "name": "jocko",
         "src_bytes": 1076554,
         "encoded_bytes": 532959,
-        "encode_seconds": 0.8056971000041813,
-        "decode_seconds": 0.14540570000826847,
+        "encode_seconds": 0.864546299999347,
+        "decode_seconds": 0.15999999998894054,
         "compression_ratio": 2.019956506973332,
         "round_trip": true,
-        "encode_MBps": 1.336177081926214,
-        "decode_MBps": 7.403795036499821
+        "encode_MBps": 1.2452242291717786,
+        "decode_MBps": 6.728462500465082
       },
       {
         "name": "julian",
         "src_bytes": 817549,
         "encoded_bytes": 414089,
-        "encode_seconds": 0.5736525999964215,
-        "decode_seconds": 0.10617729999648873,
+        "encode_seconds": 0.6129587999894284,
+        "decode_seconds": 0.116687700006878,
         "compression_ratio": 1.9743316050414284,
         "round_trip": true,
-        "encode_MBps": 1.4251639406935486,
-        "decode_MBps": 7.699847331087118
+        "encode_MBps": 1.3337747985902153,
+        "decode_MBps": 7.006299720980109
       }
     ],
     "totals": {
       "src_bytes": 4390395,
       "encoded_bytes": 2202400,
-      "encode_seconds": 2.9237234000029275,
-      "decode_seconds": 0.6679298999661114,
+      "encode_seconds": 3.1577187000075355,
+      "decode_seconds": 0.7373552000062773,
       "round_trip_pass": true
     },
     "summary": {
-      "encode_MBps": 1.5016451282619976,
-      "decode_MBps": 6.573137390948892,
+      "encode_MBps": 1.3903692561308654,
+      "decode_MBps": 5.954247016855137,
       "compression_ratio": 1.9934594079186343,
       "round_trip": "PASS",
       "total_src_MB": 4.390395,
       "total_encoded_MB": 2.2024
     }
   },
-  "cached": {
-    "label": "CACHED    (preload on \u2014 in-memory dict.get per token)",
-    "init_ms": 453.00000000861473,
+  "bytes_cache": {
+    "label": "BYTES-CACHE  (decode-spec-v01 \u2014 dict[bytes,bytes].get)",
+    "init_ms": 578.9999999979045,
     "rev_cache_bytes": 5280227,
     "fwd_cache_bytes": 5280227,
+    "id_cache_bytes": 0,
+    "per_payload": [
+      {
+        "name": "plain.txt",
+        "src_bytes": 274,
+        "encoded_bytes": 199,
+        "encode_seconds": 0.0001613000058569014,
+        "decode_seconds": 4.6999994083307683e-05,
+        "compression_ratio": 1.3768844221105527,
+        "round_trip": true,
+        "encode_MBps": 1.6986980164345518,
+        "decode_MBps": 5.829787967937483
+      },
+      {
+        "name": "readme.md",
+        "src_bytes": 451,
+        "encoded_bytes": 463,
+        "encode_seconds": 0.0002452000044286251,
+        "decode_seconds": 0.00010710000060498714,
+        "compression_ratio": 0.9740820734341252,
+        "round_trip": true,
+        "encode_MBps": 1.8393148118040956,
+        "decode_MBps": 4.211017716642282
+      },
+      {
+        "name": "config.json",
+        "src_bytes": 410,
+        "encoded_bytes": 487,
+        "encode_seconds": 0.00018889999773819,
+        "decode_seconds": 0.00010540000221226364,
+        "compression_ratio": 0.8418891170431212,
+        "round_trip": true,
+        "encode_MBps": 2.1704605871316542,
+        "decode_MBps": 3.8899429923569313
+      },
+      {
+        "name": "contacts.csv",
+        "src_bytes": 298,
+        "encoded_bytes": 343,
+        "encode_seconds": 0.00015240001084748656,
+        "decode_seconds": 8.489999163430184e-05,
+        "compression_ratio": 0.8688046647230321,
+        "round_trip": true,
+        "encode_MBps": 1.9553804382482742,
+        "decode_MBps": 3.5100121244252294
+      },
+      {
+        "name": "feed.xml",
+        "src_bytes": 798,
+        "encoded_bytes": 885,
+        "encode_seconds": 0.00036920000275131315,
+        "decode_seconds": 0.00016909999249037355,
+        "compression_ratio": 0.9016949152542373,
+        "round_trip": true,
+        "encode_MBps": 2.1614301030694176,
+        "decode_MBps": 4.719101333167878
+      },
+      {
+        "name": "page.html",
+        "src_bytes": 659,
+        "encoded_bytes": 823,
+        "encode_seconds": 0.00032800000917632133,
+        "decode_seconds": 0.00014449999434873462,
+        "compression_ratio": 0.8007290400972054,
+        "round_trip": true,
+        "encode_MBps": 2.009146285254354,
+        "decode_MBps": 4.5605538115771616
+      },
+      {
+        "name": "service.yaml",
+        "src_bytes": 537,
+        "encoded_bytes": 628,
+        "encode_seconds": 0.0003588999970816076,
+        "decode_seconds": 0.000328500012983568,
+        "compression_ratio": 0.8550955414012739,
+        "round_trip": true,
+        "encode_MBps": 1.496238518714436,
+        "decode_MBps": 1.6347031317373537
+      },
+      {
+        "name": "server.log",
+        "src_bytes": 637,
+        "encoded_bytes": 641,
+        "encode_seconds": 0.0004518000059761107,
+        "decode_seconds": 0.00015259999781847,
+        "compression_ratio": 0.9937597503900156,
+        "round_trip": true,
+        "encode_MBps": 1.4099158733381731,
+        "decode_MBps": 4.174311986280386
+      },
+      {
+        "name": "episode.srt",
+        "src_bytes": 401,
+        "encoded_bytes": 357,
+        "encode_seconds": 0.00026050000451505184,
+        "decode_seconds": 9.079999290406704e-05,
+        "compression_ratio": 1.123249299719888,
+        "round_trip": true,
+        "encode_MBps": 1.5393473821488166,
+        "decode_MBps": 4.41629990460097
+      },
+      {
+        "name": "episode.vtt",
+        "src_bytes": 298,
+        "encoded_bytes": 333,
+        "encode_seconds": 0.00016619999951217324,
+        "decode_seconds": 5.839999357704073e-05,
+        "compression_ratio": 0.8948948948948949,
+        "round_trip": true,
+        "encode_MBps": 1.7930204625432211,
+        "decode_MBps": 5.102740287237894
+      },
+      {
+        "name": "times_now",
+        "src_bytes": 2491529,
+        "encoded_bytes": 1250193,
+        "encode_seconds": 1.3619144999975106,
+        "decode_seconds": 0.28415349998977035,
+        "compression_ratio": 1.9929154938477498,
+        "round_trip": true,
+        "encode_MBps": 1.8294312895593332,
+        "decode_MBps": 8.768250259418576
+      },
+      {
+        "name": "jocko",
+        "src_bytes": 1076554,
+        "encoded_bytes": 532959,
+        "encode_seconds": 0.7875887999980478,
+        "decode_seconds": 0.10772869999345858,
+        "compression_ratio": 2.019956506973332,
+        "round_trip": true,
+        "encode_MBps": 1.3668985643303568,
+        "decode_MBps": 9.993195871345053
+      },
+      {
+        "name": "julian",
+        "src_bytes": 817549,
+        "encoded_bytes": 414089,
+        "encode_seconds": 0.578768499995931,
+        "decode_seconds": 0.0891330000013113,
+        "compression_ratio": 1.9743316050414284,
+        "round_trip": true,
+        "encode_MBps": 1.4125665097629667,
+        "decode_MBps": 9.172236994019862
+      }
+    ],
+    "totals": {
+      "src_bytes": 4390395,
+      "encoded_bytes": 2202400,
+      "encode_seconds": 2.730954200029373,
+      "decode_seconds": 0.48230349995719735,
+      "round_trip_pass": true
+    },
+    "summary": {
+      "encode_MBps": 1.6076413877438072,
+      "decode_MBps": 9.102971470017595,
+      "compression_ratio": 1.9934594079186343,
+      "round_trip": "PASS",
+      "total_src_MB": 4.390395,
+      "total_encoded_MB": 2.2024
+    }
+  },
+  "int_cache": {
+    "label": "INT-CACHE   (decode-spec-v02 \u2014 dict[int,bytes][packed])",
+    "init_ms": 639.9999999994179,
+    "rev_cache_bytes": 5280227,
+    "fwd_cache_bytes": 5280227,
+    "id_cache_bytes": 6860538,
     "per_payload": [
       {
         "name": "plain.txt",
         "src_bytes": 274,
         "encoded_bytes": 199,
         "encode_seconds": 0.00016260000120382756,
-        "decode_seconds": 4.839999019168317e-05,
+        "decode_seconds": 4.369999805931002e-05,
         "compression_ratio": 1.3768844221105527,
         "round_trip": true,
         "encode_MBps": 1.6851168386925577,
-        "decode_MBps": 5.661158172033739
+        "decode_MBps": 6.270023161743047
       },
       {
         "name": "readme.md",
         "src_bytes": 451,
         "encoded_bytes": 463,
-        "encode_seconds": 0.00024099998699966818,
-        "decode_seconds": 0.0001053000014508143,
+        "encode_seconds": 0.00028509998810477555,
+        "decode_seconds": 0.0001201999984914437,
         "compression_ratio": 0.9740820734341252,
         "round_trip": true,
-        "encode_MBps": 1.8713693955536228,
-        "decode_MBps": 4.2830008906568
+        "encode_MBps": 1.5819011533394223,
+        "decode_MBps": 3.752079913978567
       },
       {
         "name": "config.json",
         "src_bytes": 410,
         "encoded_bytes": 487,
-        "encode_seconds": 0.00018540000019129366,
-        "decode_seconds": 9.020000288728625e-05,
+        "encode_seconds": 0.00019869999960064888,
+        "decode_seconds": 9.250000584870577e-05,
         "compression_ratio": 0.8418891170431212,
         "round_trip": true,
-        "encode_MBps": 2.2114347334248468,
-        "decode_MBps": 4.545454399955345
+        "encode_MBps": 2.0634121833116557,
+        "decode_MBps": 4.432432152173065
       },
       {
         "name": "contacts.csv",
         "src_bytes": 298,
         "encoded_bytes": 343,
-        "encode_seconds": 0.0001480999926570803,
-        "decode_seconds": 8.140000863932073e-05,
+        "encode_seconds": 0.00015350000467151403,
+        "decode_seconds": 7.739999273326248e-05,
         "compression_ratio": 0.8688046647230321,
         "round_trip": true,
-        "encode_MBps": 2.012154049798012,
-        "decode_MBps": 3.660933272383579
+        "encode_MBps": 1.9413680190936289,
+        "decode_MBps": 3.850129560437738
       },
       {
         "name": "feed.xml",
         "src_bytes": 798,
         "encoded_bytes": 885,
-        "encode_seconds": 0.00036139998701401055,
-        "decode_seconds": 0.00016170000890269876,
+        "encode_seconds": 0.00036619999445974827,
+        "decode_seconds": 0.00015279999934136868,
         "compression_ratio": 0.9016949152542373,
         "round_trip": true,
-        "encode_MBps": 2.2080797694358067,
-        "decode_MBps": 4.935064663355633
+        "encode_MBps": 2.1791371165291324,
+        "decode_MBps": 5.222513111516432
       },
       {
         "name": "page.html",
         "src_bytes": 659,
         "encoded_bytes": 823,
-        "encode_seconds": 0.00031740000122226775,
-        "decode_seconds": 0.00014210000517778099,
+        "encode_seconds": 0.00032390000706072897,
+        "decode_seconds": 0.0001255999959539622,
         "compression_ratio": 0.8007290400972054,
         "round_trip": true,
-        "encode_MBps": 2.0762444784570677,
-        "decode_MBps": 4.63757900061669
+        "encode_MBps": 2.0345785292818537,
+        "decode_MBps": 5.2468154556434214
       },
       {
         "name": "service.yaml",
         "src_bytes": 537,
         "encoded_bytes": 628,
-        "encode_seconds": 0.00019079999765381217,
-        "decode_seconds": 9.119999594986439e-05,
+        "encode_seconds": 0.00019839999731630087,
+        "decode_seconds": 8.850000449456275e-05,
         "compression_ratio": 0.8550955414012739,
         "round_trip": true,
-        "encode_MBps": 2.8144654434133365,
-        "decode_MBps": 5.8881581562263055
+        "encode_MBps": 2.7066532624185635,
+        "decode_MBps": 6.067796302010269
       },
       {
         "name": "server.log",
         "src_bytes": 637,
         "encoded_bytes": 641,
-        "encode_seconds": 0.00033209999673999846,
-        "decode_seconds": 0.00012480000441428274,
+        "encode_seconds": 0.0003446999908192083,
+        "decode_seconds": 0.00011530000483617187,
         "compression_ratio": 0.9937597503900156,
         "round_trip": true,
-        "encode_MBps": 1.9180969775760286,
-        "decode_MBps": 5.104166486127933
+        "encode_MBps": 1.8479838032084548,
+        "decode_MBps": 5.524717894896052
       },
       {
         "name": "episode.srt",
         "src_bytes": 401,
         "encoded_bytes": 357,
-        "encode_seconds": 0.0002297999890288338,
-        "decode_seconds": 8.150000940077007e-05,
+        "encode_seconds": 0.00023809999402146786,
+        "decode_seconds": 7.350000669248402e-05,
         "compression_ratio": 1.123249299719888,
         "round_trip": true,
-        "encode_MBps": 1.7449957316999052,
-        "decode_MBps": 4.920244831238155
+        "encode_MBps": 1.68416635896196,
+        "decode_MBps": 5.455781816153297
       },
       {
         "name": "episode.vtt",
         "src_bytes": 298,
         "encoded_bytes": 333,
-        "encode_seconds": 0.00015959999291226268,
-        "decode_seconds": 5.5800002883188426e-05,
+        "encode_seconds": 0.00016260000120382756,
+        "decode_seconds": 4.959999932907522e-05,
         "compression_ratio": 0.8948948948948949,
         "round_trip": true,
-        "encode_MBps": 1.8671680027192754,
-        "decode_MBps": 5.340501516170749
+        "encode_MBps": 1.8327183136145337,
+        "decode_MBps": 6.008064597398376
       },
       {
         "name": "times_now",
         "src_bytes": 2491529,
         "encoded_bytes": 1250193,
-        "encode_seconds": 1.2778396000067005,
-        "decode_seconds": 0.2507820000028005,
+        "encode_seconds": 1.3824669999885373,
+        "decode_seconds": 0.259591800000635,
         "compression_ratio": 1.9929154938477498,
         "round_trip": true,
-        "encode_MBps": 1.9497979245493215,
-        "decode_MBps": 9.935039197279616
+        "encode_MBps": 1.8022339773901717,
+        "decode_MBps": 9.597872505964771
       },
       {
         "name": "jocko",
         "src_bytes": 1076554,
         "encoded_bytes": 532959,
-        "encode_seconds": 0.7464211000042269,
-        "decode_seconds": 0.1007720000052359,
+        "encode_seconds": 0.7933634999935748,
+        "decode_seconds": 0.09844709999742918,
         "compression_ratio": 2.019956506973332,
         "round_trip": true,
-        "encode_MBps": 1.4422877381064168,
-        "decode_MBps": 10.683066724328826
+        "encode_MBps": 1.3569492420671214,
+        "decode_MBps": 10.935355130096397
       },
       {
         "name": "julian",
         "src_bytes": 817549,
         "encoded_bytes": 414089,
-        "encode_seconds": 0.5390123999968637,
-        "decode_seconds": 0.07273329999588896,
+        "encode_seconds": 0.575456699996721,
+        "decode_seconds": 0.07013930000539403,
         "compression_ratio": 1.9743316050414284,
         "round_trip": true,
-        "encode_MBps": 1.5167536034509725,
-        "decode_MBps": 11.240367205203253
+        "encode_MBps": 1.420695944637813,
+        "decode_MBps": 11.65607583675809
       }
     ],
     "totals": {
       "src_bytes": 4390395,
       "encoded_bytes": 2202400,
-      "encode_seconds": 2.565601299953414,
-      "decode_seconds": 0.42526970003382303,
+      "encode_seconds": 2.753720999957295,
+      "decode_seconds": 0.42911730000923853,
       "round_trip_pass": true
     },
     "summary": {
-      "encode_MBps": 1.7112538102002521,
-      "decode_MBps": 10.323789820085508,
+      "encode_MBps": 1.594349972298605,
+      "decode_MBps": 10.231223490419703,
       "compression_ratio": 1.9934594079186343,
       "round_trip": "PASS",
       "total_src_MB": 4.390395,
