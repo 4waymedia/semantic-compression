@@ -48,7 +48,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, '.')
 
-from semantic_compression.config import (
+from config import (
     BASE64_CHARS, STREAM_ENCODING, STRUCTURAL_IDS, TIER_WORD_FIRST_CHARS, WORD_IDS,
 )
 
@@ -56,8 +56,8 @@ from semantic_compression.config import (
 FORMAT_VERSION_V03 = 3
 
 # Paths
-DATA_DIR        = Path('semantic_compression/data')
-DB_DIR          = Path('semantic_compression/db')
+DATA_DIR        = Path('data')
+DB_DIR          = Path('db')
 
 WORD_FREQ_FILE  = DATA_DIR / 'word_frequencies.txt'
 PHRASE_FILE     = DATA_DIR / 'phrase_candidates.txt'
@@ -295,7 +295,7 @@ def build(
     # Build the full integer-ranked list (Tier 0 entries get inserted at their
     # natural frequency positions among the rest).
     tier0_records: list[tuple[str, int, str, int]] = []
-    for char_id, token in tier0_map.items():
+    for token, char_id in tier0_map.items():
         tier0_records.append((token, word_freq.get(token, 0), 'tier0', 1))
 
     all_records: list[tuple[str, int, str, int]] = tier0_records + reserved_words + pool

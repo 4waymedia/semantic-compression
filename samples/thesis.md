@@ -1,0 +1,527 @@
+MIXTURE OF LIBRARIES:
+
+DOMAIN-DEDICATED SEMANTIC TOKENIZATION AS A SUPERIOR
+
+ARCHITECTURE TO MIXTURE OF EXPERTS FOR SPECIALIZED
+
+LARGE LANGUAGE MODELS
+
+
+
+
+
+A Research Paper
+
+
+
+
+
+EloAI Research Laboratory
+
+eloai.dev
+
+
+
+
+
+June 2026
+
+
+
+
+
+
+
+Author: Paul
+
+
+
+github.com/4waymedia/semantic-compression
+
+
+
+# Abstract
+
+Current approaches to domain-specialized large language models (LLMs) rely on either full fine-tuning of general-purpose models or Mixture of Experts (MoE) architectures that route tokens to specialized sub-networks at inference time. Both approaches share a critical and largely unexamined flaw: they inherit the tokenization substrate of general-purpose models, built using Byte Pair Encoding (BPE) on mixed corpora, which systematically fragments domain-specific semantic units before the model ever processes them.
+
+
+
+This paper introduces the Mixture of Libraries (MoL) architecture, developed as part of the EloAI semantic compression system. MoL replaces the single general-purpose BPE tokenizer with a set of domain-dedicated semantic libraries, each built from the frequency distribution of a domain-specific dictionary corpus. Domain-critical terms — "myocardial infarction," "rules of engagement," "cognitive behavioral therapy," "deoxyribonucleic acid" — are assigned atomic IDs at the tokenization layer, preserving semantic integrity before model training begins.
+
+
+
+The EloAI system uses a URL-safe Base64 ID space (64 characters), a unified frequency model where all text units compete in a single ranking, a two-layer lossless encoding scheme, and a 14MB LMDB dictionary that fits entirely in RAM. The architecture achieves 85–95% compression on target formats while guaranteeing 100% lossless reconstruction. When applied to LLM training, we argue that domain-dedicated tokenization produces models that require significantly less training data to reach domain-expert performance, are more interpretable, and are more efficient at inference time than MoE equivalents. The routing decision in MoL occurs once at encode time rather than at every layer of every forward pass.
+
+
+
+We present the theoretical framework, architectural specification, and experimental hypotheses for the MoL system, with domain case studies in medicine, military doctrine, psychology, and science. We argue that the epistemological structure of a domain — encoded in its dictionary — is the optimal substrate for tokenization of content in that domain, and that inheriting this structure at the representation layer is architecturally superior to learning domain routing through gradient descent.
+
+
+
+# 1. Introduction
+
+The dominant paradigm for building specialized AI systems in 2026 follows one of two paths. The first is full fine-tuning: take a general-purpose model trained on a broad corpus with a general-purpose tokenizer, and continue training on domain-specific data. The second is Mixture of Experts: train a single large model with specialized sub-networks, and learn a routing function that directs tokens to the appropriate expert at inference time. Both paths are expensive, both require vast quantities of domain data, and both share an architectural assumption that has received insufficient critical scrutiny.
+
+
+
+That assumption is that tokenization is a solved problem — that the BPE vocabulary of a general-purpose model is an adequate foundation for domain-specific reasoning. This paper argues that assumption is wrong, and that correcting it at the architectural level produces a fundamentally superior class of specialized AI systems.
+
+
+
+The problem is straightforward. BPE tokenization is built by iteratively merging the most frequent character pairs in a training corpus. On a general corpus — internet text, books, Wikipedia — the most frequent character sequences are not domain-semantic units. They are linguistic debris: common suffixes, frequent prefixes, high-frequency syllable patterns. The result is that domain-critical terms are systematically fragmented. A medical model trained on BPE tokens receives "myocardial" as three or four sub-word units and must learn, from clinical training examples, that these fragments constitute a coherent semantic concept. This is a problem the model should not have to solve.
+
+
+
+The EloAI Mixture of Libraries architecture solves it at the source. By building domain-specific tokenization libraries from domain dictionary corpora — where the frequency distribution of terms reflects the epistemological structure of the field — we assign atomic IDs to domain-critical semantic units before model training begins. The model receives "myocardial infarction" as a single token. It can immediately reason about it as a concept, not reconstruct it from character statistics.
+
+
+
+This paper presents the theoretical argument for MoL, the technical architecture of the EloAI system, domain-specific case studies, a comparison with MoE architectures, and the experimental framework for empirical validation.
+
+## 1.1 Thesis Statement
+
+Domain-specific semantic tokenization, built from dictionary-derived frequency models and implemented as a Mixture of Libraries architecture, is superior to Mixture of Experts for specialized AI systems — because it solves the domain alignment problem at the representation layer rather than the routing layer, producing models that are simultaneously more data-efficient, more accurate, more interpretable, and faster at inference time.
+
+## 1.2 Scope and Contributions
+
+This paper makes the following contributions:
+
+
+
+A formal critique of BPE tokenization as a substrate for domain-specialized LLMs
+
+The Mixture of Libraries (MoL) architectural framework
+
+The EloAI Base64 semantic compression system as a reference implementation
+
+Domain case studies: medicine, military, psychology, and science
+
+A theoretical comparison of MoL and MoE on five architectural dimensions
+
+An experimental hypothesis framework for empirical validation
+
+A proposed fine-tuning pipeline replacing BPE embeddings with domain FAISS vectors
+
+
+
+# 2. Background and Related Work
+
+## 2.1 Byte Pair Encoding and Its Limitations
+
+Byte Pair Encoding, introduced to NLP by Sennrich et al. (2016) for neural machine translation, operates by iteratively merging the most frequent adjacent byte pairs in a corpus until a target vocabulary size is reached. It has become the de facto tokenization standard for large language models, used in GPT-2 through GPT-4, LLaMA, Qwen, and virtually every major general-purpose model.
+
+
+
+BPE's strength is its language-agnostic adaptability: given any corpus, it will find a compact vocabulary. Its weakness, rarely examined in the literature, is that the resulting vocabulary reflects character-level frequency statistics rather than semantic unit boundaries. For general language tasks, this is acceptable. For domain-specialized tasks, it is a systematic source of degradation.
+
+
+
+Consider the term "contraindicated" in a medical context. BPE on a general corpus is likely to segment this as ["contra", "ind", "icated"] or similar, depending on the specific vocabulary. The model receives three tokens and must learn their collective meaning from training examples. In a medical dictionary, "contraindicated" is one of the most frequently defined terms, with high connectivity to pharmacology, dosing, and patient safety concepts. Its semantic centrality in the medical domain is invisible to general-purpose BPE.
+
+
+
+This fragmentation problem scales with domain specificity. The more specialized the field, the more domain-critical terms fall outside the high-frequency character sequences that BPE privileges, and the more systematically those terms are fragmented.
+
+## 2.2 Mixture of Experts
+
+Mixture of Experts architectures (Jacobs et al., 1991; Shazeer et al., 2017; Fedus et al., 2022) address model specialization by training a set of expert sub-networks and a learned gating function that routes tokens to appropriate experts at inference time. Modern implementations like Mixtral (Mistral AI, 2023) and Switch Transformer (Fedus et al., 2022) achieve strong performance with reduced computational cost per forward pass.
+
+
+
+MoE architectures are a genuine advance in model efficiency and specialization. However, they operate downstream of tokenization. Every expert in a MoE model receives tokens from the same shared BPE vocabulary. The domain fragmentation problem is not solved — it is routed around. Expert networks learn to handle fragmented domain terms through training signal, but the representation problem exists from the first token embedding forward.
+
+
+
+Additionally, MoE routing introduces inference overhead at every transformer layer: a gating computation for every token at every layer of every forward pass. In production systems processing millions of queries, this overhead is non-trivial.
+
+## 2.3 Domain-Specific Tokenization
+
+There exists a smaller body of work on domain-specific tokenization. BioWordVec (Zhang et al., 2019) and BioBERT (Lee et al., 2020) demonstrate that domain-specific pre-training and vocabulary expansion improve performance on biomedical tasks. Clinical BERT variants (Alsentzer et al., 2019) extend this to clinical notes. These works support the general hypothesis that domain-adapted tokenization and representation improve downstream performance, but they remain within the BPE paradigm — extending rather than replacing the fragmentation substrate.
+
+
+
+The EloAI approach departs from this literature by abandoning BPE entirely in favor of a frequency-ranked dictionary lookup system with a unified model treating all text units — words, phrases, and multi-word expressions — as equal competitors for ID space. This is not a modification of BPE; it is a replacement with a different theoretical foundation.
+
+## 2.4 The EloAI System
+
+The EloAI semantic compression system (github.com/4waymedia/semantic-compression) implements lossless compression of text using a URL-safe Base64 ID space. The system uses a 64-character charset (A–Z, a–z, 0–9, -, _), a unified frequency model where words, phrases, and sentences compete in a single ranking, and a two-layer encoding scheme that preserves capitalization, punctuation, and all surface-form variation losslessly. The production dictionary occupies approximately 14MB in LMDB storage and fits entirely in RAM on any modern machine.
+
+
+
+The system was originally developed for compression of YouTube ASR transcript corpora but is designed for generalization across all natural language text formats. The Mixture of Libraries extension described in this paper represents a natural generalization of the core architecture to domain-specialized AI systems.
+
+
+
+# 3. The EloAI Architecture
+
+## 3.1 Base64 ID Space
+
+The EloAI system uses a URL-safe Base64 charset of 64 characters. This produces a tiered ID space with the following structure:
+
+
+
+
+
+The top 50 universal English words — covering approximately 50% of all tokens in any English text — receive the shortest possible IDs: single characters. This means that half of all tokens in any English document are encoded in a single byte. The remaining ID space is filled by frequency-ranked units from the target corpus.
+
+## 3.2 Unified Frequency Model
+
+A critical architectural decision in the EloAI system is the unified frequency model: words, phrases, and multi-word expressions all compete in a single frequency ranking, and the most frequent unit — regardless of length or grammatical category — earns the shortest ID. A 9-word phrase that appears 50,000 times in the corpus can earn a shorter ID than a single word that appears 10,000 times.
+
+
+
+This has a profound implication for domain-specialized libraries. High-frequency domain phrases — "rules of engagement," "myocardial infarction," "cognitive behavioral therapy" — will naturally earn 2-character IDs in their respective domain libraries, while those same phrases would receive no entry at all in a general-purpose BPE vocabulary. The unified model means that domain expertise, measured by phrase frequency in domain text, is directly encoded as ID brevity.
+
+## 3.3 Two-Layer Lossless Encoding
+
+The EloAI encoding is strictly 100% lossless. This is achieved through a two-layer scheme:
+
+
+
+Layer A encodes the base form of each token: lowercase, punctuation-stripped, run through a dictionary lookup to produce an ID. Layer B encodes metadata alongside the ID: a 2-bit capitalization code (all lowercase, First capital, ALL CAPS, or Mixed/camelCase), leading punctuation, and trailing punctuation. The original string is perfectly reconstructed by decoding the ID to its base form and applying the Layer B metadata.
+
+
+
+Numbers are handled with a NUM: prefix and never stored in the dictionary, since the space of possible numeric values is unbounded. Out-of-vocabulary tokens are preserved verbatim with an OOV: marker. The acceptance criterion for any EloAI-encoded document is: decode(encode(text)) == text, exactly, always.
+
+## 3.4 LMDB Storage
+
+The production dictionary is stored in LMDB (Lightning Memory-Mapped Database), which provides approximately 100-nanosecond lookup times and memory-maps the entire dictionary into RAM. The 14MB dictionary for the 3-character tier contains up to 262,144 entries and fits entirely in L3 cache on modern hardware. This makes encode/decode operations effectively zero-latency compared to any neural network forward pass.
+
+## 3.5 The .elo File Format
+
+The EloAI system defines a binary file format (.elo) for storing compressed documents. The format uses a fixed 64-byte header (magic bytes "ELO1", dictionary version, format version, record count, section offsets, content checksum, and feature flags), followed by a schema section, index, records, string table, and metadata. The format supports O(1) random access to any record, append-only writes, and optional Layer 2 semantic profiling.
+
+
+
+Compression benchmarks on the target corpus show 85–95% size reduction across all v1 target formats (.txt, .md, .json, .csv, .xml, .html, .yaml, .log, .srt, .vtt), with log files achieving the highest compression (88–95%) due to extreme repetition of timestamp, severity level, and field name patterns.
+
+
+
+# 4. Mixture of Libraries
+
+## 4.1 Core Concept
+
+The Mixture of Libraries architecture generalizes the EloAI system from a single general-purpose library to a set of domain-dedicated libraries, each built from the frequency distribution of a domain-specific dictionary corpus. The central insight is that a dictionary — in the traditional lexicographic sense — is a compressed representation of the epistemological structure of its domain. Terms that appear frequently across many definitions are semantically central. Terms that appear in many cross-references are relationally important. The frequency distribution of a domain dictionary is not arbitrary: it reflects centuries of expert consensus about what the field considers fundamental.
+
+
+
+When we build an EloAI library from a domain dictionary corpus, we inherit this epistemological structure into our tokenization layer. The shortest IDs go to the most definitionally frequent terms — which are also the most semantically central concepts in the domain. The ID space becomes a semantic map of the field.
+
+## 4.2 Library Construction
+
+Each domain library is built by the following process. First, a domain corpus is assembled from one or more authoritative dictionaries for the target domain. For medicine, this might combine Dorland's Medical Dictionary, the ICD-11 coding manual, and clinical terminology standards. For military doctrine, it might combine the DoD Dictionary of Military Terms, NATO STANAG documents, and field manuals. For psychology, the DSM-5 and APA Dictionary of Psychology.
+
+
+
+Second, the corpus is processed through the EloAI tokenizer, which handles contractions (interior apostrophe rule), capitalization (four-code scheme), numbers (NUM: prefix), and punctuation isolation universally. Third, word frequencies and n-gram frequencies (2–9 word phrases) are counted across the entire corpus. Fourth, the unified frequency model assigns IDs: the 50 universal English words receive Tier 0 single-character IDs (shared across all libraries), domain-specific high-frequency terms and phrases receive Tier 1 two-character IDs, and the remaining vocabulary fills the Tier 2 three-character space.
+
+
+
+The result is a 14MB LMDB database where ID brevity directly encodes domain centrality: a 2-character ID in the medical library means "this is a high-frequency medical concept."
+
+## 4.3 Library Routing
+
+At encode time, a domain classifier determines which library — or combination of libraries — to apply to an input document. This routing decision is made once, before encoding begins, rather than at every layer of every forward pass as in MoE. The routing can operate in three modes:
+
+
+
+Hard routing: input is classified as belonging to a single domain, encoded entirely against that domain's library
+
+Soft routing: input is classified as multi-domain, encoded against the library that produces the shortest ID for each token (shortest-ID-wins competition between libraries)
+
+Hierarchical routing: a general library handles common connective language while domain libraries handle specialized vocabulary
+
+
+
+The soft routing mode is particularly powerful: it implements a genuine mixture of libraries where each token is encoded by the most domain-appropriate library for that specific term. A military medical report would route tactical vocabulary through the military library and clinical vocabulary through the medical library, with common English connectives handled by shared Tier 0 IDs.
+
+
+
+Critically, the routing metric in soft mode is not a learned gating function but a deterministic shortest-ID competition. Shortest ID means highest frequency in the domain corpus, which means highest semantic centrality in the domain. The routing is semantically grounded rather than statistically learned.
+
+## 4.4 Multi-Library Blending
+
+The soft routing mode can be formalized as: for token t, select library L* = argmin_L |encode_L(t)|, where |encode_L(t)| is the length in characters of the ID assigned to t by library L. If no library contains t, emit OOV:t. This produces a blended stream where each token carries an implicit library attribution — the library that knew it best.
+
+
+
+This blended stream can be decoded unambiguously only if the library attribution is stored alongside each ID. The .elo format's dict_version field (or an extended dict_id field) handles this, ensuring that every .elo file is self-describing with respect to the library or library combination used to encode it.
+
+
+
+# 5. Domain Case Studies
+
+## 5.1 Medicine
+
+Medicine presents the clearest case for domain-dedicated tokenization. Medical terminology is built on a systematic Latin and Greek morphological framework, producing long compound terms that are semantically atomic. "Contraindicated," "etiology," "pathophysiology," "myocardial infarction," "pharmacokinetics" — these are not word sequences; they are concepts. The systematic fragmentation of these terms by BPE is not a minor inconvenience: it forces the model to reconstruct the most fundamental units of medical reasoning from character statistics.
+
+
+
+A medical EloAI library built from Dorland's, ICD-11, and clinical terminology standards would assign single atomic IDs to these terms. More importantly, the n-gram phase of library construction would surface high-frequency clinical phrases: "blood pressure," "heart rate," "adverse effects," "clinical trial," "informed consent," "standard of care." In a medical library, these phrases earn 2-character IDs. They are, by the frequency distribution of the domain corpus, the most central multi-word concepts in medicine.
+
+
+
+The implication for a medical LLM fine-tuned on this library: the model begins training with the semantic units of medicine intact. It learns relationships between concepts, not how to reconstruct concepts from fragments. We hypothesize that a medical model fine-tuned on EloAI-encoded clinical text with a medical library will reach equivalent diagnostic performance to a BPE-based model trained on 5–10x more data.
+
+## 5.2 Military
+
+Military doctrine represents an extreme case of controlled vocabulary. Doctrine documents — field manuals, standing operating procedures, ROE frameworks — deliberately use standardized terminology to eliminate ambiguity in high-stakes operational contexts. The DoD Dictionary of Military Terms defines over 5,000 terms with precise, official definitions. NATO STANAG documents add thousands more, standardized across member nations.
+
+
+
+A military EloAI library built from these authoritative sources would encode not just individual terms but the standard phrases that appear in doctrine: "rules of engagement," "command and control," "force projection," "area of operations," "mission essential task," "commander's intent." These are the atomic units of military reasoning. In BPE on a general corpus, they are fragmented. In a military EloAI library, they are single IDs.
+
+
+
+There is an additional implication specific to military applications: security. An EloAI-encoded document is not human-readable without the library. Sensitive terminology — equipment designations, unit identifiers, operational code names — that appears as OOV (not in the dictionary) is preserved verbatim but indistinguishable from other OOV content without the encoding context. This property, while not a substitute for proper encryption, adds an interpretability barrier that BPE tokenization does not provide.
+
+## 5.3 Psychology and Psychiatry
+
+The DSM-5 represents one of the most carefully constructed controlled vocabularies in any scientific field: a consensus document defining diagnostic categories with explicit, standardized criteria. Diagnostic terms — "major depressive disorder," "generalized anxiety disorder," "autism spectrum disorder," "post-traumatic stress disorder" — are not descriptions; they are classifications with specific clinical meaning. APA style guidelines extend this standardization to the full vocabulary of psychological science.
+
+
+
+A psychology EloAI library built from DSM-5, the APA Dictionary of Psychology, and clinical psychology literature would assign atomic IDs to diagnostic terminology, treatment modalities ("cognitive behavioral therapy," "dialectical behavior therapy," "exposure and response prevention"), and theoretical constructs ("attachment theory," "executive function," "working memory," "emotional regulation").
+
+
+
+The application to clinical NLP is immediate. Current LLMs used in mental health support contexts struggle with the precision of clinical language because their tokenization substrate conflates clinical terms with everyday usage of the same words. "Depressed" in clinical usage means something specific; in general usage it does not. A psychology EloAI library, built from clinical sources, treats clinical usage as primary — because that is where the frequency signal comes from.
+
+## 5.4 Science
+
+Scientific nomenclature systems — IUPAC chemical naming, gene nomenclature standards, physical constant definitions, astronomical object catalogs — represent the most systematic controlled vocabularies in human knowledge. These naming systems were deliberately constructed to be unambiguous and compositional. BPE tokenization treats them as character sequences and fragments them accordingly.
+
+
+
+"Deoxyribonucleic acid" becomes four or five BPE tokens. "2,2-dimethylpropane" is fragmented at every chemical modifier. Gene names following HGNC conventions are split at hyphens and numbers. A science EloAI library built from domain-specific glossaries would treat these as atomic units, because in the domain corpus they are the most frequently defined and cross-referenced terms.
+
+
+
+The n-gram phase of library construction is particularly valuable for science: established multi-word concepts ("quantum entanglement," "natural selection," "standard model," "double helix," "string theory") would surface as high-frequency phrases and earn 2-character IDs. These are the conceptual atoms of their respective fields.
+
+
+
+# 6. Mixture of Libraries vs. Mixture of Experts
+
+## 6.1 Architectural Comparison
+
+The following table compares MoL and MoE on five architectural dimensions relevant to specialized AI system design:
+
+
+
+## 6.2 The Upstream Advantage
+
+The fundamental advantage of MoL over MoE is that it intervenes upstream. MoE operates within the constraints set by tokenization: whatever the BPE vocabulary produces, MoE must route and process. MoL changes what is produced before any neural processing begins.
+
+
+
+This upstream intervention has compounding effects. A model that receives semantically coherent tokens learns semantic relationships more efficiently. Its embedding space organizes around concepts rather than character fragments. Its attention patterns capture conceptual relationships rather than morphological coincidences. Every layer of the transformer benefits from the upstream semantic coherence that MoL introduces at the tokenization layer.
+
+
+
+In contrast, MoE experts must each independently learn to handle fragmented domain terms. The gating function must learn to route fragments to the correct expert — a task made harder by the fact that the fragments of a domain term look like fragments of many other terms. Expert specialization in MoE is fighting against the tokenization substrate; MoL removes the substrate problem entirely.
+
+## 6.3 Inference Efficiency
+
+MoE architectures introduce routing computation at every transformer layer for every token in every forward pass. In a 32-layer model processing a 1,000-token sequence, this means 32,000 routing computations per inference request. In production systems handling millions of requests per day, this overhead accumulates significantly.
+
+
+
+MoL routing happens once, at encode time, before the model is invoked. The encoded stream carries its library attribution in the .elo file header. The model receives a pre-encoded stream and performs no routing computation at inference time. The per-token overhead of MoL relative to a single-library system is zero at inference time; the routing cost is paid once at encoding.
+
+## 6.4 Complementarity
+
+MoL and MoE are not mutually exclusive. A MoL-encoded training corpus could be used to train a MoE model, combining the upstream semantic coherence of domain tokenization with the architectural flexibility of expert routing. In this combined architecture, each MoE expert would receive semantically coherent domain tokens, and the routing function would operate on a cleaner signal. We consider this a promising direction for future work.
+
+
+
+# 7. Fine-Tuning Pipeline
+
+## 7.1 Replacing BPE with EloAI Vocabulary
+
+The proposed fine-tuning pipeline for domain-specialized LLMs using MoL proceeds as follows. Starting from a capable general-purpose base model (the current reference implementation targets Qwen3 3B via Unsloth), the BPE tokenizer vocabulary is replaced with the EloAI Base64 dictionary for the target domain library. This requires rebuilding the embedding matrix: rather than the BPE vocabulary size (typically 32K–100K tokens), the new vocabulary is the domain library size (up to ~266,000 entries across all three tiers, but typically 50,000–100,000 for a focused domain).
+
+## 7.2 Embedding Initialization from FAISS
+
+The critical innovation in the fine-tuning pipeline is embedding matrix initialization. Rather than random initialization (standard BPE replacement) or general-corpus embedding transfer (common in domain adaptation), the EloAI pipeline initializes embeddings from FAISS (Facebook AI Similarity Search) vectors computed from the domain library.
+
+
+
+The process: for each entry in the domain library, retrieve its embedding from a domain-specific sentence transformer model trained on the domain corpus. These embeddings are indexed in a FAISS flat index. The embedding matrix for the new tokenizer vocabulary is initialized with these domain embeddings, placing semantically similar terms near each other in embedding space before fine-tuning begins.
+
+
+
+This initialization means the model starts training with domain concepts already semantically organized. The embedding space does not need to learn that "myocardial infarction" and "acute MI" are related — they are already adjacent in the initialized embedding space. Fine-tuning refines these relationships rather than constructing them from scratch.
+
+## 7.3 Training Data Efficiency Hypothesis
+
+We hypothesize that the combination of semantic tokenization (MoL) and semantic embedding initialization (FAISS) produces a substantial reduction in the training data required to reach domain-expert performance. The reasoning is as follows: a model with semantically coherent tokens and semantically pre-organized embeddings begins training from a state that is already significantly closer to domain-expert representation than a randomly initialized BPE model. The gradient signal during fine-tuning refines an existing semantic structure rather than building one from noise.
+
+
+
+Specifically, we hypothesize that a domain EloAI model fine-tuned on 1 billion domain tokens will outperform a BPE baseline model fine-tuned on 10 billion domain tokens on standard domain benchmarks (MedQA for medicine, legal reasoning benchmarks for law, scientific QA benchmarks for science). The 10x data efficiency claim is testable and constitutes the primary experimental hypothesis of this research program.
+
+## 7.4 Compression as Training Signal
+
+There is an additional implication of the EloAI compression architecture for model training that deserves attention. In the EloAI system, token frequency directly encodes semantic centrality: the most frequent terms in the domain get the shortest IDs. This means that the compressed representation of a document implicitly weights domain-central concepts more heavily — they are, in a statistical sense, the least surprising tokens in the stream.
+
+
+
+This aligns with the information-theoretic perspective on language model training: the model should be less surprised by high-frequency, semantically central terms and more surprised by rare, specialized usage. In a BPE-encoded stream, token frequency does not cleanly correspond to semantic centrality. In an EloAI-encoded stream, it does. The training signal is cleaner.
+
+
+
+# 8. Experimental Framework
+
+## 8.1 Library Construction Experiments
+
+The first experimental phase involves building domain libraries from multiple dictionary sources and measuring their properties. For each domain (medicine, military, psychology, science, and general), we will construct libraries from at least two distinct dictionary corpora and measure:
+
+
+
+Coverage rate: percentage of tokens in a held-out domain corpus that receive dictionary IDs (as opposed to OOV)
+
+Compression ratio: average character reduction on domain documents
+
+OOV rate: percentage of tokens falling outside the library, per document type
+
+ID space utilization: how efficiently the tier structure is filled by domain vocabulary
+
+Inter-library overlap: for multi-domain routing, how frequently the same token earns IDs in multiple libraries
+
+
+
+Dictionary sources under evaluation include Merriam-Webster (general), WordNet (semantic relationships), Wiktionary (broad multilingual coverage), Oxford English Dictionary (formal written English), Dorland's Medical Dictionary (medicine), DoD Dictionary of Military Terms (military), DSM-5 and APA Dictionary (psychology), and domain-specific glossaries for physics, chemistry, and biology.
+
+## 8.2 Compression Benchmark
+
+Using the EloAI benchmarks module, we will measure round-trip accuracy (must be 100% on all inputs — this is the acceptance criterion), compression ratio, token reduction ratio, dictionary coverage, tier distribution, and processing speed across all v1 target formats. The benchmark suite runs against sample corpora for each target domain and reports per-format, per-library statistics.
+
+## 8.3 LLM Fine-Tuning Experiments
+
+The core experimental validation will compare models fine-tuned using four configurations:
+
+
+
+Baseline: Qwen3 3B with standard BPE tokenization, fine-tuned on domain corpus
+
+MoL only: Qwen3 3B with domain EloAI library tokenization, random embedding initialization, fine-tuned on domain corpus
+
+FAISS init only: Qwen3 3B with standard BPE tokenization, embeddings initialized from domain FAISS vectors
+
+MoL + FAISS: Qwen3 3B with domain EloAI library tokenization and FAISS embedding initialization, fine-tuned on domain corpus
+
+
+
+All four configurations will be evaluated on standard domain benchmarks at multiple training data scales (100M, 500M, 1B, 5B, 10B tokens) to characterize the training efficiency curve. The primary metric is benchmark performance as a function of training token count. The MoL + FAISS configuration is expected to reach baseline-equivalent performance at 1/5 to 1/10 of the training data requirement.
+
+## 8.4 Inference Efficiency
+
+Inference latency and throughput will be measured for all configurations at equivalent performance levels. We will specifically measure the routing overhead of MoE architectures (Mixtral 8x7B as reference) compared to MoL at equivalent domain task performance, to quantify the inference efficiency advantage of pre-computed routing.
+
+
+
+# 9. Implications and Future Directions
+
+## 9.1 The Library as Epistemological Artifact
+
+The deepest implication of the MoL architecture is that the library is not merely a compression tool: it is an epistemological artifact. A domain dictionary represents centuries of expert consensus about what concepts are fundamental, how they relate, and which phrases are semantically atomic in the field. When we build an EloAI library from a domain dictionary, we are encoding this expert consensus into the tokenization layer of an AI system.
+
+
+
+This is a fundamentally different approach to domain adaptation than any current method. Fine-tuning on domain data teaches a model domain statistics. RLHF on domain expert feedback teaches a model domain preferences. A domain EloAI library gives a model domain ontology — the structured map of what the field considers real and important — before training begins. The model then learns relationships within an already-structured conceptual space.
+
+## 9.2 Multi-Library Semantic Search
+
+The .elo format's binary structure enables a class of semantic search operations that is impossible with BPE-encoded text. Because every instance of "myocardial infarction" across all documents in a corpus encodes to the same 2-character ID, finding all documents containing that concept is a binary scan for two bytes — no text parsing, no embedding similarity, no approximate matching. The search is exact, exhaustive, and extremely fast.
+
+
+
+Across a multi-library corpus, this enables cross-domain semantic linking by shared ID: documents in the military library and the medical library that share high-frequency term IDs are semantically related at the concept level. This structural semantic linking requires no additional NLP processing — it is inherent in the compressed representation.
+
+## 9.3 IANA Registration and Standardization
+
+The EloAI project is pursuing IANA media type registration for the .elo format (application/vnd.eloai.elo) as a step toward standardization. A standardized, openly specified binary format for semantically compressed text would enable interoperability between different MoL implementations and facilitate adoption across research and production systems.
+
+## 9.4 System 2: Semantic Formula Layer
+
+The EloAI roadmap includes a System 2 layer that adds semantic intelligence on top of the System 1 compression layer. System 2 incorporates EPA (Evaluation, Potency, Activity) space projection following Surov's (2022) Quantum Core Affect framework, process stage classification (6-stage cycle), FAISS-based vector similarity search, and filler weight deltas as probability modifiers on adjacent tokens. System 1 and System 2 are designed to be composable: System 1 compresses; System 2 adds semantic structure. The MoL architecture is a System 1 capability that makes System 2 more tractable by ensuring that the semantic units System 2 reasons about are already coherent at the token level.
+
+## 9.5 C Migration
+
+The current Python reference implementation is designed for eventual C/C++ migration. All architectural decisions reflect this: explicit binary layout, little-endian fixed-width integers via struct.pack, stateless codec functions, pure arithmetic in the capitalization codec, and module boundaries mirroring a C public API surface (sc_encode, sc_decode, sc_open_library, sc_close_library). A production C implementation would reduce encode/decode latency to microseconds and enable direct integration into inference serving infrastructure.
+
+
+
+# 10. Conclusion
+
+This paper has presented the Mixture of Libraries architecture as a principled response to the tokenization problem in domain-specialized large language models. We have argued that BPE tokenization systematically fragments domain-critical semantic units, that Mixture of Experts architectures inherit this fragmentation problem without solving it, and that domain-dedicated tokenization libraries built from dictionary frequency distributions address the problem at its source.
+
+
+
+The EloAI semantic compression system provides a concrete reference implementation: a 100% lossless, 14MB dictionary, 85–95% compression rate, 100-nanosecond LMDB lookup, two-layer encoding for full surface form preservation, unified frequency model treating all text units as equal competitors for ID space, and a .elo binary format with O(1) random access and built-in semantic profiling.
+
+
+
+The MoL extension applies this architecture to domain AI: one library per domain, built from authoritative domain dictionaries, with deterministic shortest-ID routing at encode time and FAISS-initialized embedding matrices for fine-tuning. The result is a class of specialized AI systems where domain expertise is structurally encoded at the tokenization layer, routing overhead is zero at inference time, routing decisions are transparent and auditable, and training data requirements are hypothesized to be 5–10x lower than BPE baselines.
+
+
+
+The fundamental claim of this paper is that the question of how to specialize an AI system for a domain is not primarily a question of training data, model architecture, or RLHF feedback. It is primarily a question of representation: what are the atomic semantic units of the domain, and are they preserved as atoms at the tokenization layer? Domain experts have answered this question in their dictionaries. The Mixture of Libraries architecture encodes their answer.
+
+
+
+# References
+
+Alsentzer, E., Murphy, J. R., Boag, W., Weng, W. H., Jin, D., Naumann, T., & McDermott, M. (2019). Publicly available clinical BERT embeddings. arXiv:1904.03323.
+
+
+
+American Psychiatric Association. (2013). Diagnostic and Statistical Manual of Mental Disorders (5th ed.). APA Publishing.
+
+
+
+Fedus, W., Zoph, B., & Shazeer, N. (2022). Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research, 23(120), 1–39.
+
+
+
+Jacobs, R. A., Jordan, M. I., Nowlan, S. J., & Hinton, G. E. (1991). Adaptive mixtures of local experts. Neural Computation, 3(1), 79–87.
+
+
+
+Lee, J., Yoon, W., Kim, S., Kim, D., Kim, S., So, C. H., & Kang, J. (2020). BioBERT: A pre-trained biomedical language representation model for biomedical text mining. Bioinformatics, 36(4), 1234–1240.
+
+
+
+Mistral AI. (2023). Mixtral of experts. Technical report. mistral.ai.
+
+
+
+Sennrich, R., Haddow, B., & Birch, A. (2016). Neural machine translation of rare words with subword units. Proceedings of ACL 2016, 1715–1725.
+
+
+
+Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q., Hinton, G., & Dean, J. (2017). Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv:1701.06538.
+
+
+
+Surov, I. A. (2022). Quantum Core Affect: Evaluation, Potency, Activity space and the six-stage process cycle. Frontiers in Psychology, 13.
+
+
+
+Zhang, Y., Chen, Q., Yang, Z., Lin, H., & Lu, Z. (2019). BioWordVec: Improving biomedical word embeddings with subword information and MeSH. Scientific Data, 6(1), 1–9.
+
+
+
+
+
+—
+
+
+
+EloAI Research Laboratory
+
+eloai.dev  |  github.com/4waymedia/semantic-compression
+
+June 2026

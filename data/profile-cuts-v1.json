@@ -24,9 +24,9 @@
     "total_vocab": 262144
   },
   "reference": {
-    "content_size": 373891,
-    "byte_fallback_start": 373891,
-    "special_tokens_start": 374147,
-    "total_vocab": 374163
+    "content_size": 373917,
+    "byte_fallback_start": 373917,
+    "special_tokens_start": 374173,
+    "total_vocab": 374189
   }
 }
