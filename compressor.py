@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -199,6 +200,11 @@ ELO_MAGIC_BIN     = b'ELO'
 ELO_BIN_VERSION   = 2
 ELO_BIN_EXTENSION = '.eloB'
 
+# Bytes view of BASE64_CHARS — lets the binary decoder build LMDB-key bytes
+# without going through Python str. BASE64_CHARS_BYTES[idx:idx+1] gives the
+# 1-byte slice for Tier 0; multi-byte IDs concatenate single-byte slices.
+BASE64_CHARS_BYTES = BASE64_CHARS.encode('ascii')
+
 # Binary stream tag encoding:
 #   0x00-0x3F : Tier 0  -- byte value IS the Base64 char index (0-63)        (1 byte total)
 #   0x40-0x7F : Tier 1  -- byte1 low 6 bits = first char index               (2 bytes total)
@@ -254,11 +260,37 @@ class Compressor:
             elo = c.encode_file(Path('source.json'))
     """
 
-    def __init__(self, lmdb_path: Path | str = DEFAULT_LMDB) -> None:
+    def __init__(
+        self,
+        lmdb_path: Path | str = DEFAULT_LMDB,
+        *,
+        preload_rev_cache: bool = True,
+        preload_fwd_cache: bool = True,
+    ) -> None:
+        """
+        Args:
+            lmdb_path:           path to the dictionary LMDB env
+            preload_rev_cache:   if True, build an in-memory copy of the
+                                 reverse (ID -> surface) dictionary at open()
+                                 time. Eliminates LMDB GETs on the decode
+                                 hot path. ~4-6 MB RAM, 100-300 ms init.
+            preload_fwd_cache:   same, for the forward (surface -> ID)
+                                 dictionary used by the encode hot path.
+        """
         self.lmdb_path = Path(lmdb_path)
         self._env: Optional[lmdb.Environment] = None
         self._fwd_db = None
         self._rev_db = None
+        # Cache configuration
+        self._preload_rev_cache = preload_rev_cache
+        self._preload_fwd_cache = preload_fwd_cache
+        # Populated by open() when flags above are True
+        self._rev_cache: Optional[dict[bytes, bytes]] = None
+        self._fwd_cache: Optional[dict[bytes, bytes]] = None
+        # Telemetry — read by callers that want the metrics
+        self._init_elapsed_ms: float = 0.0
+        self._rev_cache_bytes: int = 0
+        self._fwd_cache_bytes: int = 0
 
     # ------------------------------------------------------------------
     # Resource lifecycle
@@ -280,6 +312,7 @@ class Compressor:
             )
             self._fwd_db = self._env.open_db(b'forward')
             self._rev_db = self._env.open_db(b'reverse')
+            self._build_caches()
         return self
 
     def close(self) -> None:
@@ -289,6 +322,46 @@ class Compressor:
             self._env = None
             self._fwd_db = None
             self._rev_db = None
+        # Caches are tied to the env lifecycle — drop them so a re-open
+        # rebuilds against the (possibly fresh) dictionary.
+        self._rev_cache = None
+        self._fwd_cache = None
+        self._init_elapsed_ms = 0.0
+        self._rev_cache_bytes = 0
+        self._fwd_cache_bytes = 0
+
+    def _build_caches(self) -> None:
+        """
+        Preload the in-memory caches per the constructor flags. Walks the
+        full LMDB once per enabled cache. Records init time + memory used.
+        """
+        t0 = time.monotonic()
+        if self._preload_rev_cache:
+            with self._env.begin(db=self._rev_db) as txn:
+                cache = {bytes(k): bytes(v) for k, v in txn.cursor()}
+            self._rev_cache = cache
+            self._rev_cache_bytes = sum(len(k) + len(v) for k, v in cache.items())
+        if self._preload_fwd_cache:
+            with self._env.begin(db=self._fwd_db) as txn:
+                cache = {bytes(k): bytes(v) for k, v in txn.cursor()}
+            self._fwd_cache = cache
+            self._fwd_cache_bytes = sum(len(k) + len(v) for k, v in cache.items())
+        self._init_elapsed_ms = (time.monotonic() - t0) * 1000.0
+
+    @property
+    def init_ms(self) -> float:
+        """Milliseconds spent preloading caches at open() time."""
+        return self._init_elapsed_ms
+
+    @property
+    def rev_cache_bytes(self) -> int:
+        """Resident bytes of the reverse cache (0 if disabled)."""
+        return self._rev_cache_bytes
+
+    @property
+    def fwd_cache_bytes(self) -> int:
+        """Resident bytes of the forward cache (0 if disabled)."""
+        return self._fwd_cache_bytes
 
     def __enter__(self) -> 'Compressor':
         return self.open()
@@ -304,7 +377,11 @@ class Compressor:
         """Encode a single source token into its stream representation."""
         stats.total_tokens += 1
         lower = token.lower()
-        bytes_id = txn.get(lower.encode(STREAM_ENCODING), db=self._fwd_db)
+        key = lower.encode(STREAM_ENCODING)
+        if self._fwd_cache is not None:
+            bytes_id = self._fwd_cache.get(key)
+        else:
+            bytes_id = txn.get(key, db=self._fwd_db)
 
         if bytes_id is not None:
             token_id = bytes_id.decode(STREAM_ENCODING)
@@ -330,14 +407,24 @@ class Compressor:
         if is_oov_token(stream_token):
             return decode_oov(stream_token)
 
+        rev_cache = self._rev_cache    # local alias for hot path
+
         if OOV_SEP in stream_token:
             cap, token_id = stream_token.split(OOV_SEP, 1)
-            bytes_word = txn.get(token_id.encode(STREAM_ENCODING), db=self._rev_db)
+            key = token_id.encode(STREAM_ENCODING)
+            if rev_cache is not None:
+                bytes_word = rev_cache.get(key)
+            else:
+                bytes_word = txn.get(key, db=self._rev_db)
             if bytes_word is None:
                 raise ValueError(f"Unknown ID after cap prefix: {token_id!r}")
             return decode_caps(bytes_word.decode(STREAM_ENCODING), cap)
 
-        bytes_word = txn.get(stream_token.encode(STREAM_ENCODING), db=self._rev_db)
+        key = stream_token.encode(STREAM_ENCODING)
+        if rev_cache is not None:
+            bytes_word = rev_cache.get(key)
+        else:
+            bytes_word = txn.get(key, db=self._rev_db)
         if bytes_word is None:
             raise ValueError(f"Unknown stream token: {stream_token!r}")
         return bytes_word.decode(STREAM_ENCODING)
@@ -465,7 +552,10 @@ class Compressor:
         with self._env.begin() as txn:
             scanned = _longest_match_scan(tokens, txn, self._fwd_db)   # v0.3
             for tok in scanned:
-                _emit_token_binary(tok, out, txn, self._fwd_db, stats)
+                _emit_token_binary(
+                    tok, out, txn, self._fwd_db, stats,
+                    fwd_cache=self._fwd_cache,
+                )
 
         return bytes(out)
 
@@ -483,15 +573,20 @@ class Compressor:
         ext = elo_bytes[5:5 + ext_len].decode(STREAM_ENCODING)
         stream = elo_bytes[5 + ext_len:]
 
-        out_parts: list[str] = []
-        with self._env.begin() as txn:
-            _consume_stream_binary(stream, out_parts, txn, self._rev_db)
+        # Accumulate token bytes in a list — concatenated at the end. Tokens
+        # already arrive as bytes from the cache / LMDB; no str round-trip.
+        out_parts: list[bytes] = []
+        if self._rev_cache is not None:
+            # Cache-only fast path — no LMDB transaction needed at all.
+            _consume_stream_binary(stream, out_parts, self._rev_cache, None, None)
+        else:
+            with self._env.begin() as txn:
+                _consume_stream_binary(stream, out_parts, None, txn, self._rev_db)
 
-        # Option 2: restore implicit single-spaces between word-class tokens
-        out_parts = _restore_implicit_spaces(out_parts)
+        # Option 2: restore implicit single-spaces between word-class tokens.
+        out_parts = _restore_implicit_spaces_bytes(out_parts)
 
-        text = ''.join(out_parts)
-        return _denormalize_ext(ext), text.encode(STREAM_ENCODING)
+        return _denormalize_ext(ext), b''.join(out_parts)
 
     def decode_bytes(self, elo_bytes: bytes) -> tuple[str, bytes]:
         """
@@ -610,11 +705,28 @@ def _encode_id_to_binary(out: bytearray, token_id: str) -> None:
         raise ValueError(f"unexpected token ID length: {token_id!r}")
 
 
-def _emit_token_binary(token: str, out: bytearray, txn, fwd_db, stats: EncodeStats) -> None:
-    """Encode one source token directly to the binary stream."""
+def _emit_token_binary(
+    token: str,
+    out: bytearray,
+    txn,
+    fwd_db,
+    stats: EncodeStats,
+    *,
+    fwd_cache: Optional[dict[bytes, bytes]] = None,
+) -> None:
+    """Encode one source token directly to the binary stream.
+
+    Uses the in-memory ``fwd_cache`` when provided; otherwise falls back
+    to ``txn.get(..., db=fwd_db)``. Both paths produce byte-identical
+    output.
+    """
     stats.total_tokens += 1
     lower = token.lower()
-    bytes_id = txn.get(lower.encode(STREAM_ENCODING), db=fwd_db)
+    key = lower.encode(STREAM_ENCODING)
+    if fwd_cache is not None:
+        bytes_id = fwd_cache.get(key)
+    else:
+        bytes_id = txn.get(key, db=fwd_db)
 
     if bytes_id is not None:
         token_id = bytes_id.decode(STREAM_ENCODING)
@@ -657,45 +769,106 @@ def _emit_token_binary(token: str, out: bytearray, txn, fwd_db, stats: EncodeSta
     out += body_bytes
 
 
-def _read_id_from_binary(stream: bytes, i: int) -> tuple[str, int]:
-    """Read an in-vocab token ID at offset i. Returns (id_string, new_offset)."""
+def _read_id_from_binary(stream: bytes, i: int) -> tuple[bytes, int]:
+    """Read an in-vocab token ID at offset i. Returns (id_bytes, new_offset).
+
+    Returns the LMDB-key bytes form directly (no str round-trip). The bytes
+    are slices/constructs over ``BASE64_CHARS_BYTES`` so they're valid
+    ASCII and match the byte form LMDB stores keys as.
+    """
+    cb = BASE64_CHARS_BYTES   # local alias for hot path
     tag = stream[i]
     if tag < TAG_T1:                                    # Tier 0
-        return BASE64_CHARS[tag], i + 1
+        return cb[tag:tag + 1], i + 1
     if tag < TAG_T2:                                    # Tier 1
-        c1 = BASE64_CHARS[tag & 0x3F]
-        c2 = BASE64_CHARS[stream[i + 1]]
-        return c1 + c2, i + 2
+        return bytes((cb[tag & 0x3F], cb[stream[i + 1]])), i + 2
     if tag < TAG_T3:                                    # Tier 2
-        c1 = BASE64_CHARS[tag & 0x3F]
-        c2 = BASE64_CHARS[stream[i + 1]]
-        c3 = BASE64_CHARS[stream[i + 2]]
-        return c1 + c2 + c3, i + 3
+        return bytes((cb[tag & 0x3F], cb[stream[i + 1]], cb[stream[i + 2]])), i + 3
     if tag < TAG_CAP:                                   # Tier 3
-        c1 = BASE64_CHARS[tag & 0x3F]
-        c2 = BASE64_CHARS[stream[i + 1]]
-        c3 = BASE64_CHARS[stream[i + 2]]
-        c4 = BASE64_CHARS[stream[i + 3]]
-        return c1 + c2 + c3 + c4, i + 4
+        return bytes((
+            cb[tag & 0x3F],
+            cb[stream[i + 1]],
+            cb[stream[i + 2]],
+            cb[stream[i + 3]],
+        )), i + 4
     raise ValueError(f"unexpected ID tag byte 0x{tag:02X} at offset {i}")
 
 
-def _consume_stream_binary(stream: bytes, out_parts: list[str], txn, rev_db) -> None:
-    """Walk the binary stream and append decoded source text to out_parts."""
+def _classify_bytes_token(b: bytes) -> str:
+    """Bytes-aware mirror of ``classify()`` — looks at the first character.
+
+    Fast path for ASCII (vast majority of surfaces). Falls back to a real
+    UTF-8 decode only for tokens whose first byte is non-ASCII, which is
+    rare and only happens via OOV bodies.
+    """
+    if not b:
+        return CLASS_EMPTY
+    first = b[0]
+    if first < 0x80:
+        return classify(chr(first))
+    # Non-ASCII first byte — decode the full token to read first char safely.
+    return classify(b.decode(STREAM_ENCODING, errors='replace'))
+
+
+def _restore_implicit_spaces_bytes(parts: list[bytes]) -> list[bytes]:
+    """Bytes-aware version of ``_restore_implicit_spaces``.
+
+    Inserts a single ``b' '`` between two consecutive tokens whose class is
+    CLASS_WORD. Mirrors ``_restore_implicit_spaces`` exactly on the str
+    side — the only difference is the byte representation throughout.
+    """
+    if not parts:
+        return parts
+    out: list[bytes] = [parts[0]]
+    last_class = _classify_bytes_token(parts[0])
+    for p in parts[1:]:
+        c = _classify_bytes_token(p)
+        if last_class == CLASS_WORD and c == CLASS_WORD:
+            out.append(b' ')
+        out.append(p)
+        last_class = c
+    return out
+
+
+def _consume_stream_binary(
+    stream: bytes,
+    out_parts: list[bytes],
+    rev_cache: Optional[dict[bytes, bytes]],
+    txn,
+    rev_db,
+) -> None:
+    """Walk the binary stream and append decoded source bytes to out_parts.
+
+    Uses ``rev_cache`` when not None — eliminates the LMDB GET per token.
+    Falls back to ``txn.get(..., db=rev_db)`` when ``rev_cache`` is None.
+    Both paths produce byte-identical output.
+
+    Output parts are bytes (not str) so the caller can ``b''.join(parts)``
+    without a str → bytes round-trip.
+    """
+    # Hoist the lookup once so the hot loop avoids a per-token branch.
+    if rev_cache is not None:
+        rev_get = rev_cache.get
+    else:
+        def rev_get(key, _t=txn, _d=rev_db):
+            return _t.get(key, db=_d)
+
     n = len(stream)
     i = 0
     while i < n:
         tag = stream[i]
         if tag == TAG_CAP:
-            # Cap-prefix wrapping the next in-vocab ID
+            # Cap-prefix wrapping the next in-vocab ID — slow path,
+            # str round-trip is acceptable here (rare).
             cap_len = stream[i + 1]
             cap = stream[i + 2:i + 2 + cap_len].decode(STREAM_ENCODING)
             i += 2 + cap_len
             token_id, i = _read_id_from_binary(stream, i)
-            bw = txn.get(token_id.encode(STREAM_ENCODING), db=rev_db)
+            bw = rev_get(token_id)
             if bw is None:
                 raise ValueError(f"Unknown ID after cap prefix: {token_id!r}")
-            out_parts.append(decode_caps(bw.decode(STREAM_ENCODING), cap))
+            decoded = decode_caps(bw.decode(STREAM_ENCODING), cap)
+            out_parts.append(decoded.encode(STREAM_ENCODING))
             continue
 
         if tag == TAG_OOV:
@@ -704,16 +877,18 @@ def _consume_stream_binary(stream: bytes, out_parts: list[str], txn, rev_db) -> 
             j = i + 2 + cap_len
             body_len = stream[j] | (stream[j + 1] << 8)
             body = stream[j + 2:j + 2 + body_len].decode(STREAM_ENCODING)
-            out_parts.append(decode_caps(body, cap))
+            decoded = decode_caps(body, cap)
+            out_parts.append(decoded.encode(STREAM_ENCODING))
             i = j + 2 + body_len
             continue
 
-        # In-vocab token, no cap prefix
+        # In-vocab token, no cap prefix — HOT PATH.
+        # token_id is already bytes; rev_get returns bytes; append directly.
         token_id, i = _read_id_from_binary(stream, i)
-        bw = txn.get(token_id.encode(STREAM_ENCODING), db=rev_db)
+        bw = rev_get(token_id)
         if bw is None:
             raise ValueError(f"Unknown stream token: {token_id!r}")
-        out_parts.append(bw.decode(STREAM_ENCODING))
+        out_parts.append(bw)
 
 
 # ---------------------------------------------------------------------------
