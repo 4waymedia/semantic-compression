@@ -275,3 +275,167 @@ EMBEDDING_MODEL = 'all-mpnet-base-v2'
 EMBEDDING_DIM   = 768
 
 SPACY_MODEL = 'en_core_web_sm'
+# ===========================================================================
+# Semantic Facets (spec-facets-db.md v2) — System 1 static annotation
+#
+# A 4-byte, C-readable facet record keyed by the same id_bytes as forward/reverse:
+#     byte 0      semantic_bucket   (uint8)
+#     bytes 1-2   logic_cue_mask    (uint16 little-endian, composable)
+#     byte 3      flags             (properties + utility)
+# Read by byte offset; pack/unpack with struct '<BHB'. No model inference.
+# ===========================================================================
+
+import struct  # C-readable fixed-width packing for facet records + meta ints
+
+FACETS_FORMAT_VERSION   = 1
+NORMALIZATION_VERSION = 1
+FACET_RECORD_WIDTH      = 4            # bytes; stored in meta as record_width
+
+# LMDB sub-database names (max_dbs raised 2 -> 4 when facets present).
+# NOTE: this `facets` DB is unrelated to the transcript JSON `tags` field (transcript metadata).
+FORWARD_DB_NAME = b'forward'
+REVERSE_DB_NAME = b'reverse'
+FACETS_DB_NAME    = b'facets'
+META_DB_NAME    = b'meta'
+
+# --- Byte 0: semantic bucket -----------------------------------------------
+BUCKET = {
+    'UNKNOWN':    0x00,   # unclassified (safe default; never silently dropped)
+    'TOPIC':      0x01,   # noun-class thing / subject
+    'METHOD':     0x02,   # action / process (assigned conservatively)
+    'CONCEPT':    0x03,   # multi-word DOMAIN concept
+    'RELATION':   0x04,   # relational / connective unit
+    'STRUCTURAL': 0x05,   # whitespace, punctuation, sentinels
+    # 0x06-0x0F reserved (MODIFIER, NAMED_ENTITY, EVENT, ...)
+}
+BUCKET_NAME = {v: k for k, v in BUCKET.items()}
+
+# --- Bytes 1-2: logic-cue mask (uint16 LE, composable affordances) ---------
+LOGIC_CUE = {
+    'CLAIM_CUE':      0x0001,
+    'EVIDENCE_CUE':   0x0002,
+    'INFERENCE':      0x0004,
+    'CONTRAST':       0x0008,
+    'CAUSE':          0x0010,
+    'CONDITION':      0x0020,
+    'QUANTIFIER':     0x0040,
+    'NEGATION':       0x0080,
+    'CONJUNCTION':    0x0100,
+    'QUESTION':       0x0200,
+    'MODAL':          0x0400,
+    'DEFINITION_CUE': 0x0800,
+    'CONCESSION':     0x1000,
+    'COMPARISON':     0x2000,
+    'TEMPORAL':       0x4000,
+    # 0x8000 reserved
+}
+LOGIC_CUE_NAME = {v: k for k, v in LOGIC_CUE.items()}
+
+# --- Byte 3: flags (properties + utility) ----------------------------------
+FLAG = {
+    'MULTIWORD':    0x01,   # surface contains a space (phrase atom)
+    'CLOSED_CLASS': 0x02,   # matched a closed-class connective/function list
+    'MANUAL':       0x04,   # assigned by override file (authoritative)
+    'HEURISTIC':    0x08,   # assigned by default guess (MANUAL XOR HEURISTIC)
+    'AMBIGUOUS':    0x10,   # assignment itself is unreliable
+    # 0x20 reserved
+}
+FLAG_NAME = {v: k for k, v in FLAG.items()}
+
+# UTILITY occupies the top two flag bits (0xC0): the "meaningfulness" axis
+# that replaces the old SKIP bucket.
+UTILITY = {
+    'CONTENT':    0b00,
+    'FUNCTION':   0b01,
+    'STRUCTURAL': 0b10,
+    'FILLER':     0b11,
+}
+UTILITY_NAME  = {v: k for k, v in UTILITY.items()}
+UTILITY_SHIFT = 6
+UTILITY_MASK  = 0xC0
+
+# --- Logic seed lists (closed-class, frozen, FIXED ORDER) ------------------
+# Ordered so overlap resolution is deterministic. Cue bits compose (OR);
+# overlap across lists is composition, NOT ambiguity. Content words are never
+# seeded. Surfaces are lowercased through normalize_surface() at load.
+LOGIC_SEED_LISTS = [
+    ('INFERENCE',      ['therefore', 'thus', 'hence', 'so', 'consequently', 'accordingly']),
+    ('EVIDENCE_CUE',   ['because', 'since', 'given', 'shows', 'demonstrates', 'indicates', 'according']),
+    ('CONTRAST',       ['but', 'however', 'although', 'though', 'yet', 'whereas', 'nonetheless', 'nevertheless']),
+    ('CAUSE',          ['because', 'since', 'due', 'cause', 'causes', 'caused', 'owing']),
+    ('CONDITION',      ['if', 'unless', 'when', 'whenever', 'provided', 'assuming']),
+    ('QUANTIFIER',     ['all', 'some', 'most', 'many', 'few', 'none', 'every', 'each', 'any', 'both']),
+    ('NEGATION',       ['not', 'no', 'never', 'none', 'cannot']),
+    ('CONJUNCTION',    ['and', 'also', 'then', 'furthermore', 'moreover', 'additionally', 'plus', 'besides']),
+    ('QUESTION',       ['what', 'why', 'how', 'when', 'where', 'who', 'which', 'whom', 'whose']),
+    ('MODAL',          ['can', 'could', 'must', 'might', 'may', 'shall', 'should', 'would', 'will', 'ought']),
+    ('DEFINITION_CUE', ['is', 'are', 'means', 'refers', 'denotes', 'defined', 'constitutes']),
+    ('CONCESSION',     ['admittedly', 'granted', 'regardless', 'despite', 'notwithstanding']),
+    ('COMPARISON',     ['like', 'than', 'as', 'similarly', 'likewise', 'versus', 'compared']),
+    ('TEMPORAL',       ['when', 'while', 'before', 'after', 'during', 'until', 'then']),
+]
+
+# Cue categories that make a token a pure connective -> bucket = RELATION.
+RELATION_CUES = frozenset({
+    'INFERENCE', 'EVIDENCE_CUE', 'CONTRAST', 'CAUSE', 'CONDITION',
+    'CONJUNCTION', 'DEFINITION_CUE', 'CONCESSION', 'COMPARISON',
+})
+
+# --- Curated METHOD lexicon (conservative; NO bare-suffix rule) ------------
+# A word becomes METHOD only via MANUAL override or membership here. Keeps
+# METHOD sparse-but-trustworthy (a false TOPIC is far cheaper than false METHOD).
+ACTION_LEXICON = frozenset({
+    'analyze', 'analyse', 'measure', 'compute', 'calculate', 'estimate',
+    'build', 'construct', 'assemble', 'design', 'implement', 'configure',
+    'install', 'deploy', 'optimize', 'optimise', 'process', 'transform',
+    'convert', 'extract', 'filter', 'sort', 'search', 'classify', 'cluster',
+    'train', 'evaluate', 'validate', 'verify', 'test', 'debug', 'refactor',
+    'cook', 'bake', 'roast', 'fry', 'boil', 'simmer', 'saute', 'grill',
+    'chop', 'slice', 'dice', 'mince', 'mix', 'stir', 'whisk', 'knead',
+    'write', 'read', 'edit', 'compile', 'encode', 'decode', 'compress',
+    'navigate', 'calibrate', 'diagnose', 'troubleshoot', 'execute', 'render',
+})
+
+# --- Structural-token cue map (surface -> cue mask) ------------------------
+# Most structural tokens carry no cue; '?' affords QUESTION.
+STRUCTURAL_CUE_MAP = {
+    '?': LOGIC_CUE['QUESTION'],
+}
+
+
+def pack_facet(bucket: int, cue_mask: int, flags: int) -> bytes:
+    """Pack a 4-byte facet record. C reads bytes by offset; '<BHB' little-endian."""
+    return struct.pack('<BHB', bucket, cue_mask, flags)
+
+
+def unpack_facet(value: bytes) -> tuple[int, int, int]:
+    """Unpack a 4-byte facet record -> (bucket, cue_mask, flags)."""
+    return struct.unpack('<BHB', value)
+
+
+def utility_of(flags: int) -> int:
+    """Extract the 2-bit UTILITY class from a flags byte."""
+    return (flags & UTILITY_MASK) >> UTILITY_SHIFT
+
+
+def set_utility(flags: int, utility: int) -> int:
+    """Return flags with UTILITY bits replaced."""
+    return (flags & ~UTILITY_MASK) | ((utility << UTILITY_SHIFT) & UTILITY_MASK)
+
+
+# --- T1 self-checks (collision-free; name<->byte bijective) ----------------
+assert len(BUCKET) == len(BUCKET_NAME), 'BUCKET names not bijective with bytes'
+assert len(set(BUCKET.values())) == len(BUCKET), 'Duplicate bucket byte values'
+assert len(LOGIC_CUE) == len(LOGIC_CUE_NAME), 'LOGIC_CUE not bijective'
+assert len(set(LOGIC_CUE.values())) == len(LOGIC_CUE), 'Duplicate logic-cue bits'
+assert all(bin(v).count('1') == 1 for v in LOGIC_CUE.values()), 'Cue value not a single bit'
+assert all(v < 0x8000 for v in LOGIC_CUE.values()), 'Cue bit 15 is reserved'
+assert len(set(FLAG.values())) == len(FLAG), 'Duplicate flag bits'
+assert not (FLAG['MANUAL'] & FLAG['HEURISTIC']), 'MANUAL/HEURISTIC share a bit'
+assert all(v & UTILITY_MASK == 0 for v in FLAG.values()), 'A flag bit overlaps UTILITY bits'
+assert len(UTILITY) == 4 and max(UTILITY.values()) <= 0b11, 'UTILITY must fit 2 bits'
+assert all(c in LOGIC_CUE for c, _ in LOGIC_SEED_LISTS), 'Seed list cue name not in LOGIC_CUE'
+assert RELATION_CUES <= set(LOGIC_CUE), 'RELATION_CUES references unknown cue'
+# Seed list order is fixed and documented; duplicate cue categories are not allowed.
+assert len([c for c, _ in LOGIC_SEED_LISTS]) == len({c for c, _ in LOGIC_SEED_LISTS}), \
+    'A cue category appears twice in LOGIC_SEED_LISTS'

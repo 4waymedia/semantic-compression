@@ -1,24 +1,109 @@
 # EloAI — System 1: Base64 Canonical Library
 ### Status Document
 > Reflects actual code at github.com/4waymedia/semantic-compression
-> Last verified: 2026-06-07 -- v0.3.0 released; 13/13 round-trip byte-exact
+> Last verified: 2026-06-19 -- v0.4.0 (Semantic Facets Layer) STAGED;
+> Create a dictionary: [docs/compression/GUIDE-create-dictionary.md](docs/compression/GUIDE-create-dictionary.md).
+> v0.3.0 dictionary intact, 13/13 round-trip byte-exact
 
 ---
 
-## Status: v0.3.0 RELEASED -- Phrase Dictionary and LLM Vocabulary Contract
+## Status: v0.4.0 STAGED -- Semantic Facets Layer (on the v0.3.0 dictionary)
 
-System 1 has shipped two production milestones and is ready for the
-parallel tracks defined in v0.4.
+System 1 has shipped two production milestones and has a third version
+(v0.4.0) open and staged, whose first landed feature is the semantic facets
+layer. The v0.4 Compression and LLM tracks remain open in parallel.
 
 | Tag | Date | Headline | Avg ratio | Stream tokens |
 |---|---|---|---:|---:|
 | `v0.2` | 2026-06-06 | Predictive Binary Token Stream | 1.84x | 988k |
-| **`v0.3.0`** | **2026-06-07** | **Phrase Dictionary + LLM Vocab Contract** | **1.99x** | **449k (-55%)** |
+| `v0.3.0` | 2026-06-07 | Phrase Dictionary + LLM Vocab Contract | 1.99x | 449k (-55%) |
+| **`v0.4.0`** | **2026-06-19** | **Semantic Facets Layer (STAGED)** | **—** | **unchanged** |
 
 The v0.3 milestone was reframed from a compression target to a
 vocabulary target after measured results revealed the structural ceiling
 of the fixed-tier byte scheme. See `docs/compression/v0.3-analysis.md`
 for the theory-vs-practice retrospective.
+
+---
+
+### Session progress — 2026-06-22 (v0.4 infra + affect layer)
+
+Build/provenance infrastructure and the first affect layer landed. All new;
+binary build artifacts are gitignored, regenerable from specs.
+
+**Build system.** `build_from_spec.py` builds a dictionary from one declarative
+YAML spec (corpus + eval + params), emitting a self-contained package with a
+`corpus_fingerprint`. `dictionary_builder_v03.py` gained per-build deliverables
+packages (`--new-build` / `--build-dir --overwrite`), the `bytes_saved` selection
+strategy + `pmi` in the scorer contract, and a repaired CLI. `stamp_meta.py` adds
+a `locked` lifecycle + `bound_model` (LLM-retrain lock). `artifact_identity.py` +
+`spec-artifact-identity.md` give every artifact (dictionary/facets/epa/meta/
+templates) one identity shape (fingerprint+version+status+bound_refs), referenced
+in the package manifest.
+
+**Evaluation.** `bench_dict_efficiency.py` measures `.eloB` ratio on a held-out,
+channel-balanced transcript+books eval. Findings: on transcripts S0≈S1; depth
+(char-3→char-4 +11.5%) and coverage dominate selection; at high OOV the codec
+*expands* (books at char-3 < 1.0); adding a book corpus cut held-out-book OOV
+8.4%→3.9%.
+
+**Meta + EPA (affect).** `meta_fields.py` = System-1 deterministic richer meta
+(abstraction/causality/temporality/scope), reserved System-2 columns
+(`spec-meta-db.md`). EPA affect layer: `epa_match.py` joins the global EPA
+substrate to dictionary IDs (id-keyed table + coverage). Phrase EPA via
+composition + lemmatize + the **NRC-VAD v2.1 union** took content coverage
+4.4%→**56.7%** and phrase coverage 0→**97.8%**, AI residual 167k→**3,645**.
+`Memory/mneme/substrate/epa_substrate.py` builds the versioned, provenance-tagged
+merged substrate (V1 agreement gate caught Warriner↔NRC Potency disagreement
+r=0.33; per-axis confidence). difflib fallback measured unusable (63% sign
+agreement) and rejected. Specs: `Memory/mneme/docs/{EPA,phrase-epa-strategy,
+spec-epa-expansion,spec-epa-substrate}.md`.
+
+**New docs.** `GUIDE-create-dictionary.md`, `spec-vocab-strategy.md`,
+`spec-meta-db.md`, `spec-artifact-identity.md` (System 1);
+EPA suite (mneme). Status: STAGED — IDs provisional; EPA/meta layers are
+System-1-deterministic now, System-2 columns reserved until EPA finalization.
+
+### Facets layer (2026-06-19) — static semantic annotation, BUILT + VERIFIED
+
+A 4-byte facet record (`semantic_bucket` + composable `logic_cue_mask` + `flags`,
+keyed by `id_bytes`) now annotates every dictionary entry, added in place as the
+`facets` + `meta` sub-databases (`max_dbs` 2→4) without touching `forward`/`reverse`.
+Deterministic, no model inference. 373,918 entries faceted in ~2s; forward/reverse
+verified byte-exact; deterministic content fingerprint `2d2feb69…`; gates
+T1/T3/T4/T5/T6/T9/T10/T12 pass.
+
+- Code: `config.py`, `normalize.py`, `facets.py`, `facet_builder.py`, `facet_reader.py`,
+  `verify_facets.py`, `data/facet_overrides.tsv`.
+- System-1 spec: `docs/compression/spec-facets-db.md` (v2).
+- Cross-dictionary STANDARD: `../Memory/docs/SEMANTIC_FACETS_SPEC.md` (v1).
+- The record currently keys on existing Base64 IDs; binary storage optimization
+  is a deferred phase, after the dictionary/file-format spec locks.
+
+Release: `dictionary_release=v0.4.0`, `dictionary_status=staged`. S1 IDs are not
+yet final — only 1 dictionary test group has run (5–10 planned for char-2/char-3;
+char-4 deferred to stabilization). Facets are re-derived per build: re-run
+`facet_builder.py` after every dictionary rebuild. Fingerprint is not a frozen
+contract until status flips to `frozen`. Downstream consumers: bind to surfaces,
+re-map per build, don't persist raw S1 IDs yet (see `Memory/docs/SEMANTIC_FACETS_SPEC.md` §10b).
+
+### v0.4 corpus front-end + sized builds (in progress)
+
+The vocabulary pipeline is being rebuilt for v0.4 — better vocabulary from a
+**multi-source pooled corpus** and **use-case-sized** dictionaries:
+
+- **Multi-source ingest:** `source_adapters.py` (contract) + `transcripts`
+  (`Resources/transcripts/`) and `wikipedia` adapters; `pool_counter.py` pools
+  sources with per-source counts + **dispersion** (one source vs many).
+- **Authority/coverage:** `wiktionary_categories.py` harvests a topic-labeled
+  **word base** (inclusion list) so valuable terms missing from frequency sources
+  still get entries.
+- **Builder:** `dictionary_builder_v03.build()` now takes a pluggable
+  `select_strategy` (default = frequency) + `max_tier` build depth —
+  **size = char-2 / char-3 / char-4**.
+- Specs: `docs/compression/spec-corpus-sourcing.md`,
+  `docs/compression/spec-dict-testgroups.md`. Status: corpus front-end + builder
+  hooks built + tested (synthetic); full pooled rebuild pending real source dumps.
 
 ---
 
@@ -224,90 +309,4 @@ v0.4 -- COMPRESSION TRACK
         Target the JSON-specific redundancies that fixed-tier
         dictionary compression cannot reach:
           - repeated JSON field keys
-          - segment record templates
-          - timestamp delta encoding
-          - speaker dictionaries
-          - known record shapes
-        Goal: file ratio 2.5x+ on transcript JSON.
-
-v0.4 -- LLM TRACK
-        Retrain 3B/8B/14B models against the locked v0.3 vocabulary
-        contract. Validate the on-device thesis:
-          - 3B-class fits in 2 GB at int4 + Tiny/Compact profile
-          - 55% token reduction translates to 2-3x effective context
-          - Phrase-atom training improves semantic atomicity
-        Goal: prove the vocabulary contract delivers measurable
-        downstream model quality + memory wins.
-```
-
-The two tracks are orthogonal. The dictionary is frozen for both.
-
----
-
-## Critical Requirement: 100% Lossless
-
-```
-For each v1 format and each transcript:
-    decode(encode(file_bytes)) == file_bytes   # byte-exact
-
-VERIFIED at v0.3.0:
-    10/10 v1 samples PASS
-    3/3 transcripts PASS
-    Both text (.elo) and binary (.eloB) wire formats PASS
-
-This is non-negotiable. Any future change that breaks round-trip
-on the existing test set must include a versioned reader/writer
-to preserve the v0.3.0 contract.
-```
-
----
-
-## Deferred to System 2
-
-```
-EPA projection           (seed-word embedding projection)
-Process stage labels     (Surov 2022 stage classification)
-FAISS index              (vector similarity search)
-Sentence-transformers    (embedding model)
-Filler weight deltas     (probability modifiers on adjacent tokens)
-NUM: prefix optimisation (number bypass)
-Per-document context windows
-Adaptive dictionary supplementation
-```
-
----
-
-## C/C++ Migration Rules (enforced)
-
-```
-1. FORMAT_VERSION embedded in every .elo file header.
-2. struct.pack('<I', n) for all stored integers (no pickle).
-3. Codec functions stateless across module boundaries.
-4. caps_codec is pure base64 arithmetic; no Python idioms.
-5. tokenizer is pure character-class predicates; direct C translation.
-6. Module structure mirrors planned C API surface.
-```
-
-See `../CLAUDE.md` "C/C++ Migration Readiness" for details.
-
----
-
-## Reference
-
-```
-Repository:     github.com/4waymedia/semantic-compression
-.elo format:    github.com/4waymedia/elo-format
-EloAI:          https://eloai.dev
-Architecture:   ../CLAUDE.md
-
-Tagged releases:
-  v0.2          Predictive Binary Token Stream
-  v0.3.0        Phrase Dictionary and LLM Vocabulary Contract
-
-Active docs:
-  docs/compression/spec-v0.3.md           current spec
-  docs/compression/benchmark-v0.3.md      v0.3 measurements
-  docs/compression/v0.3-analysis.md       theory vs practice retro
-  docs/v1/profiles.md                     LLM vocab contract
-  elo_file_format/ELO_FILE_FORMAT.md      file format spec (older draft)
-```
+          - segment record te

@@ -41,7 +41,9 @@ import math
 import struct
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import lmdb
 from tqdm import tqdm
@@ -173,16 +175,72 @@ def load_phrase_candidates(path: Path) -> list[tuple[str, int, int, float]]:
 # Build
 # ---------------------------------------------------------------------------
 
+# Byte-cost constants for the bytes_saved scorer (match phrase_miner.py).
+WORD_AVG_BYTES = 1.8     # avg current encoded cost per word (v0.2-binary model)
+REF_ID_WIDTH   = 2       # shallowest content ID width (Tier 1, 2 bytes)
+
+
+# Selection strategies (pure, deterministic scorers). Contract per
+# spec-dict-testgroups.md §5:  (surface, freq, kind, n, pmi) -> float.
+# The competing pool is ordered by DESCENDING score.
+def score_by_frequency(surface, freq, kind, n, pmi=0.0):
+    """S0 baseline: raw corpus frequency (ignores surface length)."""
+    return float(freq)
+
+
+def score_by_bytes_saved(surface, freq, kind, n, pmi=0.0):
+    """S1: expected bytes removed from the corpus by promoting this surface
+    to a short ID. cost_now = utf8 length (words) or n*WORD_AVG_BYTES (phrases);
+    first-cut shallowest-tier approximation prices the ID at REF_ID_WIDTH.
+    Self-pruning: surfaces with cost_now <= REF_ID_WIDTH score <= 0.
+    """
+    if kind == 'phrase':
+        cost_now = n * WORD_AVG_BYTES
+    else:
+        cost_now = len(surface.encode('utf-8'))
+    return float(freq) * (cost_now - REF_ID_WIDTH)
+
+
 def build(
     word_freq_file: Path = WORD_FREQ_FILE,
     phrase_file: Path = PHRASE_FILE,
     lmdb_path: Path = LMDB_PATH,
-    stats_file: Path = STATS_FILE,
+    stats_file: Path | None = None,
     map_size_gb: int = MAP_SIZE_GB,
     min_freq: int = MIN_FREQ_FOR_DICT,
     drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
     tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
+    select_strategy: Callable[..., float] = score_by_frequency,
+    max_tier: int = 3,
+    token_ids_csv: Path | None = None,
+    special_tok_json: Path | None = None,
+    byte_fallback_csv: Path | None = None,
+    profile_cuts_json: Path | None = None,
 ) -> dict:
+    # ----------------------------------------------------------------------
+    # Per-build artifact paths.  Every build writes its OWN stats + profile
+    # artifacts so successive builds never clobber each other.  The default
+    # *production* build (lmdb_path == LMDB_PATH) keeps writing the versioned
+    # contract files under data/ + db/ for backward compatibility; any other
+    # output location auto-co-locates its artifacts next to its own LMDB.
+    # Explicit path args always win.
+    # ----------------------------------------------------------------------
+    lmdb_path = Path(lmdb_path)
+    _is_default_build = lmdb_path.resolve() == LMDB_PATH.resolve()
+    _out = lmdb_path.parent
+    if _is_default_build:
+        stats_file        = stats_file        or STATS_FILE
+        token_ids_csv     = token_ids_csv     or TOKEN_IDS_CSV
+        special_tok_json  = special_tok_json  or SPECIAL_TOK_JSON
+        byte_fallback_csv = byte_fallback_csv or BYTE_FALLBACK_CSV
+        profile_cuts_json = profile_cuts_json or PROFILE_CUTS_JSON
+    else:
+        stats_file        = stats_file        or _out / 'dict_stats.json'
+        token_ids_csv     = token_ids_csv     or _out / 'token-ids.csv.gz'
+        special_tok_json  = special_tok_json  or _out / 'special-tokens.json'
+        byte_fallback_csv = byte_fallback_csv or _out / 'byte-fallback.csv'
+        profile_cuts_json = profile_cuts_json or _out / 'profile-cuts.json'
+
     print('Loading word frequencies...')
     word_freq = load_word_frequencies(word_freq_file)
     total_word_tokens = sum(word_freq.values())
@@ -229,6 +287,9 @@ def build(
     # ----------------------------------------------------------------------
     # Build non-tier0 word pool
     # ----------------------------------------------------------------------
+    # PMI lookup exposed to select_strategy (words have no PMI -> 0.0).
+    pmi_of: dict[str, float] = {ph: pm for (ph, _n, _f, pm) in phrase_records}
+
     word_pool: list[tuple[str, int, str, int]] = []
     for w, f in word_freq.items():
         if w in tier0_set:
@@ -236,12 +297,12 @@ def build(
         if f < min_freq:
             continue
         word_pool.append((w, f, 'word', 1))
-    word_pool.sort(key=lambda e: -e[1])
+    word_pool.sort(key=lambda e: -select_strategy(e[0], e[1], e[2], e[3], pmi_of.get(e[0], 0.0)))
 
     phrase_pool: list[tuple[str, int, str, int]] = [
         (p, f, 'phrase', n) for (p, f, n) in filtered_phrases
     ]
-    phrase_pool.sort(key=lambda e: -e[1])
+    phrase_pool.sort(key=lambda e: -select_strategy(e[0], e[1], e[2], e[3], pmi_of.get(e[0], 0.0)))
 
     # ----------------------------------------------------------------------
     # Tier 1 reservation: top tier1_word_reserve WORDS get reserved Tier 1
@@ -253,7 +314,7 @@ def build(
 
     # Pool that competes for tier slots AFTER reserved-Tier-1 words:
     pool: list[tuple[str, int, str, int]] = remaining_words + phrase_pool
-    pool.sort(key=lambda e: -e[1])
+    pool.sort(key=lambda e: -select_strategy(e[0], e[1], e[2], e[3], pmi_of.get(e[0], 0.0)))
 
     word_count_in_pool   = sum(1 for _,_,k,_ in pool if k == 'word')
     phrase_count_in_pool = sum(1 for _,_,k,_ in pool if k == 'phrase')
@@ -332,17 +393,17 @@ def build(
     def _assign(surface: str) -> None:
         """Place 'surface' in the next available tier slot."""
         nonlocal t1_counter, t2_counter, t3_counter, skipped_overflow
-        if t1_counter < TIER_CAPACITY[1]:
+        if max_tier >= 1 and t1_counter < TIER_CAPACITY[1]:
             sid = _encode_id(1, t1_counter)
             t1_counter += 1
             tier_counts[1] += 1
             tier_of[surface] = 1
-        elif t2_counter < TIER_CAPACITY[2]:
+        elif max_tier >= 2 and t2_counter < TIER_CAPACITY[2]:
             sid = _encode_id(2, t2_counter)
             t2_counter += 1
             tier_counts[2] += 1
             tier_of[surface] = 2
-        elif t3_counter < TIER_CAPACITY[3]:
+        elif max_tier >= 3 and t3_counter < TIER_CAPACITY[3]:
             sid = _encode_id(3, t3_counter)
             t3_counter += 1
             tier_counts[3] += 1
@@ -410,9 +471,9 @@ def build(
     # ----------------------------------------------------------------------
 
     # 1. token-ids-v1.csv.gz
-    print(f'Writing {TOKEN_IDS_CSV}...')
-    TOKEN_IDS_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(TOKEN_IDS_CSV, 'wt', encoding=STREAM_ENCODING, newline='') as gz:
+    print(f'Writing {token_ids_csv}...')
+    token_ids_csv.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(token_ids_csv, 'wt', encoding=STREAM_ENCODING, newline='') as gz:
         writer = csv.writer(gz)
         writer.writerow(['id', 'base64_id', 'surface', 'tier', 'freq',
                          'kind', 'tiny', 'compact', 'standard', 'full'])
@@ -434,8 +495,8 @@ def build(
             writer.writerow(row)
 
     # 2. special-tokens-v1.json
-    print(f'Writing {SPECIAL_TOK_JSON}...')
-    SPECIAL_TOK_JSON.parent.mkdir(parents=True, exist_ok=True)
+    print(f'Writing {special_tok_json}...')
+    special_tok_json.parent.mkdir(parents=True, exist_ok=True)
     special_doc = {
         'count': SPECIAL_TOKEN_COUNT,
         'names': SPECIAL_TOKENS,
@@ -451,12 +512,13 @@ def build(
             for name, cut in profile_cuts.items()
         },
     }
-    with open(SPECIAL_TOK_JSON, 'w', encoding=STREAM_ENCODING) as f:
+    with open(special_tok_json, 'w', encoding=STREAM_ENCODING) as f:
         json.dump(special_doc, f, indent=2)
 
     # 3. byte-fallback-v1.csv
-    print(f'Writing {BYTE_FALLBACK_CSV}...')
-    with open(BYTE_FALLBACK_CSV, 'w', encoding=STREAM_ENCODING, newline='') as f:
+    print(f'Writing {byte_fallback_csv}...')
+    byte_fallback_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(byte_fallback_csv, 'w', encoding=STREAM_ENCODING, newline='') as f:
         writer = csv.writer(f)
         header = ['byte_value', 'hex']
         for name in profile_cuts:
@@ -469,8 +531,9 @@ def build(
             writer.writerow(row)
 
     # 4. profile-cuts-v1.json
-    print(f'Writing {PROFILE_CUTS_JSON}...')
-    with open(PROFILE_CUTS_JSON, 'w', encoding=STREAM_ENCODING) as f:
+    print(f'Writing {profile_cuts_json}...')
+    profile_cuts_json.parent.mkdir(parents=True, exist_ok=True)
+    with open(profile_cuts_json, 'w', encoding=STREAM_ENCODING) as f:
         json.dump(profile_cuts, f, indent=2)
 
     # ----------------------------------------------------------------------
@@ -490,6 +553,8 @@ def build(
         'unique_phrase_candidates': len(phrase_records),
         'min_freq_threshold':       min_freq,
         'tier1_word_reserve':       tier1_word_reserve,
+        'max_tier':                 max_tier,
+        'select_strategy':          getattr(select_strategy, '__name__', str(select_strategy)),
         'drop_tier0_bigrams':       drop_tier0_bigrams,
         'dropped_tier0_bigrams':    dropped_tier0_bigrams,
         'total_entries':            len(string_id_of),
@@ -507,6 +572,13 @@ def build(
         'overflow_skipped':         skipped_overflow,
     }
 
+    stats['stats_file_path'] = str(stats_file)
+    stats['artifact_paths'] = {
+        'token_ids_csv':     str(token_ids_csv),
+        'special_tok_json':  str(special_tok_json),
+        'byte_fallback_csv': str(byte_fallback_csv),
+        'profile_cuts_json': str(profile_cuts_json),
+    }
     stats_file.parent.mkdir(parents=True, exist_ok=True)
     with open(stats_file, 'w', encoding=STREAM_ENCODING) as f:
         json.dump(stats, f, indent=2)
@@ -535,15 +607,15 @@ def _print_stats(s: dict) -> None:
               f"total_vocab={cut['total_vocab']:>7,}")
     print()
     print(f"  LMDB: {s['lmdb_path']}")
-    print(f"  Stats: {STATS_FILE}")
-
+    print(f"  Stats: {s.get('stats_file_path', '')}")
 
 # ---------------------------------------------------------------------------
 # Spot-check helper
 # ---------------------------------------------------------------------------
 
 def spot_check(words: list[str], lmdb_path: Path = LMDB_PATH) -> None:
-    env = lmdb.open(str(lmdb_path), readonly=True, max_dbs=2, lock=False)
+    # max_dbs=4 so this coexists with the facets + meta sub-DBs (facet_builder.py).
+    env = lmdb.open(str(lmdb_path), readonly=True, max_dbs=4, lock=False)
     fwd_db = env.open_db(b'forward')
     rev_db = env.open_db(b'reverse')
     print(f"\n{'WORD':<30} {'ID':<8} {'DECODED':<30} {'MATCH'}")
@@ -563,6 +635,123 @@ def spot_check(words: list[str], lmdb_path: Path = LMDB_PATH) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Build package (dedicated deliverables folder)
+# ---------------------------------------------------------------------------
+
+BUILDS_ROOT = DB_DIR / 'builds'      # parent for unique new-build directories
+SIZE_NAME   = {1: 'char-2', 2: 'char-3', 3: 'char-4'}
+
+
+def _read_build_lock(lmdb_path: Path) -> dict:
+    """Return {status, bound_model, fingerprint} from an existing build's meta,
+    or {} if there is no readable meta sub-DB. Used to protect locked builds."""
+    if not Path(lmdb_path).exists():
+        return {}
+    try:
+        from config import META_DB_NAME
+        env = lmdb.open(str(lmdb_path), readonly=True, max_dbs=4, lock=False)
+        try:
+            meta_db = env.open_db(META_DB_NAME, create=False)
+            out = {}
+            with env.begin() as txn:
+                for k in (b'dictionary_status', b'bound_model', b'dictionary_fingerprint'):
+                    v = txn.get(k, db=meta_db)
+                    if v is not None:
+                        out[k.decode()] = v.decode('utf-8')
+            return out
+        finally:
+            env.close()
+    except Exception:
+        return {}
+
+
+def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False,
+                  max_tier: int = 3, min_freq: int = MIN_FREQ_FOR_DICT,
+                  tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
+                  drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
+                  select_strategy: Callable = score_by_frequency,
+                  with_facets: bool = False,
+                  overrides: str = 'data/facet_overrides.tsv',
+                  word_freq_file: Path | None = None,
+                  phrase_file: Path | None = None,
+                  extra_manifest: dict | None = None) -> dict:
+    """Build a self-contained dictionary deliverables package into out_dir:
+    dictionary.lmdb + dict_stats.json + token-ids.csv.gz + special-tokens.json
+    + byte-fallback.csv + profile-cuts.json (+ facets in-LMDB + facets_stats.json
+    when with_facets) + manifest.json.
+
+    overwrite=False : refuse if out_dir already exists (new build -> use a unique dir).
+    overwrite=True  : rebuild in place, BUT refuse if the existing build is
+                      status=locked (bound to an LLM retrain) unless force=True.
+    """
+    out_dir = Path(out_dir)
+    lmdb_path = out_dir / 'dictionary.lmdb'
+
+    if out_dir.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f"{out_dir} already exists. Use a unique --new-build dir, or pass "
+                f"--build-dir with --overwrite to rebuild in place.")
+        lock = _read_build_lock(lmdb_path)
+        if lock.get('dictionary_status') == 'locked' and not force:
+            raise PermissionError(
+                f"REFUSING to overwrite {out_dir}: dictionary is LOCKED to an LLM "
+                f"retrain (bound_model={lock.get('bound_model', '?')}, "
+                f"fingerprint={lock.get('dictionary_fingerprint', '?')[:16]}...). "
+                f"A locked dictionary is paired with a trained model and must not "
+                f"change. Pass force=True only if you are intentionally breaking "
+                f"that pairing.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stats = build(lmdb_path=lmdb_path, max_tier=max_tier, min_freq=min_freq,
+                  tier1_word_reserve=tier1_word_reserve,
+                  drop_tier0_bigrams=drop_tier0_bigrams,
+                  select_strategy=select_strategy,
+                  word_freq_file=word_freq_file or WORD_FREQ_FILE,
+                  phrase_file=phrase_file or PHRASE_FILE)
+
+    facets_done = False
+    if with_facets:
+        import subprocess
+        _here = Path(__file__).resolve().parent
+        _ov = Path(overrides)
+        if not _ov.is_absolute():
+            _ov = _here / overrides
+        subprocess.run([sys.executable, str(_here / 'facet_builder.py'),
+                        '--db', str(Path(lmdb_path).resolve()),
+                        '--overrides', str(_ov),
+                        '--stats', str((out_dir / 'facets_stats.json').resolve())],
+                       cwd=str(_here), check=True)
+        facets_done = True
+
+    manifest = {
+        'build_dir':        str(out_dir),
+        'created_utc':      datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'size':             SIZE_NAME.get(max_tier, f'tier{max_tier}'),
+        'max_tier':         max_tier,
+        'select_strategy':  getattr(select_strategy, '__name__', str(select_strategy)),
+        'min_freq':         min_freq,
+        'tier1_word_reserve': tier1_word_reserve,
+        'entries':          stats['total_entries'],
+        'tier_counts':      [stats['tier0_count'], stats['tier1_count'],
+                             stats['tier2_count'], stats['tier3_count']],
+        'with_facets':      facets_done,
+        # Lifecycle: a fresh build is always 'staged'. Promote with stamp_meta.py
+        # (staged -> frozen -> locked). 'locked' = bound to an LLM retrain.
+        'dictionary_status': 'staged',
+        'bound_model':      None,
+        'deliverables':     sorted(p.name for p in out_dir.iterdir() if p.is_file()),
+    }
+    if extra_manifest:
+        manifest.update(extra_manifest)
+    (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2),
+                                           encoding=STREAM_ENCODING)
+    print(f"\n[PACKAGE] {out_dir}  ({manifest['size']}, "
+          f"{stats['total_entries']:,} entries, facets={facets_done}, status=staged)")
+    return manifest
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -576,12 +765,49 @@ def main() -> None:
     p.add_argument('--keep-tier0-bigrams', action='store_true',
                    help='retain 2-grams of Tier-0 words even though they save '
                         'zero bytes (off by default)')
+    p.add_argument('--max-tier', type=int, default=3, choices=(1, 2, 3),
+                   help='build depth / size: 1=char-2, 2=char-3, 3=char-4 '
+                        '(default 3, behavior-identical to v0.3)')
+    p.add_argument('--with-facets', action='store_true',
+                   help='derive the facets layer after the build '
+                        '(runs facet_builder.py on the new LMDB)')
+    # ---- build-package output modes (mutually exclusive) ----
+    out = p.add_mutually_exclusive_group()
+    out.add_argument('--build-dir', metavar='PATH',
+                     help='write/rebuild a self-contained build package at PATH. '
+                          'With --overwrite, rebuilds in place (refused if the '
+                          'existing build is locked to an LLM retrain).')
+    out.add_argument('--new-build', nargs='?', const='build', metavar='NAME',
+                     help='create a NEW build package in a unique directory '
+                          'db/builds/<NAME>_<UTC-timestamp>/ (never clobbers).')
+    p.add_argument('--overwrite', action='store_true',
+                   help='with --build-dir: rebuild in place over an existing package')
+    p.add_argument('--force', action='store_true',
+                   help='with --overwrite: override the LLM-retrain lock guard '
+                        '(intentionally break a dictionary<->model pairing)')
     args = p.parse_args()
-    build(
-        min_freq=args.min,
-        tier1_word_reserve=args.tier1_reserve,
-        drop_tier0_bigrams=not args.keep_tier0_bigrams,
-    )
+
+    common = dict(max_tier=args.max_tier, min_freq=args.min,
+                  tier1_word_reserve=args.tier1_reserve,
+                  drop_tier0_bigrams=not args.keep_tier0_bigrams,
+                  with_facets=args.with_facets)
+
+    if args.build_dir:
+        build_package(Path(args.build_dir), overwrite=args.overwrite,
+                      force=args.force, **common)
+    elif args.new_build is not None:
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        build_package(BUILDS_ROOT / f'{args.new_build}_{ts}',
+                      overwrite=False, **common)
+    else:
+        # Default: production contract build (data/*-v1 + db/dict_stats_v03.json),
+        # behavior-preserving for the existing pipeline.
+        build(min_freq=args.min, tier1_word_reserve=args.tier1_reserve,
+              drop_tier0_bigrams=not args.keep_tier0_bigrams, max_tier=args.max_tier)
+        if args.with_facets:
+            import subprocess
+            subprocess.run([sys.executable, 'facet_builder.py',
+                            '--db', str(LMDB_PATH)], check=True)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,17 @@
+{{Short description|Basic structural unit of life}}
+{{about|the biological unit}}
+The '''cell''' is the [[basic unit|basic structural and functional unit]] of all
+known [[organism]]s. A cell is the smallest unit of [[life]].<ref name="alberts">Alberts et al., ''Molecular Biology of the Cell''.</ref> Cells consist of [[cytoplasm]] enclosed within a [[cell membrane|membrane]].
+
+== Structure ==
+Most cells contain a [[cell nucleus|nucleus]] and other [[organelle]]s such as
+[[mitochondria]] and [[ribosome]]s. The mitochondria generate most of the cell's
+supply of [[adenosine triphosphate|ATP]], used as a source of chemical energy.<ref>Energy review.</ref>
+
+<!-- editorial note: expand this section later -->
+
+== Cell types ==
+Cells are broadly classified as [[prokaryote|prokaryotic]] or [[eukaryote|eukaryotic]].
+{{citation needed}} See also [[File:Cell diagram.svg|thumb|A typical cell]].
+
+For more, see [https://example.org/biology the biology portal].

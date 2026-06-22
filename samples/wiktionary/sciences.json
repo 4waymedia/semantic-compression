@@ -1,0 +1,12 @@
+{
+  "_note": "Tiny sample of the Wiktionary category tree (Category:en:Sciences). Real harvest walks the live MediaWiki API; this lets the harvester run offline.",
+  "root": "en:Sciences",
+  "categories": {
+    "en:Sciences":  { "subcategories": ["en:Biology", "en:Chemistry", "en:Physics"], "terms": ["science", "hypothesis", "experiment"] },
+    "en:Biology":   { "subcategories": ["en:Genetics"], "terms": ["mitochondrion", "homeostasis", "phenotype", "ribosome", "organelle"] },
+    "en:Genetics":  { "terms": ["allele", "genotype", "chromosome", "nucleotide"] },
+    "en:Chemistry": { "terms": ["enthalpy", "isotope", "catalyst", "molarity", "valence"] },
+    "en:Physics":   { "subcategories": ["en:Optics"], "terms": ["quark", "entropy", "photon", "inertia"] },
+    "en:Optics":    { "terms": ["refraction", "diffraction", "birefringence"] }
+  }
+}

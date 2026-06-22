@@ -1,0 +1,58 @@
+# ============================================================================
+# Dictionary build spec  —  one file fully defines one dictionary build.
+# Resolver: python -m semantic_compression.build_from_spec <this file>
+# ============================================================================
+
+meta:
+  name: general_v0.4_char4          # build id (-> db/builds/<name>/)
+  version: "0.4.0"
+  date: "2026-06-20"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-3B"               # target / bound model (optional)
+  status: staged                    # staged | frozen | locked
+  purpose: >
+    General-domain dictionary covering conversational (transcripts) and
+    literary (books) registers, for the v0.4 on-device LLM vocabulary.
+  goals:
+    - Byte-exact codec at every size (verify_lossless holds).
+    - Low OOV on both transcripts and held-out books.
+    - char-4 atomicity for the LLM embedding budget.
+  use_cases:
+    - On-device LLM vocabulary contract.
+    - Transcript + document compression.
+    - ELO ID-space search index.
+
+build:
+  size: char-4                      # char-2 | char-3 | char-4
+  select_strategy: frequency        # frequency | bytes_saved
+  min_freq: 1
+  tier1_word_reserve: 1024
+  with_facets: true
+
+corpus:                             # what the dictionary is BUILT FROM
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt   # 373-channel counts
+    weight: 1.0
+    license: per-channel derived stats (counts only, no source text)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+
+eval:                               # held-out TESTS (excluded from corpus)
+  harness: bench_dict_efficiency
+  transcript_eval:
+    channels: semantic_compression/data/eval_channels.txt
+    top: 10
+  held_out_books:                   # eval-only — never enter the corpus
+    - moby_dick.txt
+    - pride_and_prejudice.txt
+    - tale_of_two_cities.txt
+    - count_of_monte_cristo.txt
+    - room_with_a_view.txt
+
+instructions: >
+  Frequency selection (S0) — on transcripts S0≈S1, and coverage (corpus breadth)
+  is the dominant lever, so the work here is corpus, not scorer. Add full books to
+  Resources/books to lower OOV further. Re-run the eval harness after every build.

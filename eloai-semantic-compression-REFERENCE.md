@@ -1,7 +1,8 @@
 # EloAI Semantic Compression — Portable Reference
 > Drop-in context for another Claude Code project that needs to call into,
 > consume from, or interoperate with the System 1 compression pipeline.
-> Last sync: v0.3.0 (2026-06-07). Repository:
+> Last sync: v0.4.0 — Semantic Facets Layer (STAGED, 2026-06-19);
+> dictionary frozen at v0.3.0. Repository:
 > github.com/4waymedia/semantic-compression
 
 ---
@@ -18,8 +19,15 @@ Two wire formats:
 - `.elo`  — text stream, pipe-delimited tokens
 - `.eloB` — binary, tier-tagged variable-length (1-4 bytes per ID)
 
-**Status:** v0.3.0 production. 13/13 test files byte-exact round-trip.
+As of **v0.4.0 (staged)** the dictionary also carries a **static semantic facets
+layer** — a 4-byte record per entry (`semantic_bucket` + composable
+`logic_cue_mask` + `flags`) in two new sub-DBs (`facets`, `meta`). Deterministic,
+no inference, never emitted into the stream. See the facets contract below.
+
+**Status:** v0.3.0 dictionary, production. 13/13 test files byte-exact round-trip.
 Avg ratio 1.99x on transcripts, 55% stream-token reduction vs v0.2.
+v0.4.0 facets layer STAGED (not frozen) — S1 IDs still provisional across
+dictionary test groups; facets re-derived per build.
 
 ---
 
@@ -73,8 +81,29 @@ sc_encode(text, lib) -> (stream_bytes, error_code)
 sc_decode(stream_bytes, lib) -> (text, error_code)
 ```
 
-LMDB store has two named DBs in one env: `forward` (surface -> ID) and
-`reverse` (ID -> surface). ~100ns lookup. C-readable directly.
+LMDB store has FOUR named DBs in one env (`max_dbs=4`): `forward`
+(surface -> ID), `reverse` (ID -> surface), `facets` (ID -> 4-byte record), and
+`meta` (versions + identity + fingerprint). ~100ns lookup. C-readable directly.
+
+### 4. Facets layer (v0.4.0, staged) — opt-in semantic annotation
+
+```python
+from semantic_compression.facet_reader import get_facet, get_meta, verify_fingerprint
+facet = get_facet(env, id_bytes)          # -> (bucket, cue_mask, flags) | None
+from semantic_compression.facet_reader import describe_facet
+describe_facet(facet)                      # -> {bucket, cues[], flags[], utility}
+```
+
+Record (`struct '<BHB'`, 4 bytes): byte0 `semantic_bucket`
+(UNKNOWN/TOPIC/METHOD/CONCEPT/RELATION/STRUCTURAL); bytes1-2 `logic_cue_mask`
+(uint16 LE, composable: CAUSE/CONTRAST/INFERENCE/CONDITION/…); byte3 `flags`
+(MULTIWORD/CLOSED_CLASS/MANUAL/HEURISTIC/AMBIGUOUS + 2-bit UTILITY).
+
+Built deterministically by `facet_builder.py` (no model). `meta` self-describes
+`dictionary_release` / `dictionary_status` (`staged`|`frozen`) + a content
+fingerprint. **Facets are re-derived per dictionary build**; the fingerprint is a
+contract only when `dictionary_status == frozen`. Standard:
+`Memory/docs/SEMANTIC_FACETS_SPEC.md`; S1 detail: `docs/compression/spec-facets-db.md`.
 
 ---
 
@@ -143,7 +172,12 @@ RESERVED FOR S2    PERCEPTION NOVELTY GOAL_PLAN ACTION PROGRESS RESULT
 
 ---
 
-## v1 format coverage (proven byte-exact)
+## Format coverage (proven byte-exact)
+
+> Note on "v1": the `-v1` suffix on the frozen artifacts above
+> (`token-ids-v1`, …) is the **vocabulary-contract** version, not a release and
+> not the dictionary semver (v0.3.0). The format-coverage set below is simply
+> the formats proven byte-exact to date — it carries no version number.
 
 ```
 .txt  .md  .json  .csv  .xml  .html  .yaml  .log  .srt  .vtt
@@ -170,88 +204,31 @@ semantic_compression/
   ngram_counter.py             2-6 word n-gram extraction
   phrase_miner.py              PMI + maximal-phrase filter
   dictionary_builder.py        v0.2 builder (words only)
-  dictionary_builder_v03.py    v0.3 builder (words + phrases)
+  dictionary_builder_v03.py    v0.3 builder (words + phrases); --with-facets hook
   compressor.py                encode/decode for .elo and .eloB
+  normalize.py                 facet surface-normalization contract (NFC+casefold)
+  facets.py                      deterministic assign_facet() + load_overrides()
+  facet_builder.py               in-place facets+meta build (max_dbs 2->4)
+  facet_reader.py                get_facet / get_meta / verify_fingerprint + decoders
+  stamp_meta.py                stamp dictionary_release/status into meta (no re-facet)
   verify_*.py                  per-module test harnesses
+  verify_facets.py               facets gate suite (T1/T3/T4/T5/T6/T9/T10/T12)
   verify_lossless.py           full round-trip proof harness
+  test_facets.py                 facets unit tests (temp-LMDB, corruption, overrides)
+  data/
+    facet_overrides.tsv          human-editable facet overrides (starter)
   db/
-    dictionary.lmdb            production LMDB store (two named DBs)
+    dictionary.lmdb            production LMDB store (4 named DBs: forward/
+                               reverse/facets/meta)
+    dict_stats_facets.json       facets build report (histograms, fingerprint)
     canonical.db               legacy SQLite (deprecated, kept for ref)
-  samples/                     one byte-perfect test file per v1 format
+  samples/                     one byte-perfect test file per covered format
   docs/
-    compression/spec-v0.3.md   current spec
+    compression/spec-v0.3.md   v0.3 spec
+    compression/spec-v0.4.md   v0.4 tracks
+    compression/spec-facets-db.md facets layer (v2) — System-1 detail
     compression/benchmark-v0.3.md
     compression/v0.3-analysis.md
     v1/profiles.md             LLM vocabulary contract
-  SYSTEM1.md                   current build status
-```
-
----
-
-## How to consume from another project
-
-### Just want to compress/decompress files
-```python
-from semantic_compression.compressor import encode_file, decode_file
-encode_file('input.json', 'output.elo', mode='text')   # or 'binary'
-decode_file('output.elo', 'roundtrip.json')
-assert open('input.json','rb').read() == open('roundtrip.json','rb').read()
-```
-
-### Want to use the vocabulary in an LLM project
-Pull the four frozen artifacts (`token-ids-v1.csv.gz`,
-`special-tokens-v1.json`, `byte-fallback-v1.csv`, `profile-cuts-v1.json`)
-and pick a profile cut. The dictionary is frozen — same IDs across all
-profiles, smaller profiles are strict prefixes of larger ones.
-
-### Want to extend the dictionary
-You can't. v0.3 is frozen. v0.4 compression track adds a structural
-codec layer ABOVE the dictionary, not new IDs. v0.4 LLM track retrains
-models against the locked vocab. Any future ID changes will bump
-`FORMAT_VERSION` and ship a versioned reader.
-
----
-
-## v0.4 roadmap (open tracks)
-
-```
-v0.4 COMPRESSION   Structure-Aware Transcript JSON Codec
-                   Target JSON-specific redundancies:
-                     repeated keys, segment templates,
-                     timestamp deltas, speaker dicts.
-                   Goal: 2.5x+ on transcript JSON.
-
-v0.4 LLM           Train 3B/8B/14B against the locked v0.3 vocab.
-                   Validate on-device thesis:
-                     3B int4 + Tiny/Compact fits 2 GB.
-                     55% token reduction -> 2-3x effective context.
-```
-
-Orthogonal. Dictionary frozen for both.
-
----
-
-## Locked design decisions (do not relitigate)
-
-| Decision           | Choice                          | Why                                  |
-|--------------------|---------------------------------|--------------------------------------|
-| Charset            | URL-safe Base64 `A-Za-z0-9-_`   | Safe in SQLite keys, paths, APIs     |
-| Tier detection     | ID length                       | No DB lookup needed                  |
-| Lemmatization      | NONE                            | Surface form IS the key              |
-| Whitespace         | Preserved                       | Required for structured formats      |
-| Case               | caps_codec prefix               | Lowercase canonical, cased on stream |
-| Phrase detection   | Longest match first             | Prevents multi-word fragmentation    |
-| Storage            | LMDB (two named DBs)            | ~100ns lookup, C-readable            |
-| Stream delimiter   | `'|'` (0x7C)                    | Forced seed prevents parse breakage  |
-
----
-
-## Reference
-
-```
-Repository:     github.com/4waymedia/semantic-compression
-.elo spec:      github.com/4waymedia/elo-format
-Project:        https://eloai.dev
-Foundation:     Surov (2022), Quantum Core Affect (frontiersin.org)
-EPA basis:      Osgood et al. (1975), Evaluation-Potency-Activity
-```
+  SYSTEM1.md                   current build status (v0.4.0 staged)
+  ../Memory/docs/SEMANTIC_FACETS_SPEC
