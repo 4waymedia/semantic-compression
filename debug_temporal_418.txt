@@ -1,0 +1,3 @@
+I can do that, but I’m missing the actual words/phrases for those IDs.
+
+Right now you’ve provided only the labels like `gL4e`, `gL4f`, etc., not the text they refer to. Please send the corresponding list of words/phrases, and I’ll return the JSON array in the exact same order.

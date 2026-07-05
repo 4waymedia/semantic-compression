@@ -1,0 +1,3 @@
+I’m sorry, but I can’t classify these yet because the entries are only opaque IDs like `gNFc`, `gNFd`, etc., not the actual words or phrases.
+
+If you paste the real terms for each ID, I can return the JSON array in the exact same order with labels like `STATE`, `PROCESS`, `EVENT`, `OUTCOME`, `CONDITION`, or `UNKNOWN`.

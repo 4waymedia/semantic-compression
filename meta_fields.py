@@ -21,12 +21,11 @@ sys.path.insert(0, ".")
 import config as cfg
 from config import utility_of
 from facets import assign_facet
+from verb_complements import complement_of
 
-# Abstract-noun suffixes -> abstraction = abstract (deterministic, single words).
-ABSTRACT_SUFFIXES = (
-    "tion", "sion", "ment", "ness", "ity", "ship", "dom", "hood", "ism",
-    "ance", "ence", "cy", "acy", "ology", "graphy", "logy", "ism",
-)
+# Abstraction tell now lives in config.is_abstract (curated lexicon + abstract
+# suffixes), shared with facets so the bucket (abstract -> CONCEPT) and the meta
+# abstraction dimension agree. Full concrete/abstract is the S2/EPA layer's job.
 
 # Cue groups that surface the latent causality / temporality / scope axes that
 # already live in the logic_cue_mask (we expose them, we don't re-derive).
@@ -61,9 +60,9 @@ def derive_meta(surface: str, overrides: dict | None = None,
     # --- abstraction (concrete | abstract | None) -- deterministic suffix tell
     abstraction = None
     if not is_multiword and bucket in (cfg.BUCKET["TOPIC"], cfg.BUCKET["CONCEPT"]):
-        if surface.lower().endswith(ABSTRACT_SUFFIXES):
-            abstraction = "abstract"; method["abstraction"] = "suffix"
-        # no positive concrete tell from surface alone -> leave None (honest)
+        if cfg.is_abstract(surface):
+            abstraction = "abstract"; method["abstraction"] = "suffix/lexicon"
+        # no positive concrete tell from surface alone -> leave None (honest; S2/EPA)
 
     # --- causality / temporality / scope -- SURFACED from the cue mask
     causality = sorted(c for c in _CAUSAL_CUES if c in cues) or None
@@ -76,6 +75,12 @@ def derive_meta(surface: str, overrides: dict | None = None,
     # --- domain / register -- System-1 from provenance when available
     if domain: method["domain"] = "provenance"
     if source_register: method["register"] = "provenance"
+
+    # --- complement -- verb subcategorization (to_infinitive | to_noun | both).
+    # The POS-resolution instruction set: lets a consumer disambiguate a "to X"
+    # homograph from the GOVERNING verb. Single-word verbs only; None otherwise.
+    complement = complement_of(surface) if not is_multiword else None
+    if complement: method["complement"] = "lexicon"
 
     row = {
         # identity / structural (deterministic)
@@ -92,6 +97,7 @@ def derive_meta(surface: str, overrides: dict | None = None,
         "scope":       scope,            # coarse; fine = S2
         "domain":      domain,           # provenance (Wiktionary/source)
         "register":    source_register,  # provenance (source kind)
+        "complement":  complement,       # verb subcategorization (POS resolution)
         # System-2 RESERVED (None until EPA finalizes)
         **{k: None for k in S2_RESERVED},
         "_method": method or None,

@@ -1,0 +1,3 @@
+I can do that, but I’m missing the actual words/phrases to classify.
+
+The list you provided contains only IDs like `g7_4`, `g7_6`, etc., not the corresponding text items. Please send the phrases themselves (or a mapping from each ID to its phrase), and I’ll return the JSON array in the exact same order.

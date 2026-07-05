@@ -1,0 +1,57 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-vocab-v1
+# Unified vocabulary: ELO Browser codebook == ELO-native LLM vocab.
+# Resolver: python -m semantic_compression.build_from_spec <this file>
+# ============================================================================
+
+meta:
+  name: elo-browser-vocab-v1-c4b      # -> db/builds/<name>/ (canonical char-4, bytes_saved; cut to v1)
+  version: "1.0.0"
+  date: "2026-06-24"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: frozen                      # frozen after verification + re-stamp
+  purpose: >
+    One artifact serving BOTH the browser codebook and the ELO-native LLM
+    vocabulary: char-3 full, conversational + literary corpus with web/HTML
+    structure folded in, plus deterministic facets + meta (semantics per id).
+  goals:
+    - Browser codebook == LLM vocab — ids, semantics, facets all match.
+    - Fill char-3 (262,144) for token density (context economics).
+    - Keep web/HTML structure terms so the model can ingest captured pages (.elo).
+  use_cases:
+    - ELO-native LLM vocabulary contract.
+    - Browser page + transcript compression.
+    - Semantic (facet/EPA) resolution per id.
+
+build:
+  size: char-4                        # tier 0-3; keeps all candidates, vocab cut to 262,144 downstream
+  select_strategy: bytes_saved
+  min_freq: 1
+  tier1_word_reserve: 1024
+  with_facets: true
+
+corpus:
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: web_structure
+    precomputed: semantic_compression/data/web_terms_frequencies.txt
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+
+eval:
+  held_out_books: []                  # no split for the contract build
+
+instructions: >
+  Char-3 unified build. Web/HTML structure folded in via
+  web_terms_frequencies.txt (synthetic freq band places tags in tier-2). Facets
+  for web items may need overrides in data/facet_overrides.tsv. After build,
+  re-derive the browser dict json + re-stamp the frozen fingerprint from this
+  build's token-ids (canonical id order).

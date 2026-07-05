@@ -264,9 +264,11 @@ Spec authoring     semantic_compression/builds/<name>.yaml
 Resolver           semantic_compression/build_from_spec.py
 Builder            semantic_compression/dictionary_builder_v03.py (build, build_package, scorers)
 Facets             semantic_compression/facet_builder.py
+Meta DB            semantic_compression/meta_builder.py + meta_fields.py -> meta.db
+Verb complements   semantic_compression/verb_complements.py (canonical -> meta `complement` column)
 Lifecycle          semantic_compression/stamp_meta.py
 Eval harness       semantic_compression/bench_dict_efficiency.py (+ data/eval_channels.txt)
-Lossless gate      semantic_compression/verify_lossless.py ; verify_facets.py
+Lossless gate      semantic_compression/verify_lossless.py ; verify_facets.py ; test_complement_meta.py
 Sources            Resources/transcripts/ , Resources/books/
 Theory             docs/compression/spec-vocab-strategy.md ; spec-corpus-sourcing.md
 Process / cascade  PROCESS.md (§1 cascade, §7 adoption)

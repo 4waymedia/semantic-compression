@@ -171,10 +171,14 @@ def registry_from_package(pkg_dir: str | Path) -> dict:
         bound_refs={"dictionary": dfp, "global_epa": global_epa} if epa_present else None,
         notes=None if epa_present else "EPA match step not yet run (see EPA.md)")
 
+    meta_present = (pkg / "meta.db").exists()
+    meta_stats = pkg / "meta_stats.json"
+    meta_fp = (json.loads(meta_stats.read_text()).get("meta_fingerprint")
+               if meta_stats.exists() else None)
     reg["meta"] = make_identity(
-        "meta", version=1, present=(pkg / "meta.db").exists(), status=status,
-        key_scheme="surface", bound_refs={"dictionary": dfp},
-        notes=None if (pkg / "meta.db").exists() else "meta DB not built (spec-meta-db.md)")
+        "meta", version=1, present=meta_present, status=status,
+        fingerprint=meta_fp, key_scheme="surface", bound_refs={"dictionary": dfp},
+        notes=None if meta_present else "meta DB not built (spec-meta-db.md)")
 
     reg["templates"] = make_identity("templates", version=1, present=False,
                                      status=status, notes="System 2 (mneme), not matched")

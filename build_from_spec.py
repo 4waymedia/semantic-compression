@@ -121,6 +121,14 @@ def main() -> None:
         word_freq_file=wf,
         phrase_file=repo_root / 'semantic_compression/data/phrase_candidates.txt',
         extra_manifest=extra)
+    # Meta layer (System-1 deterministic) -> meta.db
+    try:
+        sys.path.insert(0, "semantic_compression")
+        import meta_builder
+        ms = meta_builder.build_meta(out_dir / "dictionary.lmdb", out_dir / "meta.db")
+        print(f"       meta: {ms['rows']:,} rows  fp={ms['meta_fingerprint'][:12]}")
+    except Exception as e:
+        print(f"       [meta] skipped: {e}")
     # Unified artifact identity registry (dictionary/facets/epa/meta/templates).
     from semantic_compression.artifact_identity import write_registry, validate_registry
     reg = write_registry(out_dir)

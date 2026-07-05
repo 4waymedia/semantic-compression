@@ -1,0 +1,67 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-v01
+# The unified ELO Browser codebook == ELO-native LLM vocabulary.
+# = the latest v0.4 general corpus (transcripts + books) + the website/HTML
+#   group folded in (the gap the general dict lacks), built char-4 so the
+#   `full` profile cut (262,144) is available for the browser/LLM vocab.
+# Density comes from the CODEC (implicit-whitespace + caps), not the dict —
+# so this is a straight canonical build, no builder changes.
+#   Resolver: python -m semantic_compression.build_from_spec <this file>
+# ============================================================================
+
+meta:
+  name: elo-browser-v01               # -> db/builds/elo-browser-v01/
+  version: "1.0.0"
+  date: "2026-06-24"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: staged                      # staged until a model is trained on it, then lock
+  purpose: >
+    One artifact serving BOTH the browser codebook and the ELO-native LLM
+    vocabulary: the v0.4 general dictionary (conversational + literary) with the
+    website/HTML structure group folded in, so the model can also ingest captured
+    pages (.elo). char-4 build; the `full` profile cut (262,144) is the vocab.
+  goals:
+    - Browser codebook == LLM vocab (ids, facets, meta are one artifact).
+    - Keep the v0.4 general coverage AND add website/HTML the general dict lacks.
+    - char-4 depth so the full (262,144) profile cut is available.
+  use_cases:
+    - ELO-native LLM vocabulary contract.
+    - Browser page + transcript compression.
+    - Semantic (facet/meta) resolution per id.
+
+build:                                # FINE-TUNE
+  size: char-4                        # tiers 0-3; full profile cut = 262,144
+  select_strategy: frequency          # S0 default (transcripts S0≈S1); test-group can compare
+  min_freq: 1
+  tier1_word_reserve: 1024
+  with_facets: true
+
+corpus:                               # BASE (= v0.4 general) + EXPANDED (web fold-in)
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt   # 373-channel counts
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure               # THE FOLD-IN — website/HTML group the general dict lacks
+    precomputed: semantic_compression/data/web_terms_frequencies.txt   # 14,487 terms
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []                  # adjust if running a generalization eval
+
+instructions: >
+  Straight canonical build (no builder change). The website/HTML group is folded in
+  via web_terms_frequencies.txt (synthetic freq band placing tags in tier-2/3).
+  Density is delivered by the codec (implicit-whitespace + caps), verified
+  separately (3.61 -> 5.44 chars/tok on the general char-4 full cut). After build:
+  run verify_lossless + verify_facets, score the full cut on held-out via the
+  test-group harness, then adopt (re-point the browser, stamp). Web-term facets may
+  need overrides in data/facet_overrides.tsv. Lock only when a model is trained.

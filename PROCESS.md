@@ -51,7 +51,8 @@ Owning scripts (v0.4 corpus front-end + builder hooks):
 | 4 | builder `select_strategy` (default `score_by_frequency`) + `--max-tier`; harness `docs/compression/spec-dict-testgroups.md` | chosen config |
 | 5 | `dictionary_builder_v03.py` (`--max-tier`, `--with-facets`) | `db/dictionary.lmdb` (forward/reverse), `db/dict_stats_v03.json` |
 | 6 | `library_builder.py` (embeddings/EPA/FAISS) | `db/faiss.index`, `db/canonical.db` |
-| 7 | `facet_builder.py` | `facets`+`meta` sub-DBs, `db/dict_stats_facets.json` |
+| 7 | `vfacet_builder.py` | `b'vfacets'` sub-DB: polarity, temporal, domain, agency, direction |
+| 7b | `vfacet_llm.py` | LLM fill for agency + direction UNKNOWNs → see [`docs/compression/GUIDE-vfacet-llm.md`](docs/compression/GUIDE-vfacet-llm.md) |
 | 8 | `generate_essentials.py` + builder artifacts | `data/*-v1.csv(.gz)/.json` |
 | 9 | `llm-training/` (`build_tokenizer.py` → `train.py`) | tokenizer + checkpoints |
 
@@ -175,6 +176,10 @@ eloai-semantic-compres
   substrate (`Memory/mneme/substrate/epa_substrate.py`) to dictionary IDs → id-keyed
   `b'epa'` + coverage; phrase EPA via composition. Substrate is versioned/fingerprinted.
 - **Meta:** `meta_fields.py` (System-1 deterministic) → `meta.db` (spec-meta-db.md, pending wire-in).
+  Includes the **`complement`** column (verb subcategorization from `verb_complements.py`):
+  the POS-resolution instruction set the extraction pipeline reads to disambiguate a
+  "to X" homograph (`seem`→TO_INFINITIVE vs `map`→TO_NOUN). Deterministic, re-derived per
+  build, part of `meta_fingerprint`.
 - **Artifact identity:** `artifact_identity.py` writes `manifest.artifacts` (dictionary/
   facets/epa/meta/templates) with fingerprint+version+status+bound_refs.
 - **Lock:** `stamp_meta.py --lock-for-model` → `locked` status; overwrite refused.

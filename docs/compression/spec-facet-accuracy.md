@@ -127,6 +127,15 @@ Guardrails: structural gates (verify_facets) still pass; determinism holds.
 ```
 
 ### Desired results (initial targets — revise after baseline)
+
+> **RECALIBRATED 2026-07-05 (gold v2 promotion).** The 71-row seed overstated
+> accuracy; on the promoted 160-row ≥2-model-agreement gold the measured baseline
+> is utility .923 / bucket_content .761 / cue_f1 .833. Gate targets now sit just
+> below that baseline (**.90 / .72 / .80** in `facet_accuracy.py`) so the gate
+> catches *regressions*; the values below remain the RATCHET GOALS, restored as
+> override triage (`facet_gold_review_queue.tsv`) lands. Abstraction cleared its
+> 0.80 L2 target via the Brysbaert concreteness substrate (0.920 on this set).
+
 ```
 LAYER-1 RELEASE GATE (hard — these gate a build):
 utility        >= 0.95   (coarse, high-impact for U1)

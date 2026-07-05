@@ -1,0 +1,3 @@
+I can do this, but I’m missing the actual words/phrases to classify.
+
+The entries you provided are only IDs like `gKbi`, `gKbj`, etc., not the text they refer to. Please send the corresponding words/phrases for each ID, and I’ll return the JSON array in the exact same order.

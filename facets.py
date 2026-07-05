@@ -133,8 +133,9 @@ def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int,
     if is_closed_class:
         cue_mask |= matched_cue
         flags |= FLAG['CLOSED_CLASS']
-        if key in _RELATION_KEYS:
-            bucket = BUCKET['RELATION']
+        # Any closed-class connective/operator is a RELATION (rubric: connective /
+        # logical operator / discourse link) -- not only the RELATION_CUES subset.
+        bucket = BUCKET['RELATION']
 
     if is_filler:
         if key in _NORM_DISCOURSE:
@@ -152,6 +153,12 @@ def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int,
     if bucket is None:
         bucket = BUCKET['TOPIC']
         flags |= FLAG['HEURISTIC']
+
+    # Rubric tie-breaker: an abstract single-word content noun is a CONCEPT, not a
+    # TOPIC (concrete->TOPIC, abstract->CONCEPT). Concrete detection is S2/EPA.
+    if (bucket == BUCKET['TOPIC'] and not is_multiword
+            and utility == UTILITY['CONTENT'] and cfg.is_abstract(key)):
+        bucket = BUCKET['CONCEPT']
 
     if bucket == BUCKET['RELATION'] and utility == UTILITY['CONTENT']:
         utility = UTILITY['FUNCTION']

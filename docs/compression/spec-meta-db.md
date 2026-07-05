@@ -75,6 +75,7 @@ temporality         enum        temporal | null  (fine stage = S2)      S1    su
 scope               enum        quantified | null  (fine scope = S2)    S1    surfaced from cues
 domain              text        coding|medical|military|culinary|…      S1*   Wiktionary topic / source provenance
 register            enum        formal|technical|colloquial|literary    S1*   source provenance
+complement          set         to_infinitive | to_noun (verbs only)    S1    verb_complements lexicon (POS resolution)
 -- System-2 RESERVED (null until EPA finalized) ------------------------------------------
 polarity            enum        positive|negative|neutral|bipolar       S2    sign/bin of EPA-E
 epa_e, epa_p, epa_a float       -4.0 .. +4.0                            S2    EPA (Warriner) lookup
@@ -108,6 +109,7 @@ The external requirements list, reconciled against the architecture:
 | Polarity (pos/neg/neutral/bipolar) | **S2** | sign of EPA Evaluation |
 | Directionality (toward/away, ±) | **S2** | embedding/inference (small curated lexicon possible) |
 | Agency (self/other/system/environment) | **S2** | EPA potency + actor inference |
+| Verb complement (POS resolution) | **S1 now** | `complement` from the `verb_complements` lexicon — disambiguates a "to X" homograph by the governing verb (`seem`→TO_INFINITIVE, `map`→TO_NOUN) |
 
 So 1 axis is fully present, 3 partially (cues/bucket), 2 buildable now from
 provenance, and 3 are EPA/System-2.
@@ -158,6 +160,13 @@ deterministic fingerprint is unchanged.
   exactly as it declares its corpus.
 - Re-run every build (idempotent). Keyed by surface, so re-selection is safe.
 ```
+
+> **Fingerprint note.** `complement` is part of the deterministic column set
+> (`meta_builder.DET_COLS`), so adding it **changes `meta_fingerprint`** for every
+> build. This is expected and safe under `status=staged` (meta is re-derived, no
+> consumer pins it as a frozen contract yet). The extraction pipeline reads this
+> column as the source of truth for complement-aware POS resolution; canonical
+> table = `verb_complements.py`. Re-stamp at the next freeze.
 
 ---
 

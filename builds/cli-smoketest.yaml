@@ -1,0 +1,31 @@
+meta:
+  name: cli-smoketest
+  version: 1.0.0
+  author: Paul (4waymedia)
+  status: staged
+  purpose: cli-smoketest dictionary
+build:
+  size: char-4
+  select_strategy: frequency
+  min_freq: 1
+  tier1_word_reserve: 1024
+  with_facets: true
+corpus:
+- type: transcripts
+  precomputed: semantic_compression/data/word_frequencies.txt
+  weight: 1.0
+  license: per-channel derived stats (counts only)
+- type: books
+  path: Resources/books
+  include: '*.txt'
+  weight: 1.0
+  license: public domain / user-supplied
+- type: web_structure
+  precomputed: semantic_compression/data/web_terms_frequencies.txt
+  weight: 1.0
+  license: browser web dictionary (structure tokens)
+eval:
+  held_out_books: []
+instructions: Scaffolded by prepare_dictionary.py. Density is codec-driven (implicit-whitespace
+  + caps); do not bake variants into the dict. char-3 caps ~83k -- use char-4 + the `full`
+  profile cut for ~262k.

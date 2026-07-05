@@ -35,3 +35,6 @@ Thumbs.db
 db/builds/
 db/_testgroups/
 data/word_frequencies_*.txt
+
+# meta DB (regenerable from forward + meta_fields)
+db/builds/**/meta.db

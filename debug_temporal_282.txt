@@ -1,0 +1,3 @@
+I can do that, but I’m missing the actual words/phrases to classify.
+
+Right now you’ve provided only the IDs (`gE0b`, `gE0c`, etc.), not the corresponding entries. Please send the list with the actual text for each item, and I’ll return the JSON array in the same order.

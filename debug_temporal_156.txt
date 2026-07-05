@@ -1,0 +1,3 @@
+I can do that, but I’m missing the actual list of words/phrases to classify.
+
+Right now your input only contains placeholder IDs (e.g., `g7Q1`, `g7Q2`, … `g7TH`) with no corresponding text. Please provide the mapping (or paste the full list of the actual words/phrases in the same order as those IDs). Once I have the real entries, I’ll return the requested JSON array.

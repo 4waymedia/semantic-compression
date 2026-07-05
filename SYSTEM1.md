@@ -26,6 +26,27 @@ for the theory-vs-practice retrospective.
 
 ---
 
+### Session progress — 2026-06-25 (O-EPA4 phrase composition + verbalizer)
+
+**O-EPA4 — phrase EPA composition (`epa_phrase_composer.py`).** Iterated over all
+373,918 dictionary entries without an existing EPA rating; composed EPA vectors for
+multi-word entries by taking the mean EPA over rated content tokens (stopword-stripped,
+alpha-only, 2–6 tokens). Result: **13,042 strong-tier phrases** written to
+`epa_substrate.lmdb b'epa'`; FAISS index rebuilt to **67,936 vectors** (was 54,894,
++24%). Coverage note: the remaining 82% gap is corpus n-grams with no clean content
+words — no further composition is possible with single-word Warriner/NRC-VAD data.
+STRONG tier (≥2 rated tokens, weight=1.0); WEAK tier (1 rated token, weight=0.8).
+
+**Verbalizer** (`verbalizer.py`, built prior session). `VerbalizerSubstrate` lazy-loads
+the 67,936-vector FAISS index; `Verbalizer.expand(inp)` → `SemanticField` with
+`nodes`, `pole_nodes`, `cross_nodes`, `centroid`. Smoke test suite `verify_verbalizer.py`:
+42/42 gates (T1–T11, covers substrate, `semantic_add`, well-formed SemanticField,
+axes, poles, crosses, direction, determinism, suggest top_n, render/encode, edge cases).
+
+**Step 14 wired into ExtractionPipeline** (`step14_verbalizer.py` + `pipeline.py`
+`verbalizer_expander` param). Optional injection — fully backward-compatible.
+`SemanticAtom.semantic_field` populated per sentence when injected.
+
 ### Session progress — 2026-06-22 (v0.4 infra + affect layer)
 
 Build/provenance infrastructure and the first affect layer landed. All new;

@@ -1,0 +1,3 @@
+I’m missing the actual words/phrases to classify.
+
+You provided only the IDs (`gBnC`, `gBnD`, etc.), but not the corresponding text for each entry. Please send the list with the actual words/phrases, and I’ll return the JSON array in the same order.

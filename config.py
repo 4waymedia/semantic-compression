@@ -359,18 +359,18 @@ UTILITY_MASK  = 0xC0
 # overlap across lists is composition, NOT ambiguity. Content words are never
 # seeded. Surfaces are lowercased through normalize_surface() at load.
 LOGIC_SEED_LISTS = [
-    ('INFERENCE',      ['therefore', 'thus', 'hence', 'so', 'consequently', 'accordingly']),
-    ('EVIDENCE_CUE',   ['because', 'since', 'given', 'shows', 'demonstrates', 'indicates', 'according']),
-    ('CONTRAST',       ['but', 'however', 'although', 'though', 'yet', 'whereas', 'nonetheless', 'nevertheless']),
-    ('CAUSE',          ['because', 'since', 'due', 'cause', 'causes', 'caused', 'owing']),
+    ('INFERENCE',      ['therefore', 'thus', 'hence', 'so', 'consequently', 'accordingly', 'for example']),
+    ('EVIDENCE_CUE',   ['because', 'since', 'given', 'shows', 'demonstrates', 'indicates', 'according', 'for example']),
+    ('CONTRAST',       ['but', 'however', 'although', 'though', 'yet', 'whereas', 'nonetheless', 'nevertheless', 'on the other hand']),
+    ('CAUSE',          ['because', 'since', 'due', 'cause', 'causes', 'caused', 'owing', 'so']),
     ('CONDITION',      ['if', 'unless', 'when', 'whenever', 'provided', 'assuming']),
     ('QUANTIFIER',     ['all', 'some', 'most', 'many', 'few', 'none', 'every', 'each', 'any', 'both']),
-    ('NEGATION',       ['not', 'no', 'never', 'none', 'cannot']),
-    ('CONJUNCTION',    ['and', 'also', 'then', 'furthermore', 'moreover', 'additionally', 'plus', 'besides']),
+    ('NEGATION',       ['not', 'no', 'never', 'none', 'cannot', 'nor']),
+    ('CONJUNCTION',    ['and', 'or', 'nor', 'also', 'then', 'furthermore', 'moreover', 'additionally', 'plus', 'besides']),
     ('QUESTION',       ['what', 'why', 'how', 'when', 'where', 'who', 'which', 'whom', 'whose']),
     ('MODAL',          ['can', 'could', 'must', 'might', 'may', 'shall', 'should', 'would', 'will', 'ought']),
     ('DEFINITION_CUE', ['is', 'are', 'means', 'refers', 'denotes', 'defined', 'constitutes']),
-    ('CONCESSION',     ['admittedly', 'granted', 'regardless', 'despite', 'notwithstanding']),
+    ('CONCESSION',     ['admittedly', 'granted', 'regardless', 'despite', 'notwithstanding', 'although', 'while']),
     ('COMPARISON',     ['like', 'than', 'as', 'similarly', 'likewise', 'versus', 'compared']),
     ('TEMPORAL',       ['when', 'while', 'before', 'after', 'during', 'until', 'then']),
 ]
@@ -380,6 +380,32 @@ RELATION_CUES = frozenset({
     'INFERENCE', 'EVIDENCE_CUE', 'CONTRAST', 'CAUSE', 'CONDITION',
     'CONJUNCTION', 'DEFINITION_CUE', 'CONCESSION', 'COMPARISON',
 })
+
+# --- Abstraction tells (System-1 PARTIAL; full concrete/abstract is S2/EPA) --
+# Shared by facets (abstract single-word noun -> CONCEPT) and meta_fields (the
+# abstraction dimension) so bucket and abstraction agree. Concrete detection is
+# intentionally deferred to the S2 EPA layer -> non-abstract surfaces stay an
+# honest None, never guessed 'concrete'.
+ABSTRACT_SUFFIXES = (
+    'tion', 'sion', 'ment', 'ness', 'ity', 'ship', 'dom', 'hood', 'ism',
+    'ance', 'ence', 'cy', 'acy', 'ology', 'graphy', 'logy',
+)
+# Small curated lexicon of common abstract nouns that lack an abstract suffix.
+# Seed list -- grow deliberately; superseded by the S2/EPA abstraction signal.
+ABSTRACT_LEXICON = frozenset({
+    'love', 'justice', 'marriage', 'profit', 'freedom', 'liberty', 'truth',
+    'hope', 'fear', 'faith', 'peace', 'idea', 'honor', 'honour', 'pride',
+    'courage', 'wisdom', 'virtue',
+})
+
+
+def is_abstract(surface: str) -> bool:
+    """System-1 abstraction tell: curated lexicon or abstract suffix. Multiword is
+    deferred to S2 (False). Non-abstract is an honest 'unknown', not 'concrete'."""
+    s = surface.lower()
+    if ' ' in s:
+        return False
+    return s in ABSTRACT_LEXICON or s.endswith(ABSTRACT_SUFFIXES)
 
 # --- Curated METHOD lexicon (conservative; NO bare-suffix rule) ------------
 # A word becomes METHOD only via MANUAL override or membership here. Keeps

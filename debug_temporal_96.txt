@@ -1,0 +1,3 @@
+I can do this, but I’m missing the actual words/phrases to classify.
+
+The entries you provided are only IDs like `g4Er`, `g4Es`, etc., not the corresponding text. Please send the list with the actual words/phrases for each ID, and I’ll return the JSON array in the same order.

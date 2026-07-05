@@ -1,0 +1,3 @@
+I’m missing the actual words/phrases to classify.
+
+The list you provided contains only IDs like `g8MP`, `g8MQ`, etc., but not the corresponding text for each entry. Please send the word/phrase for each ID, and I’ll return the JSON array in the exact same order.
