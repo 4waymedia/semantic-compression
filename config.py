@@ -186,10 +186,12 @@ def detect_tier(token_id: str) -> int:
 
 FILLER_MAP = {
     'COGNITIVE': [    # um, uh, er, hmm — processing delay / cognitive load
-        'uhh', 'umm', 'uhm', 'um', 'uh', 'er', 'hmm',
+        'uhh', 'umm', 'uhm', 'um', 'uh', 'er', 'erm', 'hmm',
     ],
     'DISCOURSE': [    # like, so, right — turn management / floor-holding
-        'alright', 'okay', 'right', 'well', 'like', 'now', 'so',
+        'alright', 'anyway', 'okay', 'right', 'well', 'like', 'so',
+        # 'now' removed 2026-07-05: corpus-measured temporal ~6:1 (triage);
+        # resumptive discourse sense deferred to instance level (stance layer)
     ],
     'VALIDATION': [   # you know — seeking listener confirmation
         'you know what i mean', 'know what i mean', 'know what im saying',
@@ -203,9 +205,9 @@ FILLER_MAP = {
         'i mean it', 'absolutely', 'definitely', 'seriously', 'genuinely',
         'literally', 'honestly', 'actually', 'truly',
     ],
-    'EMOTIONAL': [    # i mean, look — signalling emotional/important content ahead
+    'EMOTIONAL': [  # 'listen' removed 2026-07-05: corpus verb ~5:1; stance layer recovers the marker    # i mean, look — signalling emotional/important content ahead
         'here is the thing', 'let me tell you', 'i will say this',
-        'hear me out', 'the thing is', 'i mean', 'listen', 'look',
+        'hear me out', 'the thing is', 'i mean', 'look',
     ],
 }
 
@@ -396,7 +398,14 @@ ABSTRACT_LEXICON = frozenset({
     'love', 'justice', 'marriage', 'profit', 'freedom', 'liberty', 'truth',
     'hope', 'fear', 'faith', 'peace', 'idea', 'honor', 'honour', 'pride',
     'courage', 'wisdom', 'virtue',
+    # 2026-07-05 gold-v2 triage F1: abstract nouns the suffix tell misses
+    'beauty', 'culture', 'ethics', 'knowledge', 'poverty', 'power',
+    'strategy', 'state',
 })
+
+# Suffix false-positives: words ending in an abstract suffix that denote
+# concrete referents (triage F6: 'city' fired on '-ity').
+CONCRETE_SUFFIX_EXCEPTIONS = frozenset({'city', 'university'})
 
 
 def is_abstract(surface: str) -> bool:
@@ -404,6 +413,8 @@ def is_abstract(surface: str) -> bool:
     deferred to S2 (False). Non-abstract is an honest 'unknown', not 'concrete'."""
     s = surface.lower()
     if ' ' in s:
+        return False
+    if s in CONCRETE_SUFFIX_EXCEPTIONS:
         return False
     return s in ABSTRACT_LEXICON or s.endswith(ABSTRACT_SUFFIXES)
 
@@ -420,6 +431,9 @@ ACTION_LEXICON = frozenset({
     'chop', 'slice', 'dice', 'mince', 'mix', 'stir', 'whisk', 'knead',
     'write', 'read', 'edit', 'compile', 'encode', 'decode', 'compress',
     'navigate', 'calibrate', 'diagnose', 'troubleshoot', 'execute', 'render',
+    # 2026-07-05 gold-v2 triage F2 (verb-side gap, pays down L9)
+    'create', 'generate', 'organize', 'organise', 'run', 'running', 'speak',
+    'listen',
 })
 
 # --- Structural-token cue map (surface -> cue mask) ------------------------

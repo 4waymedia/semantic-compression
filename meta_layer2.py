@@ -258,7 +258,7 @@ if __name__ == "__main__":
     pkg = Path(sys.argv[1])
     data = pkg.parent.parent.parent / "data"
     # default: the global concreteness substrate (Memory/data); override via argv[2]
-    conc_default = pkg.parents[3].parent / "Memory" / "data" / "concreteness_substrate.lmdb"
+    conc_default = pkg.resolve().parents[3] / "Memory" / "data" / "concreteness_substrate.lmdb"
     conc_path = Path(sys.argv[2]) if len(sys.argv) > 2 else conc_default
     s = run_layer2(
         pkg,

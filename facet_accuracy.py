@@ -46,21 +46,27 @@ SET_DIMS = ("logic_cues", "causality")
 ALL_DIMS = SCALAR_DIMS + SET_DIMS
 
 # desired results / release targets (spec §5)
-# RECALIBRATED 2026-07-05 with the gold v2 promotion (160 rows, >=2-model
-# agreement). Measured baseline on this set: utility .923, bucket_content .761,
-# cue_f1_function .833. Targets sit just below baseline so the gate catches
-# REGRESSIONS; ratchet toward the original aspirational values (.95/.85/.90)
-# as override triage lands. Spec §5: "revise after baseline."
+# RECALIBRATED 2026-07-05 (gold v2 promotion, baseline .923/.761/.833), then
+# RATCHETED same day after the 89-miss triage landed (F1-F4/F6 fixes + 6 gold
+# fixes + stale-override removal): measured 1.000/1.000/1.000, abstraction .960.
+# Targets restored to the spec's aspirational values. Honest caveat: the gold
+# set was the calibration surface for the triage, so perfect scores here mean
+# "fit," not "generalization" -- the 577-row review queue graduating into gold
+# is what tests generalization.
 TARGETS = {
-    "utility": 0.90,                 # over all gold      (ratchet goal .95)
-    "bucket_content": 0.72,          # gold utility == CONTENT   (ratchet goal .85)
-    "cue_f1_function": 0.80,         # gold utility == FUNCTION  (ratchet goal .90)
+    "utility": 0.95,                 # over all gold
+    "bucket_content": 0.85,          # gold utility == CONTENT
+    "cue_f1_function": 0.90,         # gold utility == FUNCTION
 }
 # abstraction is a System-2 / meta_layer=2 property: "concrete" has NO surface signal
-# (it needs EPA), so it is UNREACHABLE at layer 1 and must not gate a layer-1 build.
-# Reported as pending until L7 fills meta_layer=2. See DEVELOPMENT_LIST L7 + spec §5.
+# (it needs the concreteness substrate), so it is UNREACHABLE at layer 1 and must not
+# gate a layer-1 build. CONDITIONAL PROMOTION (2026-07-05, cross-session handoff):
+# the gate reads meta_layer from meta_info — ACTIVE target on meta_layer>=2 builds
+# (passes 0.92 via Brysbaert), still pending/informational on layer-1-only builds
+# (structurally 0.28 there). See DEVELOPMENT_LIST L7 + spec §5.
 PENDING_L2 = {
-    "abstraction": 0.80,             # over gold rows with an abstraction label
+    "abstraction": 0.90,             # over gold rows with an abstraction label
+    # (ratcheted 0.80 -> 0.90 on 2026-07-05: measured .960 post-triage)
 }
 
 _EMPTY = {None, "", "-", "null", "none", "[]"}
@@ -143,6 +149,19 @@ def _record(r: dict) -> dict:
     return rec
 
 
+def load_meta_layer(meta_db: Path) -> int:
+    """meta_layer from meta_info (1 if the table/key is absent — layer-1 build)."""
+    con = sqlite3.connect(f"file:{meta_db}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "SELECT value FROM meta_info WHERE key='meta_layer'").fetchone()
+        return int(row[0]) if row else 1
+    except (sqlite3.OperationalError, ValueError):
+        return 1
+    finally:
+        con.close()
+
+
 # --- scoring -------------------------------------------------------------------
 
 def cue_f1(pairs):
@@ -158,7 +177,7 @@ def cue_f1(pairs):
     return {"precision": prec, "recall": rec, "f1": f1, "tp": tp, "fp": fp, "fn": fn}
 
 
-def score(gold: dict, pred: dict) -> dict:
+def score(gold: dict, pred: dict, meta_layer: int = 1) -> dict:
     shared = sorted(gold.keys() & pred.keys())
     missing = sorted(gold.keys() - pred.keys())
 
@@ -205,11 +224,17 @@ def score(gold: dict, pred: dict) -> dict:
         "bucket_content": (bucket_content, TARGETS["bucket_content"]),
         "cue_f1_function": (cues_function["f1"], TARGETS["cue_f1_function"]),
     }
-    pending = {
-        "abstraction": (abstraction_acc, PENDING_L2["abstraction"]),
-    }
+    # conditional promotion: abstraction gates a layer-2 build, stays
+    # informational on layer-1 (no concreteness/EPA columns -> 0.28 is honest)
+    pending = {}
+    ab_entry = (abstraction_acc, PENDING_L2["abstraction"])
+    if meta_layer >= 2:
+        targets["abstraction"] = ab_entry
+    else:
+        pending["abstraction"] = ab_entry
 
     return {
+        "meta_layer": meta_layer,
         "n_gold": len(gold), "n_shared": len(shared), "missing": missing,
         "coverage": (len(shared) / len(gold)) if gold else 0.0,
         "accuracy": acc, "bucket_content": bucket_content,
@@ -245,12 +270,17 @@ def render_report(res: dict, meta_db: Path) -> str:
     a("|---|---:|---:|:--:|")
     for k, (got, tgt) in res["targets"].items():
         a(f"| {k} | {got:.3f} | {tgt:.2f} | {'PASS' if got >= tgt else 'FAIL'} |")
-    a("\n## Pending — System-2 (meta_layer=2), NOT gated at layer 1\n")
-    a("> abstraction needs EPA (concrete has no surface signal). Informational until L7.\n")
-    a("| dimension | score | L2 target | status |")
-    a("|---|---:|---:|:--:|")
-    for k, (got, tgt) in res.get("pending", {}).items():
-        a(f"| {k} | {got:.3f} | {tgt:.2f} | {'ok' if got >= tgt else 'pending L7'} |")
+    if res.get("pending"):
+        a("\n## Pending — System-2 (meta_layer=2), NOT gated at layer 1\n")
+        a(f"> abstraction needs the S2 columns (this build: meta_layer="
+          f"{res.get('meta_layer', 1)}). Informational until the layer-2 pass runs.\n")
+        a("| dimension | score | L2 target | status |")
+        a("|---|---:|---:|:--:|")
+        for k, (got, tgt) in res["pending"].items():
+            a(f"| {k} | {got:.3f} | {tgt:.2f} | {'ok' if got >= tgt else 'pending L7'} |")
+    else:
+        a(f"\n> abstraction gate ACTIVE (meta_layer={res.get('meta_layer', 1)}) — "
+          f"scored in Targets above. Promoted 2026-07-05.")
     a("\n## Per-dimension accuracy (all scored)\n")
     a("| dimension | accuracy |")
     a("|---|---:|")
@@ -371,7 +401,7 @@ def main(argv=None) -> int:
     except (RuntimeError, sqlite3.OperationalError) as e:
         print(f"ERROR reading meta.db: {e}", file=sys.stderr)
         return 2
-    res = score(gold, pred)
+    res = score(gold, pred, meta_layer=load_meta_layer(meta_db))
 
     write_misses(Path(args.misses), res["misses"])
     report = render_report(res, meta_db)
