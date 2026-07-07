@@ -187,15 +187,18 @@ def detect_tier(token_id: str) -> int:
 FILLER_MAP = {
     'COGNITIVE': [    # um, uh, er, hmm — processing delay / cognitive load
         'uhh', 'umm', 'uhm', 'um', 'uh', 'er', 'erm', 'hmm',
+        'ah', 'oh', 'huh',   # 2026-07-05 B1: vocal reactions
     ],
     'DISCOURSE': [    # like, so, right — turn management / floor-holding
         'alright', 'anyway', 'okay', 'right', 'well', 'like', 'so',
+        'whatever', 'blah', 'blah blah',   # 2026-07-05 B1: dismissive/placeholder discourse
         # 'now' removed 2026-07-05: corpus-measured temporal ~6:1 (triage);
         # resumptive discourse sense deferred to instance level (stance layer)
     ],
     'VALIDATION': [   # you know — seeking listener confirmation
         'you know what i mean', 'know what i mean', 'know what im saying',
         'you feel me', 'you see what i mean', 'you know',
+        "y'know", 'you see',   # 2026-07-05 B1
     ],
     'HEDGE': [        # kind of, sort of — softening a claim
         'more or less', 'something like', 'pretty much', 'kind of',
@@ -206,6 +209,7 @@ FILLER_MAP = {
         'literally', 'honestly', 'actually', 'truly',
     ],
     'EMOTIONAL': [  # 'listen' removed 2026-07-05: corpus verb ~5:1; stance layer recovers the marker    # i mean, look — signalling emotional/important content ahead
+        'hey', 'frankly',   # 2026-07-05 B1: attention-getter / honesty emphasis
         'here is the thing', 'let me tell you', 'i will say this',
         'hear me out', 'the thing is', 'i mean', 'look',
     ],
@@ -401,11 +405,43 @@ ABSTRACT_LEXICON = frozenset({
     # 2026-07-05 gold-v2 triage F1: abstract nouns the suffix tell misses
     'beauty', 'culture', 'ethics', 'knowledge', 'poverty', 'power',
     'strategy', 'state',
+    # 2026-07-05 review-queue B2: norms-OOV abstract nouns (single-model gold)
+    'algorithm', 'data', 'framework', 'learning', 'matter', 'milestone',
+    'model', 'portfolio',
 })
 
 # Suffix false-positives: words ending in an abstract suffix that denote
 # concrete referents (triage F6: 'city' fired on '-ity').
 CONCRETE_SUFFIX_EXCEPTIONS = frozenset({'city', 'university'})
+
+# --- Norms-informed abstraction tell (2026-07-05, review-queue B2) ----------
+# Brysbaert et al. (2014) single-word ratings, generated deterministic file
+# (data/concreteness_s1_v1.tsv). A rated word's verdict TRUMPS the suffix
+# guess in both directions (kills city-class false positives AND catches
+# suffix-less abstracts like 'belief'). Unrated words fall through to the
+# curated lexicon + suffixes. Lazy-loaded once; still S1: static file, no
+# inference; C port reads the same TSV.
+_NORMS_ABSTRACT: frozenset | None = None
+_NORMS_CONCRETE: frozenset | None = None
+
+def _load_concreteness_s1():
+    global _NORMS_ABSTRACT, _NORMS_CONCRETE
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'data', 'concreteness_s1_v1.tsv')
+    ab, co = set(), set()
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('#'):
+                    continue
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) != 2:
+                    continue
+                (ab if float(parts[1]) < 3.0 else co).add(parts[0])
+    except OSError:
+        pass  # file absent -> lexicon+suffix behavior unchanged
+    _NORMS_ABSTRACT, _NORMS_CONCRETE = frozenset(ab), frozenset(co)
 
 
 def is_abstract(surface: str) -> bool:
@@ -414,9 +450,17 @@ def is_abstract(surface: str) -> bool:
     s = surface.lower()
     if ' ' in s:
         return False
+    if s in ABSTRACT_LEXICON:          # curated judgment wins over bulk norms
+        return True
+    if _NORMS_ABSTRACT is None:
+        _load_concreteness_s1()
+    if s in _NORMS_ABSTRACT:
+        return True
+    if s in _NORMS_CONCRETE:
+        return False
     if s in CONCRETE_SUFFIX_EXCEPTIONS:
         return False
-    return s in ABSTRACT_LEXICON or s.endswith(ABSTRACT_SUFFIXES)
+    return s.endswith(ABSTRACT_SUFFIXES)
 
 # --- Curated METHOD lexicon (conservative; NO bare-suffix rule) ------------
 # A word becomes METHOD only via MANUAL override or membership here. Keeps

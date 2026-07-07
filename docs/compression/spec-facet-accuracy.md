@@ -137,17 +137,22 @@ Guardrails: structural gates (verify_facets) still pass; determinism holds.
 > 0.80 L2 target via the Brysbaert concreteness substrate (0.920 on this set).
 
 ```
-LAYER-1 RELEASE GATE (hard — these gate a build):
+LAYER-1 RELEASE GATE (hard — always gate a build):
 utility        >= 0.95   (coarse, high-impact for U1)
 bucket         >= 0.85 on content words (TOPIC/CONCEPT/METHOD)
 cue set F1     >= 0.90 on the closed-class function set
 
-PENDING — System-2 (meta_layer=2), NOT gated at layer 1:
-abstraction    >= 0.80   ← informational until L7. "concrete" has NO surface signal
-                           (it needs EPA), so it is unreachable at layer 1 and must not
-                           gate a layer-1 build. `facet_accuracy.py` reports it under a
-                           "Pending" section (see PENDING_L2). See DEVELOPMENT_LIST L7.
-A miss rate above target on a LAYER-1 dimension -> overrides + (if systematic) a heuristic fix.
+META-LAYER-CONDITIONAL GATE:
+abstraction    >= target  ← "concrete" has NO surface signal (it needs EPA), so it is
+                            unreachable at layer 1. `facet_accuracy.py` reads the build's
+                            meta_layer (load_meta_layer -> score(..., meta_layer)) and gates
+                            accordingly:
+                              * meta_layer >= 2  -> ACTIVE release gate (passes ~0.92 via the
+                                                    L7 Brysbaert / meta_layer2 pass)
+                              * meta_layer == 1  -> pending / informational (reported, not gated)
+                            PROMOTED pending->active 2026-07-05 (L7 slice-1 made it pass);
+                            wired at facet_accuracy.py:404. See DEVELOPMENT_LIST L7.
+A miss rate above target on an ACTIVE-gated dimension -> overrides + (if systematic) a fix.
 ```
 
 ---
@@ -182,25 +187,4 @@ assumption — and reuses PipelineLab's stepping/verbalizer to make misses legib
 ```
 P1  [this PR] gold set seed (~70) + spec (this doc). Human review.
 P2  facet_accuracy.py harness (load/sample/score/report) + facet_misses.csv.
-    [HARNESS DONE 2026-06-22] pure-stdlib (sqlite3+csv); reads meta.db + gold;
-    per-dim accuracy, 15-cue F1, confusion, coverage, misses CSV; targets gate via
-    exit code; `--selftest` green. >>> RUN BASELINE: `python facet_accuracy.py`
-    (defaults to db/builds/general_v0.4_char4/meta.db) -> first real numbers + confusion.
-P3  Triage misses -> overrides + heuristic fixes (esp. TOPIC↔CONCEPT abstraction).
-    Re-run; confirm targets.
-P4  Scale gold to 300-500 (stratified; AI-proposed + human-reviewed).
-P5  PipelineLab FacetAccuracyTarget + add to the calibrated suite as a release gate.
-```
-
----
-
-## 8. Pointers
-
-```
-Gold set        semantic_compression/data/facet_gold.tsv
-Predicted from  semantic_compression/meta.db (meta_builder.py) ; facets.py (assign_facet)
-Structural gates verify_facets.py ; test_facets.py
-Overrides       data/facet_overrides.tsv (the harness feeds its misses here)
-Schema          docs/compression/spec-meta-db.md ; spec-facets-db.md
-Platform        ../PipelineLab/ (adapters, calibrated suite) ; PROCESS.md §4
-```
+    [HARNESS DONE 2026-06-22] pure-stdlib (sqlit

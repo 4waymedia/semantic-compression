@@ -121,6 +121,8 @@ def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int,
         flags |= FLAG['MANUAL']
         if bucket == BUCKET['RELATION'] and utility == UTILITY['CONTENT']:
             utility = UTILITY['FUNCTION']
+        if bucket == BUCKET['STRUCTURAL']:
+            utility = UTILITY['STRUCTURAL']
         flags = set_utility(flags, utility)
         return bucket, cue_mask, flags
 
