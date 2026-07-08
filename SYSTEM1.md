@@ -1,7 +1,8 @@
 # EloAI — System 1: Base64 Canonical Library
 ### Status Document
 > Reflects actual code at github.com/4waymedia/semantic-compression
-> Last verified: 2026-06-19 -- v0.4.0 (Semantic Facets Layer) STAGED;
+> Last verified: 2026-07-08 -- v0.4.0 (Semantic Facets Layer) STAGED; meta DB now
+> carries a `complement` (verb-subcategorization) column.
 > Create a dictionary: [docs/compression/GUIDE-create-dictionary.md](docs/compression/GUIDE-create-dictionary.md).
 > v0.3.0 dictionary intact, 13/13 round-trip byte-exact
 
@@ -23,6 +24,37 @@ The v0.3 milestone was reframed from a compression target to a
 vocabulary target after measured results revealed the structural ceiling
 of the fixed-tier byte scheme. See `docs/compression/v0.3-analysis.md`
 for the theory-vs-practice retrospective.
+
+---
+
+### Session progress — 2026-07-08 (meta `complement` column + downstream polarity)
+
+**Meta DB — verb-complement facet (`complement` column).** Graduated the
+complement-aware POS-resolution table into the dictionary as a per-surface meta
+column. Canonical source `verb_complements.py` (`to_infinitive` | `to_noun` | both,
+plus a light lemmatizer handling e-drop / y-ied / consonant-doubling —
+`decided→decide`, `tried→try`, `mapped→map`); `meta_fields.derive_meta` populates
+`complement` for verb surfaces (`method="lexicon"`), and `meta_builder` adds it to
+the deterministic `DET_COLS`. This is the POS instruction set consumers read to
+disambiguate a "to X" homograph (`seem`→infinitive verb vs `map`→noun object).
+Deterministic, re-derived per build, part of `meta_fingerprint`. New gate
+`test_complement_meta.py`. Spec: `docs/compression/spec-meta-db.md` §3/§4.
+
+> **Action pending:** the column is defined in the builder but **not yet
+> materialized** into the built packages — rebuild meta.db (`meta_builder` /
+> `build_from_spec`) on the active package(s), then re-stamp v0.4.0 staged.
+> Adding a deterministic column **changes `meta_fingerprint`** (expected under
+> STAGED; nothing pins the old value yet).
+
+**Downstream consumers (context — outside `semantic_compression`).** The
+extraction pipeline (`05-ExtractionPipeline`) now reads the meta `complement`
+facet via `meta_complements.py` — a bound dictionary is authoritative, with a
+bundled fallback so it still runs offline. Separately, a `polarity`
+(affirmed | negated) field was added to the extraction claim and to `MemorySeed`
+(serialization bumped v2→v3, backward-compatible: old seeds backfill to
+`affirmed`) and wired into the mneme contradiction store, so a claim and its
+negation are distinct seeds that form a CONTRADICTS pair. These **consume**
+System-1 output; they do not touch forward/reverse/facets.
 
 ---
 
