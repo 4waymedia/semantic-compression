@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import config as cfg
 from config import (
-    ACTION_LEXICON, ALL_FILLERS, BUCKET, FILLER_MAP, FLAG, LOGIC_CUE,
-    LOGIC_SEED_LISTS, RELATION_CUES, STRUCTURAL_CUE_MAP, STRUCTURAL_IDS,
-    UTILITY, set_utility,
+    ACTION_LEXICON, ALL_FILLERS, BUCKET, FILLER_MAP, FLAG, FUNCTION_WORDS,
+    LOGIC_CUE, LOGIC_SEED_LISTS, RELATION_CUES, STRUCTURAL_CUE_MAP,
+    STRUCTURAL_IDS, UTILITY, set_utility,
 )
 from normalize import normalize_surface
 
@@ -14,6 +14,7 @@ _STRUCTURAL_SURFACES = frozenset(STRUCTURAL_IDS.values())
 _NORM_FILLERS = frozenset(normalize_surface(f) for f in ALL_FILLERS)
 _NORM_DISCOURSE = frozenset(normalize_surface(f) for f in FILLER_MAP['DISCOURSE'])
 _NORM_ACTION = frozenset(normalize_surface(w) for w in ACTION_LEXICON)
+_NORM_FUNCTION = frozenset(normalize_surface(w) for w in FUNCTION_WORDS)
 
 _SEED_CUE_BY_KEY: dict[str, int] = {}
 _RELATION_KEYS: set[str] = set()
@@ -96,12 +97,15 @@ def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int,
     is_filler = key in _NORM_FILLERS
     matched_cue = _SEED_CUE_BY_KEY.get(key, 0)
     is_closed_class = matched_cue != 0
+    # A function word need not carry a cue. Orthogonal to is_closed_class, which
+    # drives the RELATION bucket + CLOSED_CLASS flag; this only drives utility.
+    is_function_word = key in _NORM_FUNCTION
 
     if is_structural:
         utility = UTILITY['STRUCTURAL']
     elif is_filler:
         utility = UTILITY['FILLER']
-    elif is_closed_class:
+    elif is_closed_class or is_function_word:
         utility = UTILITY['FUNCTION']
     else:
         utility = UTILITY['CONTENT']

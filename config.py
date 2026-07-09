@@ -348,6 +348,38 @@ FLAG = {
 }
 FLAG_NAME = {v: k for k, v in FLAG.items()}
 
+
+# ---------------------------------------------------------------------------
+# Closed-class FUNCTION words that carry NO logic cue.
+#
+# Being a *function word* and carrying a *reasoning cue* are orthogonal
+# properties. Before this list, `is_closed_class` was defined as `matched_cue
+# != 0`, so `because`/`when`/`and` were FUNCTION (they have cues) while `the`,
+# `of`, `a`, `is` fell through to CONTENT -- and `the` ended up CONCEPT/CONTENT.
+# Function words are ~0.05% of dictionary *types* but roughly half of all
+# *tokens* in running text, so this materially changes stream filtering (U1)
+# and the CONTENT/FUNCTION embedding budget (U5).
+#
+# Provenance: ported upstream from ELO-Browser `src-tauri/src/facets.rs`
+# (`FUNCTION_WORDS`), which carried this correction while the substrate did not.
+# Words already covered by a LOGIC_SEED_LIST (quantifiers, modals, negation,
+# comparison, temporal, question words) are deliberately omitted -- they are
+# already FUNCTION via their cue.
+# ---------------------------------------------------------------------------
+FUNCTION_WORDS = frozenset("""
+the a an this that these those such either neither
+of to in on for with at by from into about over under
+between through against among across behind below beside beyond
+within without upon toward towards off out up down near
+i me my mine myself you your yours yourself he him his himself
+she her hers herself it its itself we us our ours ourselves
+they them their theirs themselves
+am is are was were be been being
+have has had having do does did doing
+there here
+""".split())
+
+
 # UTILITY occupies the top two flag bits (0xC0): the "meaningfulness" axis
 # that replaces the old SKIP bucket.
 UTILITY = {
