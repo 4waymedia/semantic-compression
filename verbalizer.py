@@ -48,6 +48,52 @@ DEFAULT_EPA_DB  = _HERE / '..' / 'Memory' / 'data' / 'epa_substrate.lmdb'
 DEFAULT_FAISS   = _HERE / 'db' / 'dictionary.faiss.index'
 DEFAULT_SURFACES = _HERE / 'db' / 'dictionary.faiss.surfaces.json'
 
+
+class ArtifactDriftError(RuntimeError):
+    """The FAISS index does not match the EPA substrate it was built from.
+
+    The index is a SECOND ARTIFACT derived from the first. Nothing in the
+    filesystem keeps them aligned, so the binding is checked at load. Loading a
+    drifted index is worse than failing: `faiss_query` returns row indices, those
+    rows are mapped through a stale surfaces list, and the verbalizer silently
+    expands into the wrong semantic field. No exception, no log, wrong answers.
+    """
+
+
+def _verify_index_binding(faiss_idx: Path, epa_db: Path, *, strict: bool = True) -> dict:
+    """Compare the fingerprint recorded at build time against the live substrate.
+
+    Raises ArtifactDriftError on mismatch (or on a pre-v2 index, whose recorded
+    fingerprint hashed data.mdb file bytes and is therefore unverifiable).
+    With strict=False, warns and continues -- for offline inspection only.
+    """
+    import warnings
+
+    meta_path = Path(faiss_idx).with_suffix('.json')
+    if not meta_path.exists():
+        msg = f'no sidecar {meta_path.name}; index binding is unrecorded'
+    else:
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        if meta.get('faiss_format_version', 1) < 2:
+            msg = (f'{meta_path.name} predates the content fingerprint (v1 hashed '
+                   f'data.mdb bytes, unverifiable). Rebuild: python faiss_builder.py')
+        else:
+            from artifact_identity import _epa_fingerprint
+            live = _epa_fingerprint(Path(epa_db))
+            recorded = meta.get('epa_fingerprint')
+            if live is None:
+                msg = f'cannot fingerprint live substrate {epa_db}'
+            elif live == recorded:
+                return meta                      # bound, verified
+            else:
+                msg = (f'FAISS index was built against EPA substrate {recorded}, '
+                       f'live substrate is {live}. Rebuild: python faiss_builder.py')
+
+    if strict:
+        raise ArtifactDriftError(msg)
+    warnings.warn(f'[verbalizer] UNVERIFIED index binding: {msg}', RuntimeWarning, stacklevel=3)
+    return {}
+
 # ---------------------------------------------------------------------------
 # Stage → process semantics map (Surov stages 1–6)
 # ---------------------------------------------------------------------------
@@ -197,13 +243,23 @@ class VerbalizerSubstrate:
         epa_db:    Path = DEFAULT_EPA_DB,
         faiss_idx: Path = DEFAULT_FAISS,
         surfaces_path: Path = DEFAULT_SURFACES,
+        strict: bool = True,
     ):
         self._dict_env   = get_env(dict_db)
         self._epa_env    = get_env(epa_db)
+        _verify_index_binding(faiss_idx, epa_db, strict=strict)
         self._index      = faiss.read_index(str(faiss_idx))
 
         with open(surfaces_path, encoding='utf-8') as f:
             self._surfaces: list[str] = json.load(f)
+
+        # faiss_query() maps row -> self._surfaces[row]. If these disagree the
+        # expander silently returns the WRONG WORD for every neighbour.
+        if len(self._surfaces) != self._index.ntotal:
+            raise ArtifactDriftError(
+                f'surfaces list ({len(self._surfaces):,}) != index rows '
+                f'({self._index.ntotal:,}); rebuild with faiss_builder.py'
+            )
 
         # Pre-build EPA lookup: surface → (E, P, A)
         self._epa: dict[str, tuple] = {}

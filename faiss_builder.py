@@ -45,14 +45,43 @@ _EPA_STRUCT    = struct.Struct('<fff')
 DIM = 3  # E, P, A
 
 
+FAISS_FORMAT_VERSION = 2   # v1 hashed data.mdb bytes; v2 hashes CONTENT
+
+
 def _fingerprint(path: Path) -> str:
-    h = hashlib.sha256()
-    data_file = path / 'data.mdb'
-    if data_file.exists():
-        with open(data_file, 'rb') as f:
-            while chunk := f.read(65536):
-                h.update(chunk)
-    return h.hexdigest()[:16]
+    """Canonical CONTENT fingerprint of an EPA lmdb: hash over sorted (id,E,P,A).
+
+    v1 of this file hashed the raw `data.mdb` bytes. That is wrong twice over: an
+    LMDB's bytes change on any page reorder or map resize even when the content is
+    identical (false positives), and the value is not comparable with the content
+    fingerprint the rest of the system uses (`artifact_identity._epa_fingerprint`,
+    which is what `meta.global_epa_version` is checked against). So the recorded
+    fingerprint could never be verified by anyone -- and nobody did.
+
+    One artifact, one fingerprint function. Reuse it; do not reimplement.
+    """
+    from artifact_identity import _epa_fingerprint
+
+    fp = _epa_fingerprint(path)
+    if fp is None:
+        raise RuntimeError(f'cannot fingerprint EPA substrate (no b"epa" sub-DB?): {path}')
+    return fp
+
+
+def _substrate_self_stamp(path: Path) -> str | None:
+    """The substrate's own `meta.global_epa_version`, if it stamped one."""
+    try:
+        import lmdb as _lmdb
+        env = _lmdb.open(str(path), readonly=True, max_dbs=8, lock=False)
+        try:
+            md = env.open_db(b'meta', create=False)
+            with env.begin() as t:
+                v = t.get(b'global_epa_version', db=md)
+            return v.decode() if v else None
+        finally:
+            env.close()
+    except Exception:
+        return None
 
 
 def build_faiss_index(
@@ -113,9 +142,14 @@ def build_faiss_index(
         json.dump(surfaces, f, ensure_ascii=False)
 
     # Write metadata
+    surfaces_sha = hashlib.sha256(
+        '\n'.join(surfaces).encode('utf-8')).hexdigest()[:16]
     meta = {
+        'faiss_format_version': FAISS_FORMAT_VERSION,
         'epa_lmdb_path':   str(epa_lmdb_path),
-        'epa_fingerprint': fp,
+        'epa_fingerprint': fp,                       # CONTENT hash (v2); verifiable
+        'global_epa_version': _substrate_self_stamp(epa_lmdb_path),
+        'surfaces_sha256': surfaces_sha,             # the row -> surface mapping
         'entry_count':     n,
         'dim':             DIM,
         'index_type':      'FlatL2',

@@ -272,7 +272,25 @@ COMPRESSION_MODES = {
 # ---------------------------------------------------------------------------
 
 DB_PATH    = 'semantic_compression/db/canonical.db'
-FAISS_PATH = 'semantic_compression/db/faiss.index'
+# TWO FAISS LINEAGES. Do not merge them; they index different spaces.
+#
+#   FAISS_PATH        768-d IndexFlatIP over L2-normalised all-mpnet-base-v2
+#                     embeddings. WRITTEN by library_builder.build_faiss_index().
+#                     This is the SEMANTIC index the System-1 spec promises
+#                     (word_library.vector_id). It has never been built for the
+#                     current dictionaries -- db/faiss.index does not exist.
+#
+#   EPA_FAISS_PATH    3-d IndexFlatL2 over (E,P,A). WRITTEN by faiss_builder.py,
+#                     READ by verbalizer.py + epa_phrase_composer.py. This is the
+#                     live index. It is an AFFECT index, not a semantic one:
+#                     `car`~`automobile` is no closer than `murder`~`cancer`.
+#
+# Pointing FAISS_PATH at the EPA artifact would make library_builder overwrite the
+# verbalizer's index with 768-d vectors. Keep them apart.
+FAISS_PATH              = 'semantic_compression/db/faiss.index'
+EPA_FAISS_PATH          = 'semantic_compression/db/dictionary.faiss.index'
+EPA_FAISS_META_PATH     = 'semantic_compression/db/dictionary.faiss.json'
+EPA_FAISS_SURFACES_PATH = 'semantic_compression/db/dictionary.faiss.surfaces.json'
 
 TRANSCRIPT_DIR = 'Resources/transcripts'
 COMPRESSED_DIR = 'semantic_compression/data/compressed'

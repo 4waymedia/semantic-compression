@@ -1,6 +1,6 @@
 # Facet Accuracy Report
 
-- build meta.db: `F:\Script-Projects\elo-dev\elo_dev\R-D-concepts\semantic_compression\db\builds\general_v0.4_char4\meta.db`
+- build meta.db: `/sessions/gifted-sweet-darwin/mnt/elo_dev/R-D-concepts/semantic_compression/db/builds/general_v0.4_char4/meta.db`
 - gold rows: 396  ·  scored (in build): 391  ·  coverage: 99%
 - gold surfaces missing from build: ..., by contrast, provided that, {, }
 
