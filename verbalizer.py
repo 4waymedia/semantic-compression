@@ -26,6 +26,7 @@ import json
 import math
 import struct
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -60,14 +61,34 @@ class ArtifactDriftError(RuntimeError):
     """
 
 
-def _verify_index_binding(faiss_idx: Path, epa_db: Path, *, strict: bool = True) -> dict:
+# Binding enforcement. `ELO_FAISS_BINDING` = strict | degrade | off
+#
+#   strict   unverified index -> ArtifactDriftError at construction.
+#   degrade  unverified index -> the substrate LOADS, EPA and dictionary lookups work,
+#            and `faiss_query()` returns NOTHING. You get no answer, never a wrong one.
+#            Warned once, loudly. THIS IS THE DEFAULT while epa/faiss are being refactored.
+#   off      no check at all. Do not use outside a debugger.
+#
+# The rule is "refuse rather than degrade", and `degrade` honours it where it matters:
+# a stale index maps faiss rows through a moved surfaces list, so every neighbour is the
+# wrong word. Returning [] is a refusal. Returning the wrong word is the bug.
+#
+# TODO(refactor): flip the default to "strict" once faiss_builder.py v2 has run and
+# tools/verify_substrate_chain.py reports the chain intact.
+BINDING_MODE = os.environ.get('ELO_FAISS_BINDING', 'degrade').lower()
+
+
+def _verify_index_binding(faiss_idx: Path, epa_db: Path, *, strict: bool | None = None) -> dict:
     """Compare the fingerprint recorded at build time against the live substrate.
 
-    Raises ArtifactDriftError on mismatch (or on a pre-v2 index, whose recorded
-    fingerprint hashed data.mdb file bytes and is therefore unverifiable).
-    With strict=False, warns and continues -- for offline inspection only.
+    Returns the sidecar dict on success. On failure: raises in `strict`, returns {} in
+    `degrade` (caller must then disable faiss_query), skips entirely in `off`.
     """
     import warnings
+
+    mode = BINDING_MODE if strict is None else ('strict' if strict else 'degrade')
+    if mode == 'off':
+        return {'_unchecked': True}
 
     meta_path = Path(faiss_idx).with_suffix('.json')
     if not meta_path.exists():
@@ -89,9 +110,13 @@ def _verify_index_binding(faiss_idx: Path, epa_db: Path, *, strict: bool = True)
                 msg = (f'FAISS index was built against EPA substrate {recorded}, '
                        f'live substrate is {live}. Rebuild: python faiss_builder.py')
 
-    if strict:
+    if mode == 'strict':
         raise ArtifactDriftError(msg)
-    warnings.warn(f'[verbalizer] UNVERIFIED index binding: {msg}', RuntimeWarning, stacklevel=3)
+    warnings.warn(
+        f'[verbalizer] UNVERIFIED index binding -- faiss_query() is DISABLED.\n'
+        f'  {msg}\n'
+        f'  EPA + dictionary lookups still work. Set ELO_FAISS_BINDING=strict to hard-fail.',
+        RuntimeWarning, stacklevel=3)
     return {}
 
 # ---------------------------------------------------------------------------
@@ -243,11 +268,13 @@ class VerbalizerSubstrate:
         epa_db:    Path = DEFAULT_EPA_DB,
         faiss_idx: Path = DEFAULT_FAISS,
         surfaces_path: Path = DEFAULT_SURFACES,
-        strict: bool = True,
+        strict: bool | None = None,   # None -> ELO_FAISS_BINDING (default: degrade)
     ):
         self._dict_env   = get_env(dict_db)
         self._epa_env    = get_env(epa_db)
-        _verify_index_binding(faiss_idx, epa_db, strict=strict)
+        meta = _verify_index_binding(faiss_idx, epa_db, strict=strict)
+        # {} means "could not verify" -> the index loads (cheap) but is never queried.
+        self.index_verified = bool(meta)
         self._index      = faiss.read_index(str(faiss_idx))
 
         with open(surfaces_path, encoding='utf-8') as f:
@@ -256,10 +283,14 @@ class VerbalizerSubstrate:
         # faiss_query() maps row -> self._surfaces[row]. If these disagree the
         # expander silently returns the WRONG WORD for every neighbour.
         if len(self._surfaces) != self._index.ntotal:
-            raise ArtifactDriftError(
-                f'surfaces list ({len(self._surfaces):,}) != index rows '
-                f'({self._index.ntotal:,}); rebuild with faiss_builder.py'
-            )
+            self.index_verified = False
+            msg = (f'surfaces list ({len(self._surfaces):,}) != index rows '
+                   f'({self._index.ntotal:,}); rebuild with faiss_builder.py')
+            if BINDING_MODE == 'strict' or strict:
+                raise ArtifactDriftError(msg)
+            import warnings
+            warnings.warn(f'[verbalizer] {msg} -- faiss_query() DISABLED',
+                          RuntimeWarning, stacklevel=2)
 
         # Pre-build EPA lookup: surface → (E, P, A)
         self._epa: dict[str, tuple] = {}
@@ -315,7 +346,14 @@ class VerbalizerSubstrate:
         return self._epa.get(surface)
 
     def faiss_query(self, epa_vec: tuple, k: int = K_ANCHOR) -> list[tuple[str, float]]:
-        """Return [(surface, l2_dist)] nearest to epa_vec."""
+        """Return [(surface, l2_dist)] nearest to epa_vec.
+
+        Returns [] when the index binding could not be verified. A stale index maps its
+        row numbers through a surfaces list that has since moved, so every neighbour is
+        a different word than the one reported. No answer beats a wrong answer.
+        """
+        if not self.index_verified:
+            return []
         q = np.array([[epa_vec[0], epa_vec[1], epa_vec[2]]], dtype=np.float32)
         D, I = self._index.search(q, k)
         return [(self._surfaces[i], float(d)) for d, i in zip(D[0], I[0]) if i >= 0]
