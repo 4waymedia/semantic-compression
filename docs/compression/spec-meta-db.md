@@ -82,7 +82,8 @@ epa_e, epa_p, epa_a float       -4.0 .. +4.0                            S2    EP
 agency              enum        self|other|system|environment           S2    EPA-P + role inference
 directionality      enum        toward|away|increase|decrease           S2    embedding/inference
 temporal_stage      dist        Surov 6-stage affinity (a–f)            S2    stage projection
-relations           list        nearest semantic-neighbor IDs           S2    FAISS
+affect_neighbors    list        EPA-proximate IDs (AFFECT, not synonymy) S2    FAISS over 3-d EPA
+denotative_neighbors list       semantically similar IDs                S2    FAISS over 768-d embeddings (index NOT built)
 -- provenance (not fingerprinted) --------------------------------------------------------
 _method             map         per-field: cue|suffix|heuristic|override|provenance  S1
 confidence          float       0..1 per assigned field                 S1
@@ -91,6 +92,18 @@ needs_review        bool        ambiguous / low-confidence -> override queue   S
 
 `S1*` = System-1-legal but only populated when the build supplies provenance
 (Wiktionary categories / source kind); otherwise null, still deterministic.
+
+> **Why `affect_neighbors`, not `relations` (renamed 2026-07-09).** EPA is 3
+> dimensions of **affect**; the substrate holds 67,936 items. Denotation is not
+> encoded, so EPA nearest-neighbour returns affectively-similar words, not synonyms:
+> `car` → `credentials`/`attention`/`decoration` (all within L2 0.08). The retrieval
+> is exact — the space cannot separate them. EPA-NN is only meaningful for
+> affect-laden words (sparse extremes); denotative words collapse into the bland
+> centroid (`big`: 1,939 neighbours within r<0.50). Calling these "semantic
+> neighbours" is what let the mistake propagate. Denotative similarity needs the
+> 768-d `all-mpnet-base-v2` index (`config.FAISS_PATH`), which has **never been
+> built**. Grounding for EPA: Heise, *Affect Control Theory* (deflection /
+> impression-formation), not lexical similarity.
 
 ---
 
@@ -145,6 +158,32 @@ Until this lands: `epa_*`, `polarity`, `agency`, `directionality`, `temporal_sta
 stay null and `meta_layer = 1`. When it lands, a layer-2 pass fills them, bumps
 `meta_format_version`, and recomputes the (separate) S2 fingerprint — the S1
 deterministic fingerprint is unchanged.
+
+### 5a. MEASURED 2026-07-10 — what the EPA×embedding probe settled
+
+Full record + reproduction: [`probe-epa-embedding-results.md`](probe-epa-embedding-results.md).
+Decision rules were pre-registered before the numbers existed.
+
+| # | Decision | Basis |
+|---|---|---|
+| D1 | **Do NOT rebuild phrase EPA on embeddings.** | `cos(dog bites man, man bites dog) = 0.973` — mpnet rates a sentence and its agent/patient inversion as *more similar than `good`/`great` (0.742)*. Order-blind. And `mean cos(w, "not w") = 0.720` — negation-blind. It buys ~nothing over the mean. |
+| D2 | **Fix negation symbolically**, via the deterministic `Claim.polarity`. | No encoder carries negation reliably. `_compose` silently drops `not`/`no`/`nor`/`n't` (unrated), so `not good == good` exactly. |
+| D3 | **Impute `epa_e` / `epa_a`** with a 768×3 ridge map — **conditional on the frequency-stratified check** (§7 of the results doc). | Held-out R²: E 0.508 (77% of achievable), A 0.315 (84%). |
+| D4 | **Never impute `epa_p`.** Leave NULL. | Learnable (R² 0.36) but **not valid**: Warriner vs NRC-VAD agree at only r = 0.328. |
+| D5 | **Ridge supersedes the kNN design** in `CLAUDE_SYSTEM2.md:122-124`. | kNN ≈ ridge on every axis; ridge is 9 KB and needs no index at inference. |
+
+> **The governing distinction.** `R²` measures **learnability, not validity**. E is
+> learnable *and* valid (cross-source r = 0.814). P is learnable and *not* valid
+> (r = 0.328). Imputation propagates learnability; it cannot manufacture validity.
+> Reproducing a measurement two human panels disagree about is not measurement.
+
+> **Affect is not semantics — and word order is a semantic property.** Permutation
+> erasure looked like the deep defect; it isn't. `dog bites man` and `man bites dog`
+> *feel* nearly the same. The affect of a bag of words is close to genuinely
+> permutation-invariant. Mean-composition's one serious sin is **negation**.
+
+Any imputed value carries its own `prov` tag. Predicted affect must never be
+indistinguishable from a human rating (O-EPA9: never fake-neutral).
 
 ---
 

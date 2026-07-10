@@ -219,18 +219,26 @@ def run_layer2(build_dir: Path, word_freq_file: Path | None = None,
     assert n == filled, f"fill count mismatch {n} != {filled}"
     con.close()
 
-    # Atomic replace onto the build dir (fallback: overwrite-copy on mounts
-    # that block rename-over).
+    # Land atomically. NEVER fall back to copying over the live DB: a partial
+    # write leaves a malformed SQLite image (observed on the mounted FS, where
+    # os.replace/unlink raise EPERM). Verify the staged copy, then rename-over.
     tmp2 = meta_db.with_suffix(".db.tmp")
+    shutil.copyfile(tmp, tmp2)
+    with open(tmp2, "rb") as fh:
+        os.fsync(fh.fileno())
+    _v = sqlite3.connect(tmp2)
+    _ok = _v.execute("PRAGMA integrity_check").fetchone()[0]
+    _v.close()
+    if _ok != "ok":
+        raise RuntimeError(f"staged meta.db failed integrity_check: {_ok!r}")
     try:
-        shutil.copyfile(tmp, tmp2)
-        with open(tmp2, "rb") as fh:
-            os.fsync(fh.fileno())
         os.replace(tmp2, meta_db)
-    except OSError:
-        shutil.copyfile(tmp, meta_db)
-        if tmp2.exists():
-            tmp2.unlink()
+    except OSError as e:
+        raise RuntimeError(
+            f"could not atomically replace {meta_db} ({e}). A VALID rebuilt DB is "
+            f"staged at {tmp2} -- move it into place manually. Refusing to "
+            "overwrite in place: a non-atomic copy corrupts a live SQLite file."
+        ) from e
     tmp.unlink()
 
     total = len(rows)

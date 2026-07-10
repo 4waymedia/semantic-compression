@@ -40,11 +40,38 @@ disambiguate a "to X" homograph (`seem`→infinitive verb vs `map`→noun object
 Deterministic, re-derived per build, part of `meta_fingerprint`. New gate
 `test_complement_meta.py`. Spec: `docs/compression/spec-meta-db.md` §3/§4.
 
-> **Action pending:** the column is defined in the builder but **not yet
-> materialized** into the built packages — rebuild meta.db (`meta_builder` /
-> `build_from_spec`) on the active package(s), then re-stamp v0.4.0 staged.
-> Adding a deterministic column **changes `meta_fingerprint`** (expected under
-> STAGED; nothing pins the old value yet).
+> **Materialized (verified 2026-07-08).** `general_v0.4_char4/meta.db` carries the
+> column populated for **343 surfaces** (218 infinitive-only, 83 noun-only, 42 both);
+> `elo-browser-v01` carries **353**. Anchors resolve correctly (`seem/seemed →
+> to_infinitive`, `map/maps → to_noun`; `code`/`change` → NULL, since the facet lives
+> on the *governing verb*, not the homograph). Coverage is a **seed**: 47 verb lemmas
+> and their inflections — grow it from corpus failures.
+
+**Two build-integrity issues found and handled (2026-07-08):**
+
+- **`elo-browser-v01/meta.db` was corrupt** (`database disk image is malformed`)
+  even though its `meta_stats.json` recorded a successful run. Cause: `meta_builder`
+  overwrites the target via `shutil.copyfile` onto a filesystem where `unlink` is
+  blocked, which can leave a partially-written DB. **Repaired + layer-2 restored
+  (verified 2026-07-09):** `integrity_check = ok`, `meta_layer 2`, 437,990 rows,
+  `epa_e` filled 236,645 (54%), complement 353, and the S1 fingerprint `790379b2…`
+  carried through the layer-2 pass untouched (layer-2 fills S2 columns only).
+  The build's previously recorded `c5ae75c8…` was irreproducible and is superseded.
+- **Root cause fixed — never overwrite a live SQLite file.** Both `meta_builder.py`
+  and `meta_layer2.py` did `try: os.replace(...) except OSError: shutil.copyfile(tmp,
+  live_db)`. On a filesystem that blocks rename-over, they silently took the
+  corrupting branch. The fallback is **removed**; both now stage → `fsync` →
+  `PRAGMA integrity_check` on the staged copy → atomic `os.replace`, and raise
+  loudly (leaving a *valid* `.db.tmp`) if the rename is refused.
+- **`meta_fingerprint` was silently cwd-sensitive.** `build_meta` loaded
+  `data/facet_overrides.tsv` by a *relative* path inside a bare `except: ov = None`,
+  so running from the repo root (as `build_from_spec` does) skipped the overrides and
+  produced a **different fingerprint** with no warning (`e1328234…` vs `790379b2…`).
+  Fixed: the path now resolves **module-relative**, a missing explicit overrides file
+  **raises**, and `overrides_applied` + `overrides_sha` are recorded in `meta_info`.
+  Consequence: any previously recorded `meta_fingerprint` built from the wrong cwd is
+  **not reproducible** and should be re-derived (e.g. `elo-browser-v01`'s old
+  `c5ae75c8…` matches neither path and is superseded by `790379b2…`).
 
 **Downstream consumers (context — outside `semantic_compression`).** The
 extraction pipeline (`05-ExtractionPipeline`) now reads the meta `complement`
