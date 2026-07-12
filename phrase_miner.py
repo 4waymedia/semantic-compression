@@ -48,7 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, '.')
 
-from semantic_compression.config import FORMAT_VERSION
+from semantic_compression.config import FORMAT_VERSION, FUNCTION_WORDS
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +74,38 @@ MIN_PMI_DEFAULT          = 0.0    # default: keep all; PMI used as score weight 
 # v0.2-binary cost model (same as ngram_counter.py)
 WORD_AVG_BYTES  = 1.8
 PHRASE_COST_BIN = 3      # conservative: assume Tier 2 placement
+
+# --- Phrase hygiene (OPT-IN; OFF by default to preserve the v0.3 candidate contract) --
+# The default miner keeps ASR stutter-repeats ("china china") and function-heavy
+# discourse n-grams ("how to deal with it") because PMI is only a score weight and
+# score is byte-savings-dominant. These gates isolate genuinely LEXICAL phrases for
+# domain builds. Enable via --lexical (preset) or the individual flags. See
+# docs/compression/spec-phrase-assets.md §4.
+LEXICAL_MAX_N     = 4       # lexical phrases are ~2-4 words; longer bands are discourse
+LEXICAL_MIN_PMI   = 1.5     # above-chance collocation
+LEXICAL_MIN_CONTENT = 1     # at least one content (non-function) word
+
+
+def _has_adjacent_repeat(words: list[str]) -> bool:
+    return any(words[i] == words[i + 1] for i in range(len(words) - 1))
+
+
+def passes_hygiene(words: list[str], *, drop_repeats: bool, min_content: int,
+                   no_edge_function: bool, max_n: int | None) -> bool:
+    """True if the n-gram is a plausible LEXICAL phrase under the enabled gates.
+    All gates default OFF at the call site; each is independent + deterministic."""
+    n = len(words)
+    if max_n and n > max_n:
+        return False                                    # length sanity
+    if drop_repeats and _has_adjacent_repeat(words):
+        return False                                    # ASR stutter (china china)
+    if no_edge_function and (words[0] in FUNCTION_WORDS or words[-1] in FUNCTION_WORDS):
+        return False                                    # discourse edges (to ... the)
+    if min_content:
+        content = sum(1 for w in words if w not in FUNCTION_WORDS)
+        if content < min_content:
+            return False                                # function-heavy fragment
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +303,7 @@ def print_console_report(records: list[dict], stats: dict) -> None:
     print()
     print("=== PHRASE MINING COMPLETE ===")
     print(f"  Initial candidates:     {stats['initial']:>10,}")
+    print(f"  After hygiene gates:    {stats['after_hygiene']:>10,}")
     print(f"  After PMI floor:        {stats['after_pmi']:>10,}")
     print(f"  After maximal filter:   {stats['after_absorb']:>10,}")
     print(f"  Final survivors:        {len(records):>10,}")
@@ -305,6 +338,13 @@ def mine(
     absorption_ratio: float = ABSORPTION_RATIO_DEFAULT,
     min_pmi: float = MIN_PMI_DEFAULT,
     extra_top_cut: int | None = None,
+    *,
+    drop_repeats: bool = False,
+    min_content: int = 0,
+    no_edge_function: bool = False,
+    max_n: int | None = None,
+    out_all: Path = OUT_ALL,
+    out_summary: Path = OUT_SUMMARY,
 ) -> list[dict]:
     print("Loading frequency tables...")
     word_freq = load_word_frequencies(WORD_FREQ_FILE)
@@ -327,6 +367,16 @@ def mine(
 
     initial = len(candidates)
 
+    if any((drop_repeats, min_content, no_edge_function, max_n)):
+        before = len(candidates)
+        candidates = [c for c in candidates
+                      if passes_hygiene(c['phrase'].split(' '), drop_repeats=drop_repeats,
+                                        min_content=min_content,
+                                        no_edge_function=no_edge_function, max_n=max_n)]
+        print(f"  hygiene gates:           dropped {before - len(candidates):>10,}, "
+              f"kept {len(candidates):,}")
+    after_hygiene = len(candidates)
+
     if min_pmi > 0.0:
         before = len(candidates)
         candidates = [c for c in candidates if c['pmi'] >= min_pmi]
@@ -346,25 +396,26 @@ def mine(
     print("Scoring + ranking...")
     candidates = score_candidates(candidates)
 
-    write_all(candidates, OUT_ALL)
+    write_all(candidates, out_all)
     cuts = [100, 250, 500, 1000, 5000, 10000]
     if extra_top_cut and extra_top_cut not in cuts:
         cuts.append(extra_top_cut)
         cuts.sort()
-    write_summary(candidates, OUT_SUMMARY, tuple(cuts))
+    write_summary(candidates, out_summary, tuple(cuts))
 
     stats = {
-        'initial':      initial,
-        'after_pmi':    after_pmi,
-        'after_absorb': after_absorb,
-        'word_count':   len(word_freq),
-        'total_words':  total_words,
+        'initial':       initial,
+        'after_hygiene': after_hygiene,
+        'after_pmi':     after_pmi,
+        'after_absorb':  after_absorb,
+        'word_count':    len(word_freq),
+        'total_words':   total_words,
     }
     print_console_report(candidates, stats)
 
     print()
-    print(f"Wrote: {OUT_ALL}")
-    print(f"Wrote: {OUT_SUMMARY}")
+    print(f"Wrote: {out_all}")
+    print(f"Wrote: {out_summary}")
     return candidates
 
 
@@ -378,12 +429,55 @@ def main() -> None:
                         f"(default {MIN_PMI_DEFAULT}; 0 = no filter)")
     p.add_argument('--report', type=int, default=None,
                    help="extend the top-N report to include this size")
+    # --- lexical hygiene (OPT-IN; preserves the frozen v0.3 candidate set by default)
+    #     see docs/compression/spec-phrase-assets.md §4 ---
+    p.add_argument('--lexical', action='store_true',
+                   help="preset: drop-repeats + no-edge-function + min-content 1 + "
+                        "max-n 4 + min-pmi 1.5 (isolate genuinely lexical phrases)")
+    p.add_argument('--drop-repeats', action='store_true',
+                   help="drop n-grams with adjacent identical tokens (ASR stutters)")
+    p.add_argument('--min-content', type=int, default=0,
+                   help="require >= N content (non-function) words")
+    p.add_argument('--no-edge-function', action='store_true',
+                   help="reject phrases starting/ending with a function word")
+    p.add_argument('--max-n', type=int, default=None,
+                   help="drop phrases longer than N words")
+    p.add_argument('--out', default=None,
+                   help="output path for candidates (default: phrase_candidates.txt, or "
+                        "phrase_candidates.lexical.txt when hygiene gates are on)")
     args = p.parse_args()
+
+    # --lexical fills sensible defaults; explicit flags override upward.
+    drop_repeats     = args.drop_repeats or args.lexical
+    no_edge_function = args.no_edge_function or args.lexical
+    min_content      = args.min_content or (LEXICAL_MIN_CONTENT if args.lexical else 0)
+    max_n            = args.max_n or (LEXICAL_MAX_N if args.lexical else None)
+    min_pmi          = args.min_pmi
+    if args.lexical and min_pmi == 0.0:
+        min_pmi = LEXICAL_MIN_PMI
+
+    # SAFETY: any hygiene run writes to a SEPARATE file so the frozen v0.3
+    # phrase_candidates.txt is never clobbered. Override with --out.
+    hygiene_on = any((drop_repeats, min_content, no_edge_function, max_n))
+    if args.out:
+        out_all = Path(args.out)
+        out_summary = out_all.with_name(out_all.stem + '_summary.txt')
+    elif hygiene_on:
+        out_all = OUT_ALL.with_name('phrase_candidates.lexical.txt')
+        out_summary = OUT_SUMMARY.with_name('phrase_top_summary.lexical.txt')
+    else:
+        out_all, out_summary = OUT_ALL, OUT_SUMMARY
 
     mine(
         absorption_ratio=args.absorb,
-        min_pmi=args.min_pmi,
+        min_pmi=min_pmi,
         extra_top_cut=args.report,
+        drop_repeats=drop_repeats,
+        min_content=min_content,
+        no_edge_function=no_edge_function,
+        max_n=max_n,
+        out_all=out_all,
+        out_summary=out_summary,
     )
 
 

@@ -48,6 +48,10 @@ DEFAULT_DICT_DB = _HERE / 'db' / 'dictionary.lmdb'
 DEFAULT_EPA_DB  = _HERE / '..' / 'Memory' / 'data' / 'epa_substrate.lmdb'
 DEFAULT_FAISS   = _HERE / 'db' / 'dictionary.faiss.index'
 DEFAULT_SURFACES = _HERE / 'db' / 'dictionary.faiss.surfaces.json'
+# Optional DENOTATION channel (768-d meaning index from a dictionary family, e.g.
+# db/builds/<name>/). Distinct from DEFAULT_FAISS above, which is EPA/AFFECT.
+# Point at a build dir to give the verbalizer meaning-based word selection.
+DEFAULT_DENOTATIVE_DIR: Path | None = None
 
 
 class ArtifactDriftError(RuntimeError):
@@ -140,7 +144,8 @@ WARRINER_MID    = 0.0   # EloAI ±4 scale (0 = neutral, not 4.5)
 DOMINANT_THRESH = 0.3   # |intensity| > this → axis is dominant
 EXPANSION_SIGMA = 1.5   # shift in EPA units for pole expansion
 STAGE_HARD_TOL  = 1.5   # abs(stage_diff) > this → exclude candidate
-K_ANCHOR        = 30    # FAISS top-K for anchor retrieval
+K_ANCHOR        = 30    # FAISS top-K for anchor retrieval (EPA/affect)
+K_DENOT         = 8     # denotation neighbours per seed (768-d meaning channel)
 K_POLE          = 15    # FAISS top-K per pole expansion
 
 # Axis labels
@@ -269,6 +274,7 @@ class VerbalizerSubstrate:
         faiss_idx: Path = DEFAULT_FAISS,
         surfaces_path: Path = DEFAULT_SURFACES,
         strict: bool | None = None,   # None -> ELO_FAISS_BINDING (default: degrade)
+        denotative_dir: Path | None = DEFAULT_DENOTATIVE_DIR,  # 768-d meaning index (family)
     ):
         self._dict_env   = get_env(dict_db)
         self._epa_env    = get_env(epa_db)
@@ -305,7 +311,27 @@ class VerbalizerSubstrate:
         # Open sub-dbs (no txn arg — handles persist for env lifetime)
         self._db_fwd  = self._dict_env.open_db(b'forward')
         self._db_rev  = self._dict_env.open_db(b'reverse')
-        self._db_vf   = self._dict_env.open_db(b'vfacets')
+        try:
+            self._db_vf = self._dict_env.open_db(b'vfacets')      # verbalizer facets
+        except Exception:
+            self._db_vf = None            # dict built without vfacet_builder -> degrade,
+            import warnings               # not crash (lookup_vfacet returns None)
+            warnings.warn('[verbalizer] no vfacets sub-DB in this dictionary; run '
+                          'vfacet_builder.py on it for full facet constraints',
+                          RuntimeWarning, stacklevel=2)
+
+        # Optional DENOTATION channel: the 768-d meaning index from a dictionary
+        # family. This is what gives word selection MEANING (car -> truck), distinct
+        # from the EPA/affect faiss above (car -> credentials). Opt-in + graceful.
+        self.denotative = None
+        if denotative_dir is not None:
+            try:
+                from denotative_index import DenotativeIndex   # noqa: PLC0415
+                self.denotative = DenotativeIndex.load(denotative_dir)
+            except Exception as e:
+                import warnings
+                warnings.warn(f'[verbalizer] denotative index not loaded from '
+                              f'{denotative_dir}: {e}', RuntimeWarning, stacklevel=2)
 
     def lookup_id(self, surface: str) -> Optional[bytes]:
         with self._dict_env.begin() as txn:
@@ -316,7 +342,40 @@ class VerbalizerSubstrate:
             v = txn.get(id_bytes, db=self._db_rev)
             return v.decode('utf-8') if v else None
 
+    @staticmethod
+    def _fold_key(s: str) -> str:
+        """Dedup key: lowercase + drop possessive 's, so Car / CAR / car's collapse to
+        one concept. Deliberately does NOT strip a plural 's — that folds news->new,
+        lens->len, series->serie (false merges of distinct words). Plural surface
+        forms are kept distinct; a lexicon-free suffix rule cannot tell them apart."""
+        return s.lower().replace("'s", "").replace("’s", "")
+
+    def denotative_neighbours(self, surface: str, k: int = 8, *,
+                              dedupe: bool = True) -> list[tuple[str, float]]:
+        """Meaning-nearest words for a surface (car -> automobile/vehicle), from the
+        768-d family index. [] if no denotation channel is loaded or the surface is
+        absent. Distinct from faiss_query(), which returns EPA/AFFECT neighbours.
+        With dedupe=True (default) case + plural variants collapse to distinct
+        concepts, and the query's own casings are dropped."""
+        if self.denotative is None or not self.denotative.has(surface):
+            return []
+        if not dedupe:
+            return self.denotative.search(surface, pool=k)
+        qk = self._fold_key(surface)
+        seen, out = {qk}, []
+        for s, sim in self.denotative.search(surface, pool=max(k * 4, 32)):
+            fk = self._fold_key(s)
+            if fk in seen:
+                continue
+            seen.add(fk)
+            out.append((s, sim))
+            if len(out) >= k:
+                break
+        return out
+
     def lookup_vfacet(self, id_bytes: bytes) -> Optional[dict]:
+        if self._db_vf is None:                 # dict has no vfacets -> degrade
+            return None
         with self._dict_env.begin() as txn:
             v = txn.get(id_bytes, db=self._db_vf)
             if not v:
@@ -521,6 +580,28 @@ class Verbalizer:
             anchor_hits, inp, dominant, is_boundary=False, is_cross=False
         )
 
+        # ── Step 3b: DENOTATION expansion (meaning channel) ───────────────
+        # Enrich the field with MEANING-neighbours (car -> truck/vehicle) from the
+        # family's 768-d index. Seeds: the affect anchors + any surface anchors on
+        # the input. Candidates still pass through _resolve_nodes below, so they are
+        # scored by affect + facets like every other node — denotation PROPOSES,
+        # affect/facets DISPOSE. No-op when no denotation channel is loaded, and the
+        # primary source of candidates when the EPA/affect faiss is disabled.
+        denot_nodes: list[SemanticNode] = []
+        if self._s.denotative is not None:
+            seeds, seen_seed = [], set()
+            for cand in ([s for s, _ in anchor_hits]
+                         + [x for x in (list(inp.anchor_ids) + list(inp.raw_ids))
+                            if isinstance(x, str)]):
+                if cand not in seen_seed:
+                    seen_seed.add(cand); seeds.append(cand)
+            for seed in seeds:
+                nbrs = self._s.denotative_neighbours(seed, k=K_DENOT)
+                hits = [(surf, 1.0 - sim) for surf, sim in nbrs]   # sim -> pseudo-distance
+                denot_nodes += self._resolve_nodes(
+                    hits, inp, dominant, is_boundary=False, is_cross=False,
+                    stage_floor=0.5)           # meaning survives regardless of stage
+
         # ── Step 4: Axis expansion (both poles + neutral per dominant axis)
         pole_nodes: dict[str, list] = {}
         for ax in dominant:
@@ -551,7 +632,7 @@ class Verbalizer:
         seen_surfaces: set = set()
         all_nodes: list[SemanticNode] = []
 
-        for node_list in [anchor_nodes, cross_nodes] + list(pole_nodes.values()):
+        for node_list in [anchor_nodes, denot_nodes, cross_nodes] + list(pole_nodes.values()):
             for n in node_list:
                 if n.phrase_atom not in seen_surfaces:
                     seen_surfaces.add(n.phrase_atom)
@@ -597,6 +678,7 @@ class Verbalizer:
         dominant_axes: list,
         is_boundary: bool,
         is_cross: bool,
+        stage_floor: float = 0.0,   # >0: keep off-stage nodes (denotation) at this floor
     ) -> list[SemanticNode]:
         nodes = []
         for surface, dist in hits:
@@ -605,8 +687,9 @@ class Verbalizer:
                 continue
             facet = self._s.lookup_vfacet(id_bytes)
             sfit  = _stage_fit(facet['temporal'] if facet else TMP['UNKNOWN'], inp.stage)
-            if sfit == 0.0:
-                continue
+            if sfit == 0.0 and stage_floor == 0.0:
+                continue                       # hard stage gate (affect path only)
+            sfit = max(sfit, stage_floor)       # denotation: a synonym is stage-agnostic
             surface_epa = self._s.get_epa(surface) or (0.0, 0.0, 0.0)
             node = _build_node(
                 surface, id_bytes, dist, sfit, facet,

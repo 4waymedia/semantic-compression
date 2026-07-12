@@ -1,0 +1,77 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-v01a
+# Fresh DUPLICATE of elo-browser-v01 (identical corpus + build params), with the
+# asset suite declared EXPLICITLY so the package ships with meta.db (the standard
+# suite = dictionary + facets + meta). Same canonical build; density from the codec.
+#   Resolver: python -m semantic_compression.build_dictionary semantic_compression/builds/elo-browser-v01a.yaml
+# ============================================================================
+
+meta:
+  name: elo-browser-v01a              # -> db/builds/elo-browser-v01a/
+  version: "1.0.0"
+  date: "2026-07-10"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: staged                      # staged until a model is trained on it, then lock
+  purpose: >
+    Fresh duplicate of elo-browser-v01: one artifact serving BOTH the browser
+    codebook and the ELO-native LLM vocabulary — the v0.4 general dictionary
+    (conversational + literary) with the website/HTML structure group folded in,
+    so the model can also ingest captured pages (.elo). char-4 build; the `full`
+    profile cut (262,144) is the vocab. Built with meta.db (standard suite).
+  goals:
+    - Browser codebook == LLM vocab (ids, facets, meta are one artifact).
+    - Keep the v0.4 general coverage AND add website/HTML the general dict lacks.
+    - char-4 depth so the full (262,144) profile cut is available.
+  use_cases:
+    - ELO-native LLM vocabulary contract.
+    - Browser page + transcript compression.
+    - Semantic (facet/meta) resolution per id.
+
+build:                                # FINE-TUNE
+  size: char-4                        # tiers 0-3; full profile cut = 262,144
+  select_strategy: frequency          # S0 default (transcripts S0≈S1); test-group can compare
+  min_freq: 1
+  tier1_word_reserve: 1024
+  suite: full                         # EVERYTHING buildable on — to test outputs + file sizes
+  assets:                             # explicit for clarity (all true; templates is reserved)
+    facets: true                      # affordance sub-DB
+    meta: true                        # meta.db layer 1 (+complement)
+    epa: true                         # affect sub-DB (needs epa_substrate.lmdb)
+    meta_layer2: true                 # fills meta.db epa/polarity/concreteness (needs epa)
+    vectors: true                     # 768-d denotative index on THIS vocab cut (needs ST+faiss+GPU)
+    browser: true                     # epa.bin + facets.bin + neighbours.bin (all 3 channels)
+    # Full browser build family: dictionary + profiles + facets + meta.db + epa +
+    # meta_layer2 + 768-d index + epa.bin/facets.bin/neighbours.bin. The index is
+    # embedded on the full cut (261,872) so neighbours align n-for-n. Heavy stages
+    # (vectors) need sentence-transformers + faiss + GPU; run with --device cuda.
+
+corpus:                               # BASE (= v0.4 general) + EXPANDED (web fold-in)
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt   # 373-channel counts
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure               # THE FOLD-IN — website/HTML group the general dict lacks
+    precomputed: semantic_compression/data/web_terms_frequencies.txt   # 14,487 terms
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []                  # adjust if running a generalization eval
+
+instructions: >
+  Straight canonical build (no builder change), duplicate of elo-browser-v01 under a
+  new name so it lands in its own package (db/builds/elo-browser-v01a/) without
+  touching the original. The website/HTML group is folded in via
+  web_terms_frequencies.txt. Density is delivered by the codec (implicit-whitespace +
+  caps). Suite is declared explicitly (standard) so the manifest records that meta.db
+  ships. After build: run verify_lossless + verify_facets. To also fill meta.db
+  layer-2 (epa/polarity/concreteness) flip `assets.epa: true` + `assets.meta_layer2:
+  true` (needs the EPA substrate). Lock only when a model is trained.

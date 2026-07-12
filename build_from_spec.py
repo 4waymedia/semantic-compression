@@ -24,6 +24,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "semantic_compression")
 import semantic_compression.dictionary_builder_v03 as bld
 from semantic_compression.tokenizer import tokenize
+from semantic_compression import build_suite
 
 SIZE_MAX_TIER = {"char-2": 1, "char-3": 2, "char-4": 3}
 STRATEGIES = {"frequency": bld.score_by_frequency, "bytes_saved": bld.score_by_bytes_saved}
@@ -98,7 +99,16 @@ def main() -> None:
     meta, build = spec["meta"], spec.get("build", {})
     name = meta["name"]
 
+    # Resolve the declared asset suite (FAIL FAST on an inconsistent declaration).
+    # build_from_spec builds the CORE (dictionary + optionally facets + meta); the
+    # rest of the suite (epa/meta_layer2/vectors/browser) is derived by build_assets.
+    enabled = build_suite.declared_set(build)
+    preset = build.get("suite", "standard")
+    core = [a for a in ("dictionary", "facets", "meta") if a in enabled]
+    downstream = sorted(enabled - set(core))
     print(f"=== build '{name}'  ({meta.get('purpose','')[:60]}) ===")
+    print(f"suite: preset={preset}  core={core}"
+          + (f"  downstream(build_assets)={downstream}" if downstream else ""))
     wf, corpus_manifest = resolve_corpus(spec, repo_root)
     print(f"corpus: {corpus_manifest['corpus_unique_tokens']:,} unique / "
           f"{corpus_manifest['corpus_total_tokens']:,} tokens / "
@@ -106,7 +116,10 @@ def main() -> None:
           f"fp={corpus_manifest['corpus_fingerprint'][:16]}…")
 
     out_dir = Path("semantic_compression/db/builds") / name
-    extra = {"spec_meta": meta, "build_params": build, "eval": spec.get("eval", {}),
+    # Record the resolved suite so build_assets + the registry read one declaration.
+    suite_record = {"preset": preset, "enabled": sorted(enabled)}
+    extra = {"spec_meta": meta, "build_params": build, "suite": suite_record,
+             "eval": spec.get("eval", {}),
              "instructions": spec.get("instructions", ""), **corpus_manifest,
              "built_by_spec": str(sys.argv[1]),
              "resolved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -117,18 +130,21 @@ def main() -> None:
         min_freq=int(build.get("min_freq", 1)),
         tier1_word_reserve=int(build.get("tier1_word_reserve", 1024)),
         select_strategy=STRATEGIES[build.get("select_strategy", "frequency")],
-        with_facets=bool(build.get("with_facets", False)),
+        with_facets=("facets" in enabled),          # SUITE-gated (was raw with_facets)
         word_freq_file=wf,
         phrase_file=repo_root / 'semantic_compression/data/phrase_candidates.txt',
         extra_manifest=extra)
-    # Meta layer (System-1 deterministic) -> meta.db
-    try:
-        sys.path.insert(0, "semantic_compression")
-        import meta_builder
-        ms = meta_builder.build_meta(out_dir / "dictionary.lmdb", out_dir / "meta.db")
-        print(f"       meta: {ms['rows']:,} rows  fp={ms['meta_fingerprint'][:12]}")
-    except Exception as e:
-        print(f"       [meta] skipped: {e}")
+    # Meta layer (System-1 deterministic) -> meta.db  — only if the suite declares it
+    if "meta" in enabled:
+        try:
+            sys.path.insert(0, "semantic_compression")
+            import meta_builder
+            ms = meta_builder.build_meta(out_dir / "dictionary.lmdb", out_dir / "meta.db")
+            print(f"       meta: {ms['rows']:,} rows  fp={ms['meta_fingerprint'][:12]}")
+        except Exception as e:
+            print(f"       [meta] skipped: {e}")
+    else:
+        print("       meta: off (not in suite)")
     # Unified artifact identity registry (dictionary/facets/epa/meta/templates).
     from semantic_compression.artifact_identity import write_registry, validate_registry
     reg = write_registry(out_dir)

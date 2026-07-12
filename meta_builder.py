@@ -115,8 +115,8 @@ def build_meta(lmdb_path, out_db, overrides_path="data/facet_overrides.tsv",
     # 2026-07-08). Failing loudly with a valid staged DB beats silent corruption.
     staged = out_db.with_suffix(".db.tmp")
     shutil.copyfile(tmp_db, staged)
-    with open(staged, "rb") as fh:
-        os.fsync(fh.fileno())
+    with open(staged, "rb+") as fh:          # rb+ (writable) — Windows os.fsync needs a
+        os.fsync(fh.fileno())                # write fd; "rb" raises EBADF (Errno 9)
     _v = sqlite3.connect(staged)
     _ok = _v.execute("PRAGMA integrity_check").fetchone()[0]
     _v.close()

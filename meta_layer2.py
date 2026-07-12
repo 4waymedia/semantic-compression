@@ -224,8 +224,8 @@ def run_layer2(build_dir: Path, word_freq_file: Path | None = None,
     # os.replace/unlink raise EPERM). Verify the staged copy, then rename-over.
     tmp2 = meta_db.with_suffix(".db.tmp")
     shutil.copyfile(tmp, tmp2)
-    with open(tmp2, "rb") as fh:
-        os.fsync(fh.fileno())
+    with open(tmp2, "rb+") as fh:            # rb+ (writable) — Windows os.fsync needs a
+        os.fsync(fh.fileno())                # write fd; "rb" raises EBADF (Errno 9)
     _v = sqlite3.connect(tmp2)
     _ok = _v.execute("PRAGMA integrity_check").fetchone()[0]
     _v.close()
