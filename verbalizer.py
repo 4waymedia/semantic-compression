@@ -277,7 +277,10 @@ class VerbalizerSubstrate:
         denotative_dir: Path | None = DEFAULT_DENOTATIVE_DIR,  # 768-d meaning index (family)
     ):
         self._dict_env   = get_env(dict_db)
-        self._epa_env    = get_env(epa_db)
+        # Verify the faiss<->substrate binding FIRST. _epa_fingerprint() opens the
+        # substrate lmdb momentarily, and LMDB forbids two concurrent opens of one env
+        # per process — so this must run BEFORE we hold epa_db open (below), else a
+        # v2 sidecar (verifiable) raises "already open in this process".
         meta = _verify_index_binding(faiss_idx, epa_db, strict=strict)
         # {} means "could not verify" -> the index loads (cheap) but is never queried.
         self.index_verified = bool(meta)
@@ -298,7 +301,9 @@ class VerbalizerSubstrate:
             warnings.warn(f'[verbalizer] {msg} -- faiss_query() DISABLED',
                           RuntimeWarning, stacklevel=2)
 
-        # Pre-build EPA lookup: surface → (E, P, A)
+        # Pre-build EPA lookup: surface → (E, P, A). Open the substrate NOW (after the
+        # binding check has opened+closed it), and hold it for the substrate's lifetime.
+        self._epa_env    = get_env(epa_db)
         self._epa: dict[str, tuple] = {}
         with self._epa_env.begin() as txn:
             db = self._epa_env.open_db(b'epa', txn=txn)
