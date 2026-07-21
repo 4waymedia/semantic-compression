@@ -18,6 +18,7 @@ Templates + confidences live in TEMPLATES -- tunable, like R1's LICENSE table.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
@@ -78,17 +79,68 @@ def _first_conflict(priors, pairs):
     return None
 
 
-def compose_response(turn, priors: Iterable, contradiction_pairs=frozenset()) -> Response:
+# -- attribute / identity layer ---------------------------------------------
+# "your name is Elo" / "my deadline is Friday" — a statement asserts attribute =
+# value; a question asks for the attribute. These must meet on the ATTRIBUTE, which
+# concept-grouping can't guarantee (the statement often keys on the value: "Elo").
+# So we match the pattern directly, across all seeds, and answer with the value.
+_POSS = r"(?:my|your|his|her|its|their|our|the)"
+_ASSERT_RE = re.compile(rf"\b({_POSS})\s+([a-z][a-z]*)\s+(?:is|are|was|were)\s+(.+)", re.I)
+_Q_RE = re.compile(rf"\bwhat(?:'?s| is| are)?\s+({_POSS})\s+([a-z]+)", re.I)
+_FLIP = {"your": "my", "my": "your"}
+
+
+def parse_assertion(text):
+    """'<poss> <attr> is <value>' -> (attr, value, poss), else None."""
+    m = _ASSERT_RE.search(text or "")
+    if not m:
+        return None
+    poss, attr = m.group(1).lower(), m.group(2).lower()
+    value = m.group(3).strip().rstrip(".!?").strip()
+    return (attr, value, poss) if value else None
+
+
+def parse_question(text):
+    """'what(s) <poss> <attr>?' -> the attribute asked about, else None."""
+    m = _Q_RE.search(text or "")
+    return m.group(2).lower() if m else None
+
+
+def _attribute_answer(turn, seeds):
+    """If `turn` asks for an attribute stored by some seed, answer with its value
+    (in the answering voice: your<->my). Deterministic; grounded in that seed."""
+    q_attr = parse_question(getattr(turn, "raw_text", ""))
+    if not q_attr:
+        return None
+    tid = _rid(turn)
+    for s in seeds or ():
+        a = parse_assertion(getattr(s, "raw_text", ""))
+        if a and a[0] == q_attr:
+            attr, value, poss = a
+            voice = _FLIP.get(poss, poss)
+            return Response(f"{voice.capitalize()} {attr} is {value}.",
+                            "answer", "attribute", q_attr, (tid, _rid(s)), 0.90)
+    return None
+
+
+def compose_response(turn, priors: Iterable, contradiction_pairs=frozenset(),
+                     all_seeds=None) -> Response:
     """Compose a response to `turn` (the latest seed) from `priors` (seeds sharing
     its concept). `contradiction_pairs` is a set of `frozenset({id_a, id_b})` that
-    conflict (supplied by the caller from the 06 CONTRADICTS graph). A question
-    (trailing '?') is answered from the priors; otherwise the turn is reacted to."""
+    conflict (from the 06 CONTRADICTS graph). `all_seeds` (optional) is every other
+    stored seed, used for attribute/identity answers where the concept may differ.
+    A question (trailing '?') is answered; otherwise the turn is reacted to."""
     concept = _concept(turn) or "this"
     tid = _rid(turn)
     priors = [p for p in priors if _rid(p) != tid]
     pairs = frozenset(contradiction_pairs)
 
     if _is_question(turn):
+        pool = [s for s in (all_seeds if all_seeds is not None else priors)
+                if _rid(s) != tid]
+        attr = _attribute_answer(turn, pool)     # identity/facts take priority
+        if attr is not None:
+            return attr
         return _answer(tid, priors, concept, pairs)
     return _react(turn, tid, priors, concept, pairs)
 

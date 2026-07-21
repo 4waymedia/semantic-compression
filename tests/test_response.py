@@ -11,7 +11,9 @@ from pathlib import Path
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parents[1]))          # semantic_compression/
 
-from response import compose_response, Response, TEMPLATES   # noqa: E402
+from response import (                                       # noqa: E402
+    compose_response, Response, TEMPLATES, parse_assertion, parse_question,
+)
 
 
 def seed(sid, concept, text):
@@ -103,6 +105,43 @@ class TestContract(unittest.TestCase):
         prior = seed("s0", "system", "The system is stable.")
         r = compose_response(st, [prior], contra(("s0", "s1")))
         self.assertAlmostEqual(r.confidence, TEMPLATES["contradiction"][1])
+
+
+class TestAttribute(unittest.TestCase):
+
+    def test_parse_assertion(self):
+        self.assertEqual(parse_assertion("Your name is Elo."), ("name", "Elo", "your"))
+        self.assertEqual(parse_assertion("my deadline is Friday"), ("deadline", "Friday", "my"))
+        self.assertIsNone(parse_assertion("the system crashed"))
+
+    def test_parse_question(self):
+        self.assertEqual(parse_question("whats your name?"), "name")
+        self.assertEqual(parse_question("what is your name?"), "name")
+        self.assertEqual(parse_question("what's my deadline?"), "deadline")
+        self.assertIsNone(parse_question("is the system stable?"))
+
+    def test_name_exchange_answers_with_value(self):
+        stmt = seed("s1", "elo", "Your name is Elo.")      # concept keys on the value
+        q = seed("q1", "name", "whats your name?")          # concept keys on the attribute
+        # concept-grouped priors are EMPTY (elo != name); all_seeds bridges them
+        r = compose_response(q, priors=[], all_seeds=[stmt])
+        self.assertEqual(r.basis, "attribute")
+        self.assertEqual(r.text, "My name is Elo.")          # your -> my voice flip
+        self.assertEqual(set(r.references), {"q1", "s1"})
+
+    def test_voice_flip_both_ways(self):
+        stmt = seed("s1", "paul", "my name is Paul")
+        q = seed("q1", "name", "what is my name?")
+        r = compose_response(q, priors=[], all_seeds=[stmt])
+        self.assertEqual(r.text, "Your name is Paul.")       # my -> your
+
+    def test_attribute_takes_priority_over_recall(self):
+        stmt = seed("s1", "elo", "Your name is Elo.")
+        q = seed("q1", "name", "whats your name?")
+        # even if a same-concept prior exists, the attribute answer wins
+        other = seed("s2", "name", "names matter.")
+        r = compose_response(q, priors=[other], all_seeds=[stmt, other])
+        self.assertEqual(r.basis, "attribute")
 
 
 if __name__ == "__main__":
