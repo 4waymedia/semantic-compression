@@ -85,7 +85,7 @@ def _first_conflict(priors, pairs):
 # concept-grouping can't guarantee (the statement often keys on the value: "Elo").
 # So we match the pattern directly, across all seeds, and answer with the value.
 _POSS = r"(?:my|your|his|her|its|their|our|the)"
-_ASSERT_RE = re.compile(rf"\b({_POSS})\s+([a-z][a-z]*)\s+(?:is|are|was|were)\s+(.+)", re.I)
+_ASSERT_RE = re.compile(rf"\b({_POSS})\s+([a-z][a-z]*)\s+(?:is|are|was|were)\s+([^.!?;\n]+)", re.I)
 _Q_RE = re.compile(rf"\bwhat(?:'?s| is| are)?\s+({_POSS})\s+([a-z]+)", re.I)
 _FLIP = {"your": "my", "my": "your"}
 
@@ -101,25 +101,66 @@ def parse_assertion(text):
 
 
 def parse_question(text):
-    """'what(s) <poss> <attr>?' -> the attribute asked about, else None."""
+    """'what(s) <poss> <attr>?' -> (attr, poss) asked about, else None.
+    The possessive matters: 'your name?' asks about a DIFFERENT subject than
+    'my name?', so a caller must match the assertion's possessive too."""
     m = _Q_RE.search(text or "")
-    return m.group(2).lower() if m else None
+    return (m.group(2).lower(), m.group(1).lower()) if m else None
 
 
 def _attribute_answer(turn, seeds):
     """If `turn` asks for an attribute stored by some seed, answer with its value
     (in the answering voice: your<->my). Deterministic; grounded in that seed."""
-    q_attr = parse_question(getattr(turn, "raw_text", ""))
-    if not q_attr:
+    q = parse_question(getattr(turn, "raw_text", ""))
+    if not q:
         return None
+    q_attr, q_poss = q
     tid = _rid(turn)
     for s in seeds or ():
         a = parse_assertion(getattr(s, "raw_text", ""))
-        if a and a[0] == q_attr:
+        if a and a[0] == q_attr and a[2] == q_poss:   # SAME attribute AND SAME subject
             attr, value, poss = a
             voice = _FLIP.get(poss, poss)
             return Response(f"{voice.capitalize()} {attr} is {value}.",
                             "answer", "attribute", q_attr, (tid, _rid(s)), 0.90)
+    return None
+
+
+# --- dialog acts (dialog_formula slice 1) -----------------------------------
+# Conversation needs a layer above fact-recall: greet, introduce, accept a chat.
+# Recognized from surface + the existing parsers, deterministic, first match wins.
+_GREET_RE = re.compile(r"^\s*(hi|hello|hey|yo|greetings|good\s+(morning|afternoon|evening))\b", re.I)
+_META_RE = re.compile(r"\b(have a (conversation|chat|talk)|let'?s (talk|chat)|"
+                      r"(want|wanna|like) to (talk|chat|converse|have a)|talk (to|with) you)\b", re.I)
+
+
+def dialog_reply(query, prior_texts=()):
+    """The conversational layer: greet / introduce / accept-a-conversation.
+
+    Returns (reply, act) or None (fall through to fact recall). Works on plain
+    strings so both compose_response and the browser's memory_reply can call it.
+    `prior_texts` are earlier raw_texts, used to greet a registered speaker by name.
+    """
+    text = (query or "").strip()
+    # INTRODUCE: "my name is Paul" -> acknowledge socially (the browser's remember()
+    # stores the fact separately; poss='my' is what separates the speaker from Elo).
+    a = parse_assertion(text)
+    if a and a[0] == "name" and a[2] == "my":
+        greeting = "Hello! " if _GREET_RE.search(text) else ""
+        return (f"{greeting}Nice to meet you, {a[1]}.", "introduce")
+    # GREET (optionally by a name we've been told)
+    if _GREET_RE.search(text):
+        name = None
+        for t in prior_texts or ():
+            b = parse_assertion(t)
+            if b and b[0] == "name" and b[2] == "my":
+                name = b[1]
+                break
+        who = f" {name}" if name else ""
+        return (f"Hello{who}. What would you like to talk about?", "greet")
+    # ACCEPT_META: an invitation to converse, not a fact to file
+    if _META_RE.search(text):
+        return ("I'd like that. What's on your mind?", "accept_meta")
     return None
 
 
@@ -134,6 +175,12 @@ def compose_response(turn, priors: Iterable, contradiction_pairs=frozenset(),
     tid = _rid(turn)
     priors = [p for p in priors if _rid(p) != tid]
     pairs = frozenset(contradiction_pairs)
+
+    # DIALOG ACT first: greet / introduce / accept-a-conversation sit above fact recall.
+    d = dialog_reply(getattr(turn, "raw_text", ""),
+                     [getattr(p, "raw_text", "") for p in (all_seeds or priors)])
+    if d is not None:
+        return Response(d[0], "dialog", d[1], concept, (tid,), 0.90)
 
     if _is_question(turn):
         pool = [s for s in (all_seeds if all_seeds is not None else priors)
