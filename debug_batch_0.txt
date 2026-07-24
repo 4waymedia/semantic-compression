@@ -1,6 +1,0 @@
-```json
-[
-  {"word": "a 000", "agency": "UNKNOWN", "direction": "NEUTRAL"},
-  {"word": "a 1", "agency": "UNKNOWN", "direction": "NEUTRAL"},
-  {"word": "a 10", "agency": "UNKNOWN", "direction": "NEUTRAL"},
-  {"word

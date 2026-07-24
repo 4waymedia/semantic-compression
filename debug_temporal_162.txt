@@ -1,3 +1,0 @@
-I’m missing the actual words/phrases to classify.
-
-You provided only the IDs (e.g., `g7jH`, `g7jI`, etc.), but not the corresponding text for each entry. Please send the list with the phrases themselves, and I’ll return the JSON array in the same order.

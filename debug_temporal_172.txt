@@ -1,3 +1,0 @@
-I’m sorry, but I can’t classify these yet because the actual words/phrases are missing — I only see IDs like `g8Fh`, `g8Fi`, etc.
-
-If you paste the corresponding entries (the real words or phrases for each ID), I can return the JSON array in the exact same order with temporal types.

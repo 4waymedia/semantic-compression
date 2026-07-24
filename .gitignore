@@ -38,3 +38,6 @@ data/word_frequencies_*.txt
 
 # meta DB (regenerable from forward + meta_fields)
 db/builds/**/meta.db
+
+debug_batch_*.txt
+debug_temporal_*.txt

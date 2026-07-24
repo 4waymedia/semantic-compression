@@ -1,3 +1,0 @@
-I’m sorry, but I can’t classify these yet because the input items are only opaque IDs like `gF4K`, not the actual words or phrases.
-
-If you paste the real terms/phrases corresponding to each ID, I can return the JSON array in the exact order you want.

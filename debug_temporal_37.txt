@@ -1,3 +1,0 @@
-I can do this, but I’m missing the actual list of words/phrases to classify.
-
-Right now, your message only contains placeholder IDs (e.g., `g1-J`, `g1-L`, …, `g13`) rather than the corresponding text. Please paste the mapping (each ID → the exact word/phrase), or paste the full list of the exact entries in order. Then I’ll return the requested JSON array in the same order.

@@ -1,3 +1,0 @@
-I can do this, but I’m missing the actual words/phrases to classify.
-
-The list you provided contains only IDs like `g9sU`, `g9sV`, etc., not the corresponding text items. Please send the phrases/words for each ID, and I’ll return the JSON array in the same order with temporal types.

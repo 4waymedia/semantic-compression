@@ -1,3 +1,0 @@
-I can do that, but I’m missing the actual words/phrases to classify.
-
-Right now you’ve provided only the entry IDs (e.g. `gCTA`, `gCTB`, etc.), not the corresponding text for each one. Please send the list of words/phrases mapped to those IDs, and I’ll return the JSON array in the same order.

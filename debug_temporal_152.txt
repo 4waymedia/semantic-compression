@@ -1,3 +1,0 @@
-I’m missing the actual words/phrases for those IDs. You provided only labels like `g7Ci`, `g7Cj`, etc., but not the text to classify.
-
-Please send the list with each entry’s word or phrase, and I’ll return the JSON array in the exact same order.

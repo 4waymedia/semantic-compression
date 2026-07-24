@@ -1,3 +1,0 @@
-I can do this, but I’m missing the actual words/phrases to classify.
-
-The list you provided contains only IDs like `g3kL`, `g3kM`, etc., not the corresponding text entries. Please send the phrases themselves (or a mapping from each ID to its phrase), and I’ll return the JSON array in the same order.

@@ -1,3 +1,0 @@
-I can do that, but I’m missing the actual words/phrases to classify.
-
-The entries you provided are just IDs like `gFaQ`, `gFaR`, etc., not the phrases themselves. Please send the corresponding words/phrases for each ID, and I’ll return the JSON array in the same order with `STATE`, `PROCESS`, `EVENT`, `OUTCOME`, `CONDITION`, or `UNKNOWN`.

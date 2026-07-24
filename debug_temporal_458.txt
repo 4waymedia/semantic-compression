@@ -1,3 +1,0 @@
-I’m missing the actual words/phrases to classify.
-
-The list you provided contains only IDs like `gN8r`, `gN8s`, etc., but not the corresponding text items. Please send the entries with their actual words/phrases, and I’ll return the JSON array in the same order.

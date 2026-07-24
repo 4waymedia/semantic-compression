@@ -1,3 +1,0 @@
-I’m sorry, but I can’t classify these yet because the actual words/phrases for each entry aren’t included—only the IDs like `g69L`, `g69M`, etc.
-
-If you paste the corresponding text for each ID, I can return the JSON array in the exact order you want.

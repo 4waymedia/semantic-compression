@@ -1,3 +1,0 @@
-I can do this, but I’m missing the actual words/phrases for those IDs.
-
-Right now you’ve provided only the entry labels like `g1bm`, `g1bn`, etc., not the text to classify. Please send the corresponding words/phrases for each ID, and I’ll return the JSON array in the same order.

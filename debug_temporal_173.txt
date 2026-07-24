@@ -1,3 +1,0 @@
-I’m missing the actual words/phrases to classify.
-
-You provided only the IDs (e.g. `g8J0`, `g8J1`, etc.), but not the corresponding entries. Please send the list with each ID’s text, and I’ll return the JSON array in the same order.

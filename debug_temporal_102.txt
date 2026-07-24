@@ -1,3 +1,0 @@
-I’m missing the actual words/phrases to classify.
-
-You provided only the IDs (e.g. `g4ZH`, `g4ZI`, etc.), but not the corresponding text for each entry. Please send the list with each ID mapped to its word/phrase, and I’ll return the JSON array in the same order.
