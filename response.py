@@ -148,7 +148,7 @@ SELF = {
 # Conversation needs a layer above fact-recall: greet, introduce, small-talk.
 # Recognized from surface + the existing parsers, deterministic, first match wins.
 _GREET_RE = re.compile(r"^\s*(hi|hello|hey|yo|greetings|good\s+(morning|afternoon|evening))\b", re.I)
-_META_RE = re.compile(r"\b(have a (conversation|chat|talk)|let'?s (talk|chat)|"
+_META_RE = re.compile(r"\b(have a (conversation|chat|talk)|let'?s (talk|chat)|can we (talk|chat|converse)|"
                       r"(want|wanna|like) to (talk|chat|converse|have a)|talk (to|with) you)\b", re.I)
 _STATE_RE = re.compile(r"\bhow(?:'?s| is| are| you| are you)?\s*(you|it going|things|your day)\b", re.I)
 _CAP_RE = re.compile(r"\b(?:who are you|what are you(?!\s+doing)|what can you do|what do you do)\b", re.I)
