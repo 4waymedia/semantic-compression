@@ -41,3 +41,6 @@ db/builds/**/meta.db
 
 debug_batch_*.txt
 debug_temporal_*.txt
+
+debug_batch_*.txt
+debug_temporal_*.txt
