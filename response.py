@@ -153,7 +153,10 @@ _META_RE = re.compile(r"\b(have a (conversation|chat|talk)|let'?s (talk|chat)|ca
 _STATE_RE = re.compile(r"\bhow(?:'?s| is| are| you| are you)?\s*(you|it going|things|your day)\b", re.I)
 _CAP_RE = re.compile(r"\b(?:who are you|what are you(?!\s+doing)|what can you do|what do you do)\b", re.I)
 _OPINION_RE = re.compile(r"\b(?:do|would|did|are)\s+you\s+(?:like|enjoy|prefer|love|hate|into)\b"
-                         r"|\bwhat do you think\b|\bhow do you feel about\b", re.I)
+                         r"|\bwhat do you think\b|\bhow do you feel about\b"
+                         r"|\bdoes\s+(?:this|that|it)\s+"
+                         r"(?:excite|interest|bother|please|bore|worry)\s+you\b"
+                         r"|\bare\s+you\s+(?:excited|interested|curious|happy|bored)\b", re.I)
 _THANKS_RE = re.compile(r"^\s*(thanks|thank you|cheers|much appreciated|appreciate it)\b", re.I)
 _BYE_RE = re.compile(r"^\s*(bye|goodbye|see you|farewell|that'?s all|catch you later)\b", re.I)
 _LOC_RE = re.compile(r"\bwhere\s+(?:are|do)\s+you\b|\bwhere\s+do\s+you\s+(?:live|run)\b", re.I)
