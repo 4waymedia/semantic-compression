@@ -48,7 +48,67 @@ from pathlib import Path
 
 sys.path.insert(0, '.')
 
-from semantic_compression.config import FORMAT_VERSION, FUNCTION_WORDS
+from semantic_compression.config import (
+    FORMAT_VERSION, FUNCTION_WORDS, UTILITY, UTILITY_MASK, UTILITY_SHIFT,
+)
+
+# The hygiene gates need "is this a function word?" — which is the FACETS
+# UTILITY question, not raw FUNCTION_WORDS membership. Using the set directly
+# under-reports badly: config.FUNCTION_WORDS DELIBERATELY omits conjunctions,
+# wh-words and negation (see its own docstring — those are already FUNCTION
+# via a LOGIC_SEED cue, so facets has no need to list them). A raw
+# `w in FUNCTION_WORDS` test has no access to that cue path, so `and`, `but`,
+# `or`, `so`, `if`, `because`, `not` all read as CONTENT to it.
+#
+# Measured 2026-07-27 against phrase_candidates.lexical.txt (produced by the
+# raw-set version of this gate): 18,536 of 50,347 entries — 36.8% — carry one
+# of those 40 words on an edge. That is why the "lexical" set still led with
+# `and you know`, `and then`, `if you want`, `but you know`. The gate logic was
+# right; its membership test was blind to two thirds of the function vocabulary.
+#
+# facets.assign_facet() is the authoritative answer and already accounts for
+# BOTH paths (explicit list + cue). config.py / normalize.py / facets.py are
+# pure Python — no lmdb, no model — so this stays a cheap import.
+# NOTE ON THE IMPORT PATH: facets.py uses BARE imports (`import config`,
+# `from normalize import normalize_surface`), so it is only importable with
+# semantic_compression/ ITSELF on sys.path — `from semantic_compression.facets
+# import ...` fails, because facets' own `import config` cannot resolve from
+# the repo root. (Measured: the first version of this block used exactly that
+# and silently fell back — the WARNING in mine() is what surfaced it.) So put
+# this module's own directory on the path first.
+_PKG_DIR = str(Path(__file__).resolve().parent)
+if _PKG_DIR not in sys.path:
+    sys.path.insert(0, _PKG_DIR)
+try:
+    from facets import assign_facet as _assign_facet
+except Exception:                                                # pragma: no cover
+    _assign_facet = None
+
+_FN_CACHE: dict = {}
+
+
+def is_function_word(w: str) -> bool:
+    """True if `w` is grammatical glue rather than content, per facets'
+    UTILITY axis (FUNCTION / STRUCTURAL / FILLER all count as non-content).
+
+    Falls back to raw FUNCTION_WORDS membership only when facets is
+    unimportable — and that fallback is KNOWN to miss conjunctions, wh-words
+    and negation (see the note above), so a fallback run does NOT produce a
+    clean lexical mine. `mine()` warns when it happens rather than silently
+    writing a worse file."""
+    hit = _FN_CACHE.get(w)
+    if hit is not None:
+        return hit
+    if _assign_facet is None:
+        out = w in FUNCTION_WORDS
+    else:
+        try:
+            flags = _assign_facet(w)[2]
+            out = ((flags & UTILITY_MASK) >> UTILITY_SHIFT) != UTILITY['CONTENT']
+        except Exception:
+            out = w in FUNCTION_WORDS
+    _FN_CACHE[w] = out
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +159,13 @@ def passes_hygiene(words: list[str], *, drop_repeats: bool, min_content: int,
         return False                                    # length sanity
     if drop_repeats and _has_adjacent_repeat(words):
         return False                                    # ASR stutter (china china)
-    if no_edge_function and (words[0] in FUNCTION_WORDS or words[-1] in FUNCTION_WORDS):
-        return False                                    # discourse edges (to ... the)
+    # `is_function_word`, NOT `in FUNCTION_WORDS` — see the module-level note:
+    # the raw set omits conjunctions/wh/negation by design, which let 36.8% of
+    # the previous "lexical" set through on an edge.
+    if no_edge_function and (is_function_word(words[0]) or is_function_word(words[-1])):
+        return False                                    # discourse edges (and ... you know)
     if min_content:
-        content = sum(1 for w in words if w not in FUNCTION_WORDS)
+        content = sum(1 for w in words if not is_function_word(w))
         if content < min_content:
             return False                                # function-heavy fragment
     return True
@@ -368,6 +431,11 @@ def mine(
     initial = len(candidates)
 
     if any((drop_repeats, min_content, no_edge_function, max_n)):
+        if _assign_facet is None and (no_edge_function or min_content):
+            print("  WARNING: facets.assign_facet unavailable — falling back to raw "
+                  "FUNCTION_WORDS membership, which MISSES conjunctions/wh/negation "
+                  "(and, but, or, so, if, because, not). This run will NOT be a clean "
+                  "lexical mine; ~37% of survivors will still be discourse fragments.")
         before = len(candidates)
         candidates = [c for c in candidates
                       if passes_hygiene(c['phrase'].split(' '), drop_repeats=drop_repeats,
@@ -419,6 +487,43 @@ def mine(
     return candidates
 
 
+def _selftest() -> int:
+    """Pin the 2026-07-27 regression: the edge/content gates must treat
+    conjunctions, wh-words and negation as function words. They are absent
+    from config.FUNCTION_WORDS BY DESIGN (already FUNCTION via a LOGIC_SEED
+    cue), so a raw membership test silently misses them — which let 36.8% of
+    the previous lexical set through with a discourse word on an edge.
+    Run: python -m semantic_compression.phrase_miner --selftest"""
+    ok = True
+
+    def check(cond, msg):
+        nonlocal ok
+        print(("  ok  " if cond else "  FAIL") + " " + msg)
+        ok = ok and cond
+
+    check(_assign_facet is not None,
+          "facets.assign_facet imported (without it the gates silently degrade)")
+    # the exact words that leaked
+    for w in ("and", "but", "or", "so", "if", "because", "not", "then",
+              "what", "when", "which", "while", "as", "than"):
+        check(is_function_word(w), f"is_function_word({w!r}) is True")
+    # genuine content must NOT be swept up
+    for w in ("car", "wash", "drive", "office", "system", "tape"):
+        check(not is_function_word(w), f"is_function_word({w!r}) is False")
+    # end-to-end on the phrases that used to top the 'lexical' list
+    gates = dict(drop_repeats=True, min_content=LEXICAL_MIN_CONTENT,
+                 no_edge_function=True, max_n=LEXICAL_MAX_N)
+    for bad in ("and you know", "and then", "if you want", "but you know",
+                "so i think"):
+        check(not passes_hygiene(bad.split(), **gates),
+              f"rejects discourse fragment {bad!r}")
+    for good in ("post office", "solar system", "hard drive", "red tape"):
+        check(passes_hygiene(good.split(), **gates),
+              f"keeps lexical compound {good!r}")
+    print("SELFTEST", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Refine n-gram candidates into phrase atoms")
     p.add_argument('--absorb', type=float, default=ABSORPTION_RATIO_DEFAULT,
@@ -445,7 +550,12 @@ def main() -> None:
     p.add_argument('--out', default=None,
                    help="output path for candidates (default: phrase_candidates.txt, or "
                         "phrase_candidates.lexical.txt when hygiene gates are on)")
+    p.add_argument('--selftest', action='store_true',
+                   help="check the hygiene gates against known cases; mines nothing")
     args = p.parse_args()
+
+    if args.selftest:
+        raise SystemExit(_selftest())
 
     # --lexical fills sensible defaults; explicit flags override upward.
     drop_repeats     = args.drop_repeats or args.lexical
