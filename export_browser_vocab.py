@@ -51,7 +51,8 @@ def project_entries(rows, cut: str):
     return entries
 
 
-def build_vocab(name: str, cut: str, entries: list, cut_meta: dict | None) -> dict:
+def build_vocab(name: str, cut: str, entries: list, cut_meta: dict | None,
+                dictionary_fingerprint: str | None = None) -> dict:
     content_size = len(entries)
     meta = cut_meta or {}
     # prefer profile-cuts numbers; fall back to deriving from content_size
@@ -60,6 +61,10 @@ def build_vocab(name: str, cut: str, entries: list, cut_meta: dict | None) -> di
     tot = meta.get("total_vocab", content_size)
     return {
         "vocab_version": name,
+        # The family binding (DICTIONARY-FAMILY-INTEGRATION.md §2). Emitted as
+        # "unknown" rather than omitted so a consumer can tell "this build could
+        # not report one" from "this file predates the field".
+        "dictionary_fingerprint": dictionary_fingerprint or "unknown",
         "cut": cut,
         "entry_count": content_size,
         "content_size": content_size,
@@ -68,6 +73,44 @@ def build_vocab(name: str, cut: str, entries: list, cut_meta: dict | None) -> di
         "total_vocab": tot,
         "entries": entries,
     }
+
+
+def read_dictionary_fingerprint(build_dir: Path) -> str | None:
+    """The build's `dictionary_fingerprint`, or None when it cannot be read.
+
+    SAME SOURCE as ELO-Browser/tools/export_browser_assets.py:154 — the
+    dictionary.lmdb `meta` sub-DB, key `dictionary_fingerprint`. Deliberately
+    not a second scheme: BINDINGS.md says "Have the producer emit ... whatever
+    fingerprints it already computes. Do not invent a second hashing scheme."
+
+    Soft import so this module keeps its no-heavy-deps promise (it is otherwise
+    a pure gzip+csv+json projection). Missing lmdb, missing db, or missing key
+    all yield None = UNKNOWN, which downstream must treat as "no conflict"
+    rather than as a mismatch — the D4 guard semantics 06/07 already use.
+
+    WHY THE VOCAB FILE NEEDS IT: DICTIONARY-FAMILY-INTEGRATION.md §2 requires
+    the browser to verify the .bin family fingerprint "matches the codec
+    dictionary you decode with". The codec vocab shipped without one, so that
+    half of §2 was unverifiable — the assets could be checked against each
+    other but never against the vocabulary they index."""
+    try:
+        import lmdb                                     # noqa: PLC0415
+    except Exception:
+        return None
+    db = build_dir / "dictionary.lmdb"
+    if not db.exists():
+        return None
+    try:
+        env = lmdb.open(str(db), readonly=True, max_dbs=8, lock=False)
+        try:
+            meta = env.open_db(b"meta", create=False)
+            with env.begin() as txn:
+                raw = txn.get(b"dictionary_fingerprint", db=meta)
+            return raw.decode() if raw else None
+        finally:
+            env.close()
+    except Exception:
+        return None
 
 
 def _read_token_ids(path: Path):
@@ -92,11 +135,13 @@ def emit(build_dir: Path, cut: str = "full") -> dict:
     if cuts_path.exists():
         cut_meta = json.loads(cuts_path.read_text(encoding="utf-8")).get(cut)
     entries = project_entries(_read_token_ids(token_ids), cut)
-    vocab = build_vocab(name, cut, entries, cut_meta)
+    fingerprint = read_dictionary_fingerprint(build_dir)
+    vocab = build_vocab(name, cut, entries, cut_meta, fingerprint)
     out = build_dir / f"{name}.browser.json"
     _atomic_write_json(out, vocab)
     print(f"wrote {out.name}: cut={cut} content_size={vocab['content_size']:,} "
-          f"total_vocab={vocab['total_vocab']:,}")
+          f"total_vocab={vocab['total_vocab']:,} "
+          f"fingerprint={vocab['dictionary_fingerprint'][:16]}")
     return vocab
 
 
