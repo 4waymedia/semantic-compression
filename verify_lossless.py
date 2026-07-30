@@ -38,7 +38,19 @@ from semantic_compression.caps_codec import (
 from semantic_compression.tokenizer import tokenize
 from semantic_compression.format_adapters import read_file
 
-LMDB_PATH = Path('semantic_compression/db/dictionary.lmdb')
+# THE DICTIONARY UNDER TEST IS AN ARGUMENT, NOT A CONSTANT.
+#
+# This was a hardcoded `Path('semantic_compression/db/dictionary.lmdb')` with no way to
+# override it, dating from before builds were packaged. Once dictionaries moved into
+# db/builds/<name>/, the byte-exact gate kept testing the one database that was no
+# longer anybody's build — and it could not have tested a package even if asked.
+#
+# So the round-trip gate never ran against elo-browser-v01/v01a/v01b at all. It was also
+# absent from the stage-11 cascade, which called only verify_facets. Two independent
+# reasons the strongest correctness check in the repo was not covering the artifacts we
+# shipped, neither of which produced an error.
+DEFAULT_LMDB = Path('semantic_compression/db/dictionary.lmdb')
+LMDB_PATH = DEFAULT_LMDB          # overridden by --db in main()
 
 SAMPLES = [
     'semantic_compression/samples/plain.txt',
@@ -233,10 +245,14 @@ def run():
     print('-' * 92)
     if overall_pass:
         overall_ratio = total_original / total_stream if total_stream else float('inf')
+        # Name the dictionary in the pass line. "ALL 10 FORMATS PASS" says nothing about
+        # WHICH dictionary passed, so the same green line was equally true of a build
+        # nobody ships — that is how this gate stayed convincing while testing a stale db.
         print(
             f"ALL 10 FORMATS PASS BYTE-EXACT ROUND-TRIP  "
             f"(combined ratio: {overall_ratio:.2f}x  "
-            f"{total_original:,} -> {total_stream:,} bytes)"
+            f"{total_original:,} -> {total_stream:,} bytes)\n"
+            f"  dictionary: {LMDB_PATH}"
         )
         print()
         print("Foundation is provably lossless. Step 9 compressor is now packaging only.")
@@ -246,5 +262,20 @@ def run():
         return 1
 
 
+def main() -> int:
+    import argparse
+    p = argparse.ArgumentParser(
+        description='Byte-exact round-trip gate over the 10 sample formats.')
+    p.add_argument('--db', default=None,
+                   help='dictionary.lmdb to test — normally a build package, e.g. '
+                        'db/builds/<name>/dictionary.lmdb. Defaults to the legacy '
+                        f'{DEFAULT_LMDB} only when omitted.')
+    a = p.parse_args()
+    if a.db:
+        global LMDB_PATH
+        LMDB_PATH = Path(a.db)
+    return run()
+
+
 if __name__ == '__main__':
-    sys.exit(run())
+    sys.exit(main())

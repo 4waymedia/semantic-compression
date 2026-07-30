@@ -199,20 +199,32 @@ def db_checks(db_path: str) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description='Verify the facets database')
-    p.add_argument('--db', default='db/dictionary.lmdb')
+    # NO DEFAULT DB. This used to default to 'db/dictionary.lmdb' — a legacy path from
+    # before builds were packaged — and build_assets stage 11 invoked it with no --db at
+    # all. So the gate on every build verified a different, older database and passed:
+    # it printed "=== facets verification PASSED ===" for 373,918 entries while the
+    # package it was gating held 437,994. A gate that names no subject cannot be wrong,
+    # which is the same thing as it not being a gate.
+    p.add_argument('--db', required=True,
+                   help='dictionary.lmdb to verify (the BUILD PACKAGE, not db/)')
     p.add_argument('--overrides', default='data/facet_overrides.tsv')
     p.add_argument('--pure-only', action='store_true')
     args = p.parse_args()
 
     pure_checks(args.overrides)
     if not args.pure_only:
+        # A MISSING DATABASE IS A FAILURE, NOT A SKIP. This was `sys.exit(0)`: the one
+        # case where the thing under test does not exist reported success, and the
+        # cascade recorded the stage as OK.
         if not Path(args.db).exists():
-            print(f'[SKIP] DB checks: {args.db} not found '
-                  f'(run facet_builder.py first)')
-            sys.exit(0)
+            sys.exit(f'[FAIL] {args.db} not found — nothing was verified. '
+                     f'Run facet_builder.py against this package first.')
         db_checks(args.db)
 
-    print('\n=== facets verification PASSED ===')
+    # State the subject. A bare "PASSED" is unfalsifiable by a reader: it does not say
+    # what it read, so a green light against the wrong artifact looks like a green light.
+    what = 'overrides only (--pure-only)' if args.pure_only else args.db
+    print(f'\n=== facets verification PASSED — {what} ===')
 
 
 if __name__ == '__main__':
