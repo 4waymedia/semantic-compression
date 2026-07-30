@@ -49,7 +49,7 @@ PY = sys.executable
 # neighbours (correctly "off"), instead of failing for a missing index.
 STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                6: "browser", 7: "browser", 8: "vectors",
-               9: None, 10: None, 11: None}
+               9: None, 10: None, 11: None, 12: None}
 
 
 def _sig(path: Path) -> str:
@@ -103,10 +103,14 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
              out=[pkg / "dictionary.denotative.json"]),
         dict(n=6, name="browser-vocab", script=SC / "export_browser_vocab.py", cwd=SC,
              dep=None, argv=["--build", str(pkg), "--cut", "full"], out=[vocab]),
+        # --out-root, not --out: the exporter appends the build name itself, so the
+        # versioned folder is guaranteed rather than assembled by each caller.
         dict(n=7, name="browser-epa+facets", script=BROWSER_TOOLS / "export_browser_assets.py",
-             cwd=ROOT, dep="lmdb", argv=["--build", str(pkg), "--out", str(browser_out)],
+             cwd=ROOT, dep="lmdb",
+             argv=["--build", str(pkg), "--out-root", str(browser_out.parent)],
              out=[browser_out / "epa.bin", browser_out / "facets.bin",
-                  browser_out / "assets.meta.json"]),
+                  browser_out / "assets.meta.json",
+                  browser_out / f"{pkg.name}.browser.json"]),
         dict(n=8, name="browser-neighbours", script=BROWSER_TOOLS / "export_neighbours.py",
              cwd=ROOT, dep="faiss", argv=["--build", str(pkg), "--index", str(pkg),
              "--out", str(browser_out)], out=[browser_out / "neighbours.bin"]),
@@ -116,9 +120,73 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         dict(n=10, name="stamp", script=SC / "stamp_meta.py", cwd=SC, dep=None,
              argv=["--db", str(lmdb), "--release", stamp_release,
                    "--status", stamp_status], out=[]),
+        # STAGE 11 RUNS BOTH GATES, EACH POINTED AT THIS PACKAGE.
+        #
+        # DICTIONARY-BUILD-RUNBOOK.md and spec-asset-pipeline.md have always listed
+        # verify_lossless + verify_facets here, but the code ran only verify_facets —
+        # and with argv=[], so it fell back to the legacy 'db/dictionary.lmdb' default
+        # and gated every build against a database that was not the one being built.
+        # verify_lossless, the byte-exact round-trip check, ran against no build at all.
+        #
+        # bench_dict_efficiency is deliberately NOT here: it needs the eval corpora and
+        # takes minutes. It is a measurement, not a pass/fail gate — see the runbook.
         dict(n=11, name="verify", script=SC / "verify_facets.py", cwd=SC, dep=None,
-             argv=[], out=[], gate=True),
+             multi=[["--db", str(lmdb)]], out=[], gate=True),
+        dict(n=12, name="verify-lossless", script=SC / "verify_lossless.py", cwd=ROOT,
+             dep=None, argv=["--db", str(lmdb)], out=[], gate=True),
     ]
+
+
+def _preflight_device(device: str, allow_cpu: bool) -> None:
+    """CUDA IS THE DEFAULT AND ITS ABSENCE IS A HARD STOP.
+
+    Stage 5 embeds the whole vocab cut (~262k surfaces) with all-mpnet-base-v2. On the
+    5090 that is minutes; on CPU it is hours — slow enough that people cancel the run,
+    which is how a package ends up with no neighbours.bin.
+
+    We check BEFORE any stage runs, because the failure used to surface 4 stages deep:
+    stage 5 died with "Torch not compiled with CUDA enabled", stage 8 then failed for a
+    missing index, and the pipeline printed both and carried on to a clean-looking
+    finish. Ten minutes of work to learn something knowable in 50ms.
+
+    On the diagnosis: torch's CPU and CUDA builds are the same package name, so only one
+    can be installed. PyPI ships CPU-only wheels on Windows and the CUDA builds live at
+    download.pytorch.org — so `pip install` of anything depending on torch (a
+    sentence-transformers upgrade, faiss, an unpinned resolve) silently replaces a
+    working cu128 install. Hence printing the interpreter path AND the torch build: the
+    two real causes are "wrong venv" and "something overwrote it", and they look
+    identical from the error message alone.
+    """
+    if device != "cuda":
+        return
+    try:
+        import torch                                   # noqa: PLC0415
+    except Exception as e:
+        sys.exit(f"[preflight] --device cuda but torch will not import: {e}\n"
+                 f"            interpreter: {PY}")
+    if torch.cuda.is_available():
+        n = torch.cuda.get_device_name(0)
+        print(f"  device: cuda -> {n}  (torch {torch.__version__}, cuda {torch.version.cuda})")
+        return
+    if allow_cpu:
+        print(f"  device: CPU FALLBACK (--allow-cpu). torch {torch.__version__} "
+              f"has no CUDA; the embed stage will take hours.")
+        return
+    sys.exit(
+        "\n[preflight] --device cuda, but this torch cannot use the GPU.\n"
+        f"    interpreter : {PY}\n"
+        f"    torch       : {torch.__version__}\n"
+        f"    torch.version.cuda : {torch.version.cuda}   <- None means a CPU-only build\n"
+        "\n"
+        "    CPU and CUDA torch are the same package: installing one removes the other,\n"
+        "    and PyPI's Windows wheels are CPU-only. If you installed a CUDA build\n"
+        "    earlier, either a later pip install replaced it, or this is a different\n"
+        "    environment than the one you installed into (check the path above).\n"
+        "\n"
+        "    Blackwell (RTX 5090, sm_120) needs cu128 — torch 2.7.0 or newer:\n"
+        "      pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128\n"
+        "\n"
+        "    Then re-run. To proceed on CPU anyway (hours, not minutes): --allow-cpu\n")
 
 
 def _stale(stage, pkg, ledger, dict_sig) -> tuple[bool, str]:
@@ -173,7 +241,13 @@ def main() -> None:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--only", default=None, help="comma stage numbers")
     ap.add_argument("--from", dest="frm", type=int, default=None)
-    ap.add_argument("--device", default=None)
+    # CUDA by default. The embed stage is the only slow stage and the box has a 5090;
+    # opting IN to the GPU every time is how a run silently costs hours.
+    ap.add_argument("--device", default="cuda",
+                    help="embed device (default: cuda). Absence of CUDA is a hard stop "
+                         "unless --allow-cpu.")
+    ap.add_argument("--allow-cpu", action="store_true",
+                    help="proceed on CPU when CUDA is unavailable (hours, not minutes)")
     ap.add_argument("--browser-out", default=None,
                     help="O3: browser asset dir (default: <root>/dictionary/<name>/)")
     ap.add_argument("--release", default=None, help="O4: stamp release (default: from spec_meta)")
@@ -208,6 +282,10 @@ def main() -> None:
     dict_sig = _sig(pkg / "dictionary.lmdb")
     only = {int(x) for x in a.only.split(",")} if a.only else None
 
+    # Check the GPU before spending any time on stages 1-4.
+    if not a.dry_run:
+        _preflight_device(a.device, a.allow_cpu)
+
     print(f"assets for {pkg.name}   dict_sig={dict_sig}   suite={sorted(enabled)}"
           + ("   [DRY RUN]" if a.dry_run else ""))
     print(f"  browser_out={browser_out}   stamp={stamp_release}/{stamp_status}")
@@ -222,7 +300,15 @@ def main() -> None:
         if asset is not None and asset not in enabled:
             print(f"{st['n']:>2}  {st['name']:<20}{('off (not in suite)'):<26}skip")
             continue
-        stale, why = (True, "forced") if a.force else _stale(st, pkg, ledger, dict_sig)
+        # GATES ALWAYS RUN. They produce no output files, so _stale() judged them purely
+        # by the ledger: on any re-run against an unchanged dictionary they were reported
+        # "up to date" and skipped. A verification that did not execute printed the same
+        # reassuring line as one that passed — the third way this cascade said yes
+        # without checking (see stage 11's --db, and the failure-continues bug above).
+        if st.get("gate"):
+            stale, why = True, "gate (always runs)"
+        else:
+            stale, why = (True, "forced") if a.force else _stale(st, pkg, ledger, dict_sig)
         if not stale:
             print(f"{st['n']:>2}  {st['name']:<20}{'up to date':<26}skip")
             continue
@@ -236,6 +322,18 @@ def main() -> None:
         print(f"{st['n']:>2}  {st['name']:<20}{('stale: '+why):<26}", end="")
         res = _run(st, ledger, dict_sig, a.dry_run)
         print(res)
+        # STOP ON FAILURE. Later stages consume earlier outputs: stage 8 builds
+        # neighbours.bin from the stage-5 index, so once 5 dies every stage after it is
+        # either doomed or producing an asset that does not match its siblings. The old
+        # behaviour printed each failure and ran on to a normal-looking summary, which
+        # is how elo-browser-v01b came out of a "successful" build with no neighbours.bin
+        # and a browser that could not load it.
+        if res.startswith("FAILED"):
+            if not a.dry_run:
+                _write_ledger(pkg, ledger)
+            sys.exit(f"\n[abort] stage {st['n']} ({st['name']}) {res}. Stages after it "
+                     f"depend on its output — fix this before re-running. The ledger is "
+                     f"written, so a re-run resumes from here.")
     if not a.dry_run:
         _write_ledger(pkg, ledger)
         print(f"\nledger -> {lpath.name}")

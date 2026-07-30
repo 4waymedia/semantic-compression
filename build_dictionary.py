@@ -37,7 +37,14 @@ def main() -> None:
     ap.add_argument("spec", type=Path)
     ap.add_argument("--dry-run", action="store_true",
                     help="preview the suite + cascade plan; build nothing")
-    ap.add_argument("--device", default=None)
+    # CUDA by default, matching build_assets. This used to default to None, so omitting
+    # the flag meant "let sentence-transformers decide" — and a run that quietly landed
+    # on CPU looked identical to one on the GPU except for taking ~18x longer
+    # (measured: 22s on the 5090 vs 400s+ on CPU for the same embed).
+    ap.add_argument("--device", default="cuda",
+                    help="embed device (default: cuda)")
+    ap.add_argument("--allow-cpu", action="store_true",
+                    help="proceed on CPU when CUDA is unavailable (hours, not minutes)")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--browser-out", default=None)
     ap.add_argument("--release", default=None)
@@ -62,6 +69,8 @@ def main() -> None:
             cascade += [flag, val]
     if a.force:
         cascade.append("--force")
+    if a.allow_cpu:
+        cascade.append("--allow-cpu")
 
     if a.dry_run:
         if not pkg.exists():
