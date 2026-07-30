@@ -157,11 +157,75 @@ page, the link text, and the navigation history that a transcript does not.
   stronger signal of interest than one merely present on a page. That belongs in
   the user store, under the existing memory/storage axes, not in the dictionary.
 
+## Where the semantic values come from: the browser can ask the page
+
+The host knowledge base needs content, and a curated dataset would be enormous and
+immediately stale. The ELO Browser can populate it directly — **fetch a URL and read
+its own self-description**:
+
+| source | what it gives | trust |
+|---|---|---|
+| HTTP status / redirect chain | is it alive, where does it really go | **factual** |
+| TLD | `.edu` / `.gov` / `.com` | **factual** |
+| `og:site_name` | publisher identity | high |
+| `<title>` | page subject, human-written | high |
+| `og:type` | article / video / product — structural | high |
+| `og:description`, `<meta name="description">` | topic gloss | medium |
+| `<meta name="keywords">` | historically spam-filled | low |
+
+This is better than any inference we could do from the path, because a person wrote
+it to describe their own page. It is the same argument as "link text is a gloss",
+one step stronger.
+
+**It must be user-selected.** Fetching a URL tells that server someone is interested
+in it, before the user has chosen to visit. That is a real disclosure and belongs
+behind an explicit setting, defaulted off, alongside the existing memory/storage
+controls.
+
+### These are claims, not facts — and the page controls them
+
+Every descriptive tag above is **attacker-controlled**. A page can assert any
+`og:description` it likes, which makes uncritical ingestion a semantic injection
+vector: not code execution, but something arguably worse for this system — a way to
+write chosen "facts" directly into Elo's memory, where they become seeds and
+propagate through inference.
+
+The project already has a discipline for exactly this shape of problem. `CLAUDE.md`
+treats external model output as **hypotheses, not facts** — capture, review,
+validate against evidence, tag `VALIDATED` / `REFUTED` / `UNVERIFIED`. Fetched
+metadata is the same category and should use the same loop:
+
+- store as **`<host> claims X`**, never as `<host> is X` — provenance is part of the
+  value, not metadata about it
+- **factual signals outrank claimed ones.** A `.gov` TLD and an HTTP 200 are
+  observations; `og:description` is an assertion by an interested party
+- a claim that **contradicts** what the user or the corpus says is a
+  `CONTRADICTS` edge to reason about, not an overwrite
+- never let a fetched claim alone promote a concept to certainty
+
+The rule of thumb: the browser may record what a site *says about itself*, and must
+never confuse that with what is *true about it*.
+
+### Determinism boundary
+
+Fetch results change over time — the same URL yields different metadata next month.
+That is fine for the semantic store, which is mutable and timestamped, and fatal for
+the codec, which must decode a 2026 file identically in 2030. Hence the separation:
+
+- **codec** — offline, deterministic, self-contained; host handling is stream-local
+  back-referencing that needs no shared table
+- **semantic store** — mutable, timestamped, provenance-carrying, consulted *after*
+  decode and never required *for* it
+
+Because the codec does not depend on it, the knowledge base can grow freely without
+invalidating a single existing `.elo` file. If the codec depended on it, every
+update would break old streams.
+
 ## What NOT to do
 
-- **Do not fetch URLs to enrich them.** Deterministic, no-inference, no-network is
-  the System 1 contract. Reputation from a TLD is a lookup; reputation from
-  crawling is a different system with different failure modes.
+- **Do not let fetched metadata reach the codec.** The System 1 contract is
+  deterministic, no-inference, no-network. Enrichment lives in the browser and the
+  semantic store; the encoder never consults it, or `.elo` stops being reproducible.
 - **Do not let a URL's topic override the sentence's.** It is one evidence source
   among several, and the person may be citing it to disagree with it.
 - **Do not build any of this in System 1.** Topic anchoring touches System 2,
