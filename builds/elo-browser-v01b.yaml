@@ -1,0 +1,141 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-v01b
+# v01a + the STRUCTURAL FLOOR. Identical corpus and build params; the only change
+# is `force_include`, which guarantees structural characters a slot in every
+# profile cut regardless of corpus frequency.
+#
+# WHY (measured 2026-07-30 — "Codec Character Coverage Audit" + slot review):
+#   This build is an ECONOMICS fix, not a correctness fix. The frame-corruption bug
+#   ("unknown stream token:") is solved separately by moving the text-stream delimiter
+#   to 0x1F per ELO_FILE_FORMAT.md — no rebuild needed for that.
+#
+#   What remains is a vocabulary hole. Measured on a real CNN page (7,311,041 chars):
+#   287,458 occurrences of characters with NO reachable id, each costing `OOV:A:x` = 7
+#   chars instead of 2 at Tier 1 — ~1.72M wasted characters, 23.6% of the source. That
+#   is why captured web pages compressed NEGATIVELY.
+#
+#   Security note (still true): a character that can escape its own encoding can forge
+#   token boundaries — the injection primitive. Total coverage removes the escape;
+#   blacklisting does not. With 0x1F as the delimiter AND every structural character
+#   carrying a real id, injected markup is only ever ids with no executable meaning.
+#
+#   Resolver: python -m semantic_compression.build_dictionary semantic_compression/builds/elo-browser-v01b.yaml --device cuda
+# ============================================================================
+
+meta:
+  name: elo-browser-v01b              # -> db/builds/elo-browser-v01b/  (v01a stays immutable)
+  version: "1.1.0"
+  date: "2026-07-30"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: staged                      # staged until a model is trained on it, then lock
+  purpose: >
+    elo-browser-v01a plus a structural-character floor. One artifact serving BOTH
+    the browser codebook and the ELO-native LLM vocabulary — the v0.4 general
+    dictionary (conversational + literary) with the website/HTML structure group
+    folded in — now with the characters the codec's own frame depends on
+    guaranteed present at any cut size. char-4 build; the `full` profile cut is
+    the vocab. Built with meta.db (standard suite).
+  goals:
+    - Browser codebook == LLM vocab (ids, facets, meta are one artifact).
+    - Keep v0.4 general coverage AND the website/HTML group.
+    - char-4 depth so the full profile cut is available.
+    - "NEW — structural characters present in EVERY cut: frame integrity and a
+       closed injection surface become properties of the dictionary, not of luck."
+  use_cases:
+    - ELO-native LLM vocabulary contract.
+    - Browser page + transcript compression (markdown/HTML captures included).
+    - Semantic (facet/meta) resolution per id.
+
+build:                                # FINE-TUNE — identical to v01a except force_include
+  size: char-4                        # tiers 0-3; full profile cut = 262,144
+  select_strategy: frequency          # S0 default (transcripts S0≈S1)
+  min_freq: 1
+  tier1_word_reserve: 1024
+  suite: full                         # EVERYTHING buildable on
+
+  # ------------------------------------------------------------------------
+  # THE STRUCTURAL FLOOR. Grammar, not vocabulary: these are excluded by
+  # frequency ranking on a conversational corpus, but the codec's frame and the
+  # security boundary both depend on them. Forced surfaces sort ahead of
+  # frequency-ranked ones, so they land in every cut (tiny -> full).
+  # Recorded in dict_stats.json as `force_include` so the build PROVES it.
+  # ------------------------------------------------------------------------
+  # MEASURED 2026-07-30 (DICTIONARY_SLOTS_SPEC §8b). Counts = occurrences in a real CNN
+  # page (7,311,041 chars) / the 25 published papers (204,069 chars). Every surface below
+  # has NO reachable id today, so each occurrence costs `OOV:A:x` = 7 chars against 2 at
+  # Tier 1 — a 5-char saving each. Together: 287,458 occurrences, ~1.72M wasted chars =
+  # 23.6% of that page.
+  #
+  # Tier 0 is FULL (64/64) and saves only 1 char more than Tier 1, so nothing here needs an
+  # eviction: Tier 1 captures 84% of the gain with no displacement of any 1-char id. `_`
+  # (111,521) is the only volume that would justify contending for Tier 0 — deferred,
+  # because the tab's slot belongs to the WORD-PROCESSOR target, not to a compromise.
+  #
+  # Tier-0 primitives are NOT listed here any more: the RANK FLOOR now places all 64 inside
+  # every cut unconditionally (that was the unreachable-id bug for backslash and tab).
+  force_include:
+    - "_"                             # HTML 111,521 | md   527   <- largest single win
+    - "{"                             # HTML  51,522 | md    42
+    - "}"                             # HTML  50,796 | md    42
+    - "|"                             # HTML  24,874 | md   826   (tables; the old delimiter)
+    - ">"                             # HTML  15,375 | md    66
+    - "<"                             # HTML  10,898 | md    19
+    - "`"                             # HTML   6,897 | md 2,688   <- #1 for documents
+    - "~"                             # HTML   5,483 | md    23
+    # CRLF IS ONE TOKEN, NOT TWO. v01b's first run forced "\r" and it never landed:
+    # tokenize("a\r\nb") -> ['a', '\r\n', 'b'], so a Windows-authored file emits the
+    # single token '\r\n' and a lone '\r' surface is unreachable. A forced surface the
+    # tokenizer cannot produce is invisible: it inflates force_include_count and covers
+    # nothing. Verify a forced surface against tokenize() before trusting the count.
+    - "\r\n"                         # CRLF — every Windows-authored file (ONE token)
+    - "\r"                           # bare CR — rare (classic Mac), cheap to hold
+    - " "                            # non-breaking space — pervasive in scraped pages
+
+  assets:                             # all true (same as v01a)
+    facets: true
+    meta: true
+    epa: true
+    meta_layer2: true
+    vectors: true
+    browser: true
+
+corpus:                               # unchanged from v01a
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure
+    precomputed: semantic_compression/data/web_terms_frequencies.txt
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []
+
+instructions: >
+  v01a + force_include. No corpus or strategy change, so density and coverage
+  should track v01a closely; entry count rises by however many forced surfaces
+  were absent (expect ~8: _ { } | > < ` ~). AFTER THE BUILD, verify in this order:
+    1. dict_stats.json records force_include (10 surfaces) — the floor is provable.
+    2. Every forced surface resolves to a real id in token-ids.csv.gz with full=Y.
+    3. Reference codec round-trips: "a | b", a markdown table row, "|---|---|",
+       a fenced code block, strikethrough, a CRLF line, and \xa0. All lossless.
+    4. encode_text's frame-integrity assert never fires (it would mean a forced
+       surface failed to land).
+    5. Re-export the browser family (epa.bin + facets.bin + neighbours.bin) from
+       THIS build and re-point the browser at v01b — all three share the new
+       fingerprint, which the 83635e5 family-binding guard now enforces at first
+       neighbours() use.
+    6. Fix the hardcoded vocab_version in lib.rs (was naming v01 while loading
+       v01a) — point it at v01b.
+    7. Add the missing oracle cases to the port's round-trip test (audit 4d): a
+       pipe, a backtick, a tab, a CRLF, an \xa0. The one character that can break
+       the frame was the one character never tested.

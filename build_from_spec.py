@@ -130,6 +130,9 @@ def main() -> None:
         min_freq=int(build.get("min_freq", 1)),
         tier1_word_reserve=int(build.get("tier1_word_reserve", 1024)),
         select_strategy=STRATEGIES[build.get("select_strategy", "frequency")],
+        # Structural characters are grammar, not vocabulary — guaranteed a slot in
+        # every cut regardless of corpus frequency (see dictionary_builder_v03).
+        force_include=build.get("force_include") or [],
         with_facets=("facets" in enabled),          # SUITE-gated (was raw with_facets)
         word_freq_file=wf,
         phrase_file=repo_root / 'semantic_compression/data/phrase_candidates.txt',

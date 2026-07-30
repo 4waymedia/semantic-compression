@@ -211,6 +211,7 @@ def build(
     drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
     tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
     select_strategy: Callable[..., float] = score_by_frequency,
+    force_include: "list[str] | None" = None,
     max_tier: int = 3,
     token_ids_csv: Path | None = None,
     special_tok_json: Path | None = None,
@@ -359,8 +360,87 @@ def build(
     for token, char_id in tier0_map.items():
         tier0_records.append((token, word_freq.get(token, 0), 'tier0', 1))
 
+    # ----------------------------------------------------------------------
+    # STRUCTURAL FLOOR (force_include). Structural characters are GRAMMAR, not
+    # vocabulary: `|`, backtick, `~`, `\r`, `\xa0`, `{`, `}`, `\`, `\t` are rare
+    # or absent in a conversational corpus, so pure frequency ranking pushes them
+    # past every profile cut (measured on elo-browser-v01a: `{`=276,119,
+    # `}`=276,120, `\`=328,675, `\t`=437,988 — all outside the 261,872 `full` cut).
+    #
+    # That is a correctness problem, not a density one. `|` frames the .elo stream
+    # (`ELO|1|txt|tok|tok`); when it is missing from the cut it falls to
+    # encode_oov -> `OOV::|` — a token containing a RAW DELIMITER — and decode
+    # shatters the frame ("unknown stream token:" with an empty token). It is also
+    # the injection primitive: a character that can escape its own encoding can
+    # forge token boundaries. Total coverage removes the escape; a blacklist cannot.
+    #
+    # So forced surfaces sort BEFORE frequency-ranked ones and land in every cut,
+    # at any size, regardless of corpus counts. Frequencies are not falsified —
+    # only the ordering key is.
+    # ----------------------------------------------------------------------
+    forced: set[str] = {s for s in (force_include or ()) if s}
+    if forced:
+        # A FORCED SURFACE THE TOKENIZER CANNOT PRODUCE IS DEAD WEIGHT.
+        #
+        # force_include guarantees a slot, not a match. The encoder only ever looks up
+        # surfaces that `tokenize` emitted, so forcing a string that tokenize splits (or
+        # never yields) reserves an id nothing can hit while the real token stays OOV —
+        # and force_include_count still reports success.
+        #
+        # v01b run 1 forced "\r": tokenize("a\r\nb") -> ['a', '\r\n', 'b'], so every
+        # CRLF file emitted '\r\n' (OOV, 7 chars) while the forced '\r' sat unused. The
+        # count said 10/10. Coverage was 9. Hence: verify, don't trust the count.
+        try:
+            from semantic_compression.tokenizer import tokenize as _tok
+        except Exception:                       # builder used standalone
+            _tok = None
+        if _tok is not None:
+            unreachable = [s for s in sorted(forced) if list(_tok(s)) != [s]]
+            if unreachable:
+                print(f'  [WARN] {len(unreachable)} forced surface(s) are NOT single '
+                      f'tokens — they can never be matched by the encoder:')
+                for s in unreachable:
+                    print(f'         {s!r}  ->  {[t for t in _tok(s)]}')
+
+        have = {r[0] for r in tier0_records} | {r[0] for r in reserved_words} | {r[0] for r in pool}
+        missing = [s for s in forced if s not in have]
+        for s in missing:                      # absent from the corpus entirely
+            pool.append((s, word_freq.get(s, 0), 'word', 1))
+        print(f'  Structural floor: {len(forced)} forced surface(s), '
+              f'{len(missing)} injected (absent from corpus)')
+
     all_records: list[tuple[str, int, str, int]] = tier0_records + reserved_words + pool
-    all_records.sort(key=lambda e: -e[1])
+
+    # ----------------------------------------------------------------------
+    # RANK FLOOR (bug fix, not a tuning choice).
+    #
+    # Rank is not just an ordering: it determines BOTH the id length (tier) and
+    # profile-cut membership. So a Tier-0 primitive ranked by raw corpus frequency
+    # can end up OUTSIDE every cut while still holding a 1-char id — an id nothing
+    # can reach. Measured on elo-browser-v01a:
+    #     '\t' -> id 'i', rank 437,988, in NO cut   (corpus freq 0)
+    #     '\\' -> id 'w', rank 328,675, in NO cut   (corpus freq 1)
+    # and eight more Tier-0 characters ('* + @ = #' ...) missing from `tiny`.
+    # A page using them pays OOV (7 chars) for a character that owns the cheapest
+    # id in the system — ~62k wasted chars on one 7.3MB page.
+    #
+    # Tier 0 is GRAMMAR: 64 hand-assigned primitives that exist precisely because
+    # every text needs them. They are not vocabulary competing on frequency, so
+    # they sort first and are present in every cut, at any size. Then the declared
+    # structural floor (force_include), then frequency-ranked vocabulary.
+    #
+    # This changes ranks vs pre-2026-07-30 builds. That is intended — the old
+    # ordering produced unreachable ids — and `tier0_rank_floor` is recorded in
+    # dict_stats so any build declares which convention produced it.
+    # ----------------------------------------------------------------------
+    def _rank_key(e):
+        surface, freq, kind, _n = e
+        if kind == 'tier0':
+            return (0, -freq)          # grammar — always inside every cut
+        if surface in forced:
+            return (1, -freq)          # declared structural floor
+        return (2, -freq)              # vocabulary — frequency decides
+    all_records.sort(key=_rank_key)
 
     # ----------------------------------------------------------------------
     # Assign Base64 string IDs (Tier 0 pre-set, Tier 1+ sequential)
@@ -442,8 +522,22 @@ def build(
     all_records_in_dict: list[tuple[str, int, str, int]] = [
         (s, f, k, n) for (s, f, k, n) in all_records if s in string_id_of
     ]
-    # Re-sort to be explicit; should already be by frequency desc
-    all_records_in_dict.sort(key=lambda e: -e[1])
+    # PRESERVE THE RANKING ORDER — do NOT re-sort by raw frequency here.
+    #
+    # `all_records` was already ordered by `_rank_key` (tier-0 grammar first, then the
+    # declared structural floor, then frequency). A plain `sort(key=-freq)` at this point
+    # discards that and re-ranks by corpus count alone, which decides the INTEGER ids and
+    # therefore the PROFILE CUTS. The Base64 ids keep the intended order while the cuts
+    # get a different one — so a surface can hold a cheap id that no cut can reach.
+    #
+    # Measured on the first v01b build, before this fix:
+    #     '|'  -> base64 'gA' (Tier 1!)  but integer rank 437,989  -> in NO cut
+    #     '\t' -> base64 'i'  (Tier 0)   but integer rank 437,988  -> in NO cut
+    # i.e. exactly the bug the rank floor exists to prevent, reintroduced two hundred
+    # lines later by a "should already be" comment that stopped being true.
+    #
+    # `all_records` is already in the correct order; filtering preserves it.
+    pass
 
     integer_id_of: dict[str, int] = {}
     for int_id, (surface, _f, _k, _n) in enumerate(all_records_in_dict):
@@ -555,6 +649,12 @@ def build(
         'tier1_word_reserve':       tier1_word_reserve,
         'max_tier':                 max_tier,
         'select_strategy':          getattr(select_strategy, '__name__', str(select_strategy)),
+        # recorded so a build can PROVE its structural floor rather than assert it
+        'force_include':            sorted(forced),
+        'force_include_count':      len(forced),
+        # which ranking convention produced this build (absent = pre-2026-07-30 builds,
+        # where a Tier-0 primitive could rank outside every profile cut)
+        'tier0_rank_floor':         True,
         'drop_tier0_bigrams':       drop_tier0_bigrams,
         'dropped_tier0_bigrams':    dropped_tier0_bigrams,
         'total_entries':            len(string_id_of),
@@ -670,6 +770,7 @@ def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False
                   tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
                   drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
                   select_strategy: Callable = score_by_frequency,
+                  force_include: "list[str] | None" = None,
                   with_facets: bool = False,
                   overrides: str = 'data/facet_overrides.tsv',
                   word_freq_file: Path | None = None,
@@ -707,6 +808,7 @@ def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False
                   tier1_word_reserve=tier1_word_reserve,
                   drop_tier0_bigrams=drop_tier0_bigrams,
                   select_strategy=select_strategy,
+                  force_include=force_include,       # structural floor (slots spec §3)
                   word_freq_file=word_freq_file or WORD_FREQ_FILE,
                   phrase_file=phrase_file or PHRASE_FILE)
 

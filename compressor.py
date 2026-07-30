@@ -494,6 +494,25 @@ class Compressor:
             for tok in scanned:
                 parts.append(self._encode_token(tok, txn, stats))
 
+        # FRAME INTEGRITY (audit 4c). No emitted part may contain the delimiter, or the
+        # stream is silently unparseable: the part shatters on decode's split and the
+        # empty fragment surfaces as "unknown stream token:" with nothing after the colon.
+        #
+        # Today this holds because `tokenize` isolates '|' as its own token AND the
+        # dictionary has an id for it. Both are required, and neither was enforced — a cut
+        # that drops '|' sends it to encode_oov -> 'OOV::|', reintroducing frame corruption
+        # (exactly what happened to elo-browser-v01a). The invariant is now checked, so a
+        # bad cut fails loudly at encode time instead of producing a corrupt artifact.
+        #
+        # It is also the security boundary: a character able to escape its own encoding can
+        # forge token boundaries. This assert is what makes "total coverage" verifiable.
+        bad = [p for p in parts if ELO_DELIMITER in p]
+        if bad:
+            raise ValueError(
+                f"frame integrity: {len(bad)} encoded part(s) contain the stream delimiter "
+                f"{ELO_DELIMITER!r} — e.g. {bad[0]!r}. The active dictionary cut is missing "
+                f"a structural surface; rebuild with it in `force_include`.")
+
         stream = ELO_DELIMITER.join(parts)
         return f"{ELO_MAGIC}{ELO_DELIMITER}{FORMAT_VERSION}{ELO_DELIMITER}{ext}{ELO_DELIMITER}{stream}"
 
