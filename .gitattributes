@@ -1,0 +1,25 @@
+# Line endings are MANAGED. This submodule had 24 files showing as modified on
+# 2026-07-30, every one of them line-ending churn over byte-identical content —
+# compressor.py and dictionary_builder_v03.py each rewrote in full.
+#
+# Mirrors the parent repo's rules. `text=auto` changes nothing already committed
+# until `git add --renormalize .`.
+* text=auto
+
+# ---------------------------------------------------------------------------
+# EXEMPT — frozen contract artifacts, byte-exact by contract. token-ids-v1.csv.gz,
+# byte-fallback-v1.csv and the profile/special-token json are the v1 LLM vocabulary
+# contract; their bytes determine their fingerprint.
+# ---------------------------------------------------------------------------
+*.csv  -text
+*.txt  -text
+
+# Binary — dictionaries, indexes and vectors are never text
+*.gz    binary
+*.bin   binary
+*.lmdb  binary
+*.mdb   binary
+*.index binary
+*.f32   binary
+*.png   binary
+*.pdf   binary
