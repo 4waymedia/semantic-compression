@@ -503,3 +503,46 @@ def shape_unknown_reply(shape: Shape, fallback: str) -> str:
     if not shape.subject:
         return fallback
     return tpl.format(about=about)
+
+
+# The turn recall COULD answer, said in the shape of the question. The seed is real
+# and cited either way; what changes is whether the reply uses it or merely reads it
+# aloud. Measured 2026-07-26: asked "should I drive or walk?" with 'You are 100 feet
+# from the car wash.' recalled, the reply was 'From what you have told me: "You are
+# 100 feet from the car wash."' -- the right fact, quoted at someone who just asked a
+# question it does not literally answer.
+#
+# These never decide FOR the user. A modal choice with a distance fact stored still
+# does not tell Elo whether 100 feet is far; it can state what it holds, name the
+# alternatives, and say plainly which part it has nothing for.
+GROUNDED_TEMPLATES = {
+    'modal_choice': 'You told me: "{fact}" Between {a} and {b} -- nothing I have '
+                    'stored says how you weigh that. What matters to you here?',
+    'comparison':   'You told me: "{fact}" That is one side of it; I have nothing '
+                    'that measures {a} against {b}.',
+    'causal':       'You told me: "{fact}" That is what I hold -- nothing stored '
+                    'says why.',
+    'conditional':  'You told me: "{fact}" What follows from that condition is not '
+                    'something I have been told.',
+}
+
+
+def shape_grounded_reply(shape: Shape, fact: str, fallback: str) -> str:
+    """Compose the recalled fact into the shape of the question.
+
+    Returns `fallback` unchanged for shapes with no specific form, and for shapes
+    whose slots are empty -- a reply naming neither options nor compared terms is
+    the quoting fallback with extra words."""
+    tpl = GROUNDED_TEMPLATES.get(shape.name)
+    if not tpl or not fact:
+        return fallback
+    fact = fact.strip()
+    if shape.name == 'modal_choice':
+        if len(shape.options) < 2:
+            return fallback
+        return tpl.format(fact=fact, a=shape.options[0], b=shape.options[1])
+    if shape.name == 'comparison':
+        if len(shape.compared) < 2:
+            return fallback
+        return tpl.format(fact=fact, a=shape.compared[0], b=shape.compared[1])
+    return tpl.format(fact=fact)
