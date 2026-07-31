@@ -301,3 +301,192 @@ def _answer(tid, priors, concept, pairs) -> Response:
     tpl, conf = TEMPLATES["recall"]
     return Response(tpl.format(concept=concept, joined=joined),
                     "answer", "recall", concept, tuple(_rid(p) for p in priors), conf)
+
+
+# ---------------------------------------------------------------------------
+# DISCOURSE SHAPE -- reading the cue mask that facets.bin already ships
+# ---------------------------------------------------------------------------
+# The reply path chose between two templates on `query.endswith("?")`. The
+# dictionary has carried a richer read the whole time: `assign_facet` returns a
+# 16-bit `cue_mask` naming the reasoning role of 304 curated surfaces
+# (config.LOGIC_SEED_LISTS) -- CONDITION, MODAL, COMPARISON, NEGATION, CAUSE,
+# QUESTION and the rest. Nothing consumed it. `cognition()` in the browser built
+# a cue histogram and formatted it into a diagnostic string; the reply was
+# composed on the other side of a process boundary and never saw one.
+#
+# This reads that mask and names the SHAPE of a turn. It does not know content:
+# it cannot decide walk-vs-drive. It knows what KIND of thing was asked, which is
+# what picks the reply form and, when recall is empty, what makes the gap
+# specific instead of generic.
+#
+# The surfaces come from the CALLER's encoder, deliberately: the encoder already
+# joins learned phrases, so 'car wash' arrives as one surface. Re-tokenizing here
+# would be the second tokenizer that deleted every number (2026-07-27).
+
+_HAVE_FACETS = False
+try:
+    from facets import assign_facet as _assign_facet   # bare import: facets.py's own convention
+    _HAVE_FACETS = True
+except Exception as _e:                                 # pragma: no cover
+    import sys as _sys
+    print("WARNING response.py: facets.assign_facet is not importable (%s) -- "
+          "discourse shaping degrades to the punctuation rule it was written to "
+          "replace. This is a silent-downgrade guard; see the miner-hygiene "
+          "finding of 2026-07-27." % _e, file=_sys.stderr)
+
+# cue bit -> name, mirroring config.LOGIC_CUE. Read from facets when available so
+# this cannot drift from the producer (BINDINGS.md: no second scheme).
+_CUE_BITS = {
+    0x0001: 'CLAIM_CUE',   0x0002: 'EVIDENCE_CUE', 0x0004: 'INFERENCE',
+    0x0008: 'CONTRAST',    0x0010: 'CAUSE',        0x0020: 'CONDITION',
+    0x0040: 'QUANTIFIER',  0x0080: 'NEGATION',     0x0100: 'CONJUNCTION',
+    0x0200: 'QUESTION',    0x0400: 'MODAL',        0x0800: 'DEFINITION_CUE',
+    0x1000: 'CONCESSION',  0x2000: 'COMPARISON',   0x4000: 'TEMPORAL',
+}
+_UTILITY_MASK, _UTILITY_SHIFT = 0xC0, 6
+
+
+def cue_read(surfaces):
+    """[(surface, {cue names}, utility)] for each surface, via assign_facet.
+
+    Empty when facets are unavailable -- the caller then keeps its old behaviour
+    rather than acting on a read that isn't there."""
+    if not _HAVE_FACETS or not surfaces:
+        return []
+    out = []
+    for s in surfaces:
+        try:
+            _bucket, cue_mask, flags = _assign_facet(s)
+        except Exception:
+            continue
+        names = {n for bit, n in _CUE_BITS.items() if cue_mask & bit}
+        util = (flags & _UTILITY_MASK) >> _UTILITY_SHIFT     # 0 CONTENT, 1 FUNCTION
+        out.append((s, names, util))
+    return out
+
+
+@dataclass(frozen=True)
+class Shape:
+    """What KIND of turn this is, read from the cue mask. Never what it is about."""
+    name: str                  # definition|modal_choice|conditional|causal|comparison|question|statement
+    cues: frozenset = frozenset()
+    options: tuple = ()        # the alternatives in a choice ('drive', 'walk')
+    compared: tuple = ()       # the two sides of a comparison
+    subject: str = ''          # the multiword topic, when the turn has one
+
+    def to_dict(self) -> dict:
+        return {"shape": self.name, "cues": sorted(self.cues),
+                "options": list(self.options), "compared": list(self.compared),
+                "subject": self.subject}
+
+
+def _content_neighbours(read, i):
+    """Nearest CONTENT surface to the left and right of position i."""
+    left = next((read[j][0] for j in range(i - 1, -1, -1) if read[j][2] == 0), '')
+    right = next((read[j][0] for j in range(i + 1, len(read)) if read[j][2] == 0), '')
+    return left, right
+
+
+def read_shape(surfaces) -> Shape:
+    """Classify a turn by its cue mask.
+
+    Order matters and is not arbitrary: a turn can carry several cues at once
+    ('if ... should ... or ...' carries CONDITION, MODAL and CONJUNCTION), and the
+    most specific reading wins. `cognition()`'s stance ladder returns one label and
+    drops the rest; this keeps every cue on the Shape so a caller can say more.
+
+    The subject prefers a MULTIWORD content surface -- the same tiebreak
+    `_wonder_on_gap` settled on after measuring that 'walk', 'drive', 'car',
+    'wash' and 'feet' are all bucket=TOPIC and so buckets cannot separate the
+    subject of a question from the options inside it."""
+    read = cue_read(surfaces)
+    if not read:
+        return Shape('statement')
+    cues = set()
+    for _s, names, _u in read:
+        cues |= names
+
+    content = [s for s, _n, u in read if u == 0]
+    multi = [c for c in content if ' ' in c]
+    subject = max(multi, key=len) if multi else (content[0] if content else '')
+
+    options, compared = (), ()
+    for i, (s, names, _u) in enumerate(read):
+        low = s.lower()
+        if low == 'or' and 'CONJUNCTION' in names:
+            a, b = _content_neighbours(read, i)
+            if a and b:
+                options = (a, b)
+        if low in ('than', 'versus', 'vs') and 'COMPARISON' in names:
+            # LEFTMOST content, not nearest: in 'is a hard drive faster than a car
+            # wash' the nearest content left of 'than' is the comparative adjective
+            # 'faster', not the thing being compared. The subject leads the clause.
+            left = next((read[j][0] for j in range(i) if read[j][2] == 0), '')
+            _n, right = _content_neighbours(read, i)
+            if left and right:
+                compared = (left, right)
+
+    # Which surface carried QUESTION -- the mask says a question was asked, not
+    # what kind. DICTIONARY GAP, filed not patched: 'why' belongs in
+    # config.LOGIC_SEED_LISTS['CAUSE']. Adding it there would fix this at the
+    # source, but assign_facet computes at runtime while the browser reads a
+    # prebuilt facets.bin, so editing the seed list desynchronises the two until a
+    # rebuild. Read the surface here; move it to the lexicon at the next build.
+    qwords = {s.lower() for s, names, _u in read if 'QUESTION' in names}
+
+    if options and 'MODAL' in cues:
+        name = 'modal_choice'
+    elif compared:
+        name = 'comparison'
+    elif 'why' in qwords or ('CAUSE' in cues and 'QUESTION' in cues):
+        name = 'causal'
+    elif 'CONDITION' in cues:
+        name = 'conditional'
+    elif 'DEFINITION_CUE' in cues and 'QUESTION' in cues:
+        name = 'definition'
+    elif 'QUESTION' in cues:
+        name = 'question'
+    else:
+        name = 'statement'
+    return Shape(name, frozenset(cues), options, compared, subject)
+
+
+# Shape-specific forms for a turn recall could not answer. The generic
+# "I have nothing stored about {concept} yet" is TEMPLATES['unknown']; these say
+# what was actually asked, so the gap is legible instead of blank.
+SHAPE_TEMPLATES = {
+    'modal_choice': ("That is a choice between {a} and {b}"
+                     "{about} -- and I have nothing stored that tells me how you weigh it. "
+                     "What matters here?"),
+    'comparison':   ("That compares {a} against {b}, and I have nothing stored that "
+                     "measures them against each other."),
+    'causal':       ("That asks why{about}. I have nothing stored about the cause."),
+    'conditional':  ("That sets a condition I have nothing stored{about}. "
+                     "Tell me what follows from it and I will keep it."),
+    'definition':   ("I have not been told what{about} means."),
+    'question':     ("I have nothing stored about{about} yet."),
+}
+
+
+def shape_unknown_reply(shape: Shape, fallback: str) -> str:
+    """The 'I could not answer' reply, in the shape of the question asked.
+
+    Falls back verbatim when the shape carries nothing to say -- a reply that
+    names no subject and no options is not an improvement on the generic one."""
+    tpl = SHAPE_TEMPLATES.get(shape.name)
+    if not tpl:
+        return fallback
+    about = f" about '{shape.subject}'" if shape.subject else ""
+    if shape.name == 'definition':
+        about = f" '{shape.subject}'" if shape.subject else ""
+    if shape.name == 'modal_choice':
+        if not shape.options:
+            return fallback
+        return tpl.format(a=shape.options[0], b=shape.options[1], about=about)
+    if shape.name == 'comparison':
+        if not shape.compared:
+            return fallback
+        return tpl.format(a=shape.compared[0], b=shape.compared[1])
+    if not shape.subject:
+        return fallback
+    return tpl.format(about=about)
