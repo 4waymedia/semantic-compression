@@ -414,7 +414,20 @@ def read_shape(surfaces) -> Shape:
     for i, (s, names, _u) in enumerate(read):
         low = s.lower()
         if low == 'or' and 'CONJUNCTION' in names:
-            a, b = _content_neighbours(read, i)
+            # The first option follows the MODAL, it is not the nearest content word
+            # to the left of 'or'. Measured on the live transcript 2026-07-26:
+            # 'should I drive my car there or walk' has 'car' nearest-left, so the
+            # nearest rule reported a choice between 'car' and 'walk'. In a modal
+            # choice the alternatives are the actions the modal governs, so anchor
+            # the left option to the first content surface AFTER the modal.
+            _n, b = _content_neighbours(read, i)
+            mi = next((j for j, (_s2, n2, _u2) in enumerate(read)
+                       if 'MODAL' in n2 and j < i), None)
+            a = ''
+            if mi is not None:
+                a = next((read[j][0] for j in range(mi + 1, i) if read[j][2] == 0), '')
+            if not a:
+                a, _r = _content_neighbours(read, i)
             if a and b:
                 options = (a, b)
         if low in ('than', 'versus', 'vs') and 'COMPARISON' in names:
