@@ -60,7 +60,13 @@ Shape   = { "shape": str, "cues": [str], "options": [str], "compared": [str], "s
             # produced by read_shape() from the asking turn's encoder surfaces (§7).
 Context = { "surfaces": [str] }                        # encoder surfaces, phrases pre-joined
 Answered= { "question": str, "subject": str }          # a just-captured answer to weave in
-StanceMark = { "span": [int,int], "stance": "told"|"inferred"|"speculation" }
+StanceMark = { "span": [int,int], "stance": "told"|"inferred"|"speculation"|"perception" }
+ChainVerdict = {  # B3: the choice resolver's ChoiceVerdict.to_dict() (Reasoning/)
+    "kind": "recommend"|"recommend_gap"|"unknown"|"tie"|"neither",
+    "option": str|null, "verdicts": {opt: "SATISFIES"|"DEFEATS"|"UNKNOWN"},
+    "requirement": str, "requirement_source": "taught"|"axiom",
+    "chain": [{src, rel, dst, rule, ceiling, stance, text}],  # every step licensed
+    "confidence": float, "stance": "told"|"perception", "ask": str|null }
 ```
 
 `stance` is first-class because §5.5 forbids saying an inferred thing in a told
@@ -130,9 +136,10 @@ verbalize(input: {
     seeds:     [Seed],                # recalled seeds (with stance)
     intent?:   str,                   # a held intent seed's text, if any
     answered?: Answered,              # a just-captured answer to weave in
+    chain_verdict?: ChainVerdict,     # B3: the choice resolver's ChoiceVerdict.to_dict()
   })
   -> { "text": str,
-       "basis": "social"|"attribute"|"grounded"|"gap"|"fallback",  # which rung fired
+       "basis": "social"|"attribute"|"grounded"|"gap"|"fallback"|"inferred",  # which rung fired
        "stance_marks": [StanceMark],  # told vs inferred visibly distinct
        "grounded_on": [id, ...] }
 ```
@@ -165,8 +172,37 @@ told me: …"); an `inferred` seed is said in inferred voice ("that would sugges
 and its `grounded_on` includes the R1 step id; `speculation` is explicitly hedged.
 `stance_marks` records the char spans so the browser can render told/inferred
 distinctly. **No template may smuggle a reasoning step** (§5.5): inference is said
-only when an `inferred` seed carries it, licensed and cited — never manufactured
-from a `told` fact.
+only when a `chain_verdict` (§3.4) or an `inferred` seed carries it, licensed and
+cited — never manufactured from a `told` fact.
+
+### 3.4 Chain composition — `verbalize` speaks a `chain_verdict` (B3)
+
+When `input.chain_verdict` is present and its `kind` composes, it **wins above
+grounded/gap** (it is checked after social/attribute, before the seed paths). It is
+the one path allowed to emit **`basis:"inferred"`** — the licensed-inference voice.
+`grounded_on` = every chain step's `text` (the gateway maps text → seed id via
+`content_seed_id`). The chain's `rule` names (`co_presence`/`enables`/`blocks`/…) stay
+in the caller's `chain_verdict`, so the footer can name them — making the axiom's
+work (`co_presence` ⇒ "the car must be there") **auditable** (rule #1).
+
+Per kind (voice targets; conformance pins the wording):
+
+- **recommend** — inferred voice, never told: *"Drive — you told me washing the car
+  matters, and the car must be there for that. Walking would leave it behind."*
+- **recommend_gap** — the recommendation **then the `ask` as a real question that
+  ends the reply** (so the conversation layer opens a capture slot).
+- **tie** — *"Either works for that — both drive and cycling get you there. What else
+  matters here?"* (ends on a question → capture slot).
+- **neither** — *"Neither gets there — walking and swimming both leave it behind. Is
+  there another way?"*
+- **unknown** — composes **nothing**; falls through to the existing ladder. The intent
+  guard is the floor and must never worsen.
+
+**Stance hedges the lead (the "John rule").** When the verdict `stance` is
+`perception`, the reply leads hedged (*"From what you've seen, drive — …"*) and the
+`stance_marks` carry `perception` — it never asserts another party's behaviour as
+fact. Told premises lead plainly. The reply's *basis* is `inferred` (a derived
+conclusion) while its *stance mark* carries the premises' stance (`told`/`perception`).
 
 ---
 

@@ -888,6 +888,454 @@
           "s1"
         ]
       }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you told me washing the car matters, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              107
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend_gap",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "UNKNOWN"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": "Does walk affect car present?"
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you told me washing the car matters, and the car must be there for that. I don't know yet -- does walk affect car present?",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              131
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "tie",
+            "option": null,
+            "verdicts": {
+              "drive": "SATISFIES",
+              "cycle": "SATISFIES"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "Either works for that -- both drive and cycle get you there. What else matters to you here?",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              91
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "neither",
+            "option": null,
+            "verdicts": {
+              "walk": "DEFEATS",
+              "swim": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "Neither gets there -- walk and swim both leave it behind. Is there another way?",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              79
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "perception",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "From what you've seen, drive -- you told me washing the car matters, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              130
+            ],
+            "stance": "perception"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "taught",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you told me washing the car matters, and you told me that needs car present. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              111
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "unknown",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ]
+          },
+          "seeds": []
+        }
+      },
+      "expected": {
+        "text": "I have nothing stored about that yet.",
+        "basis": "gap",
+        "stance_marks": [],
+        "grounded_on": []
+      }
     }
   ]
 }

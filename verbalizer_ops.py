@@ -135,6 +135,16 @@ def verbalize(inp) -> dict:
                     text = f"{_FLIP.get(poss, poss).capitalize()} {_attr} is {value}."
                     return _out(text, [(0, len(text), "told")], [s.get("id")], "attribute")
 
+    # CHAIN VERDICT (B3): a licensed inference chain from the choice resolver. When
+    # present and its kind composes, it WINS above grounded/gap -- this is the one
+    # path allowed to say inferred things (verbalizer rule #5). 'unknown' composes
+    # nothing and falls through: the intent guard is the floor, it must never worsen.
+    cv = inp.get("chain_verdict")
+    if cv and cv.get("kind") in ("recommend", "recommend_gap", "tie", "neither"):
+        r = _chain_reply(cv)
+        if r is not None:
+            return r
+
     # 4. gap, in shape -- the gateway keys _wonder_on_gap on basis=='gap'
     if not seeds:
         fallback = TEMPLATES["unknown"][0].format(concept=(shape.subject or "that"))
@@ -176,9 +186,119 @@ def _shape_from(d) -> Shape:
 
 def _out(text, marks, grounded_on, basis) -> dict:
     return {"text": text,
-            "basis": basis,                       # social|attribute|grounded|gap|fallback
+            "basis": basis,           # social|attribute|grounded|gap|fallback|inferred
             "stance_marks": [{"span": [a, b], "stance": st} for (a, b, st) in marks],
             "grounded_on": list(grounded_on)}
+
+
+# ===========================================================================
+# B3 -- chain verbalization: speak the choice resolver's ChoiceVerdict as one
+# licensed, cited inference in INFERRED voice. Rules (each has a live transcript):
+#   * only a chain may produce basis 'inferred' (rule #5: never fake inference);
+#   * perception stance hedges the lead (the John rule -- never assert another's act);
+#   * grounded_on = every chain step's seed (its `text`; the gateway maps text->id
+#     via content_seed_id). The axiom is auditable via the chain's rule names, which
+#     the caller already holds (chain_verdict), so the footer can name them.
+# Targets, not binding templates -- conformance pins whatever we land here.
+# ===========================================================================
+def _join(items) -> str:
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _goal_phrase(chain) -> str:
+    for st in chain:                        # the co-presence step's text IS the goal
+        if st.get("rule") == "co_presence" or st.get("rel") == "CO_PRESENCE":
+            return (st.get("text") or "").strip().rstrip(".")
+    return ((chain[0].get("text") or "").strip().rstrip(".")) if chain else "that"
+
+
+def _requirement_phrase(requirement, source) -> str:
+    r = (requirement or "").strip()
+    if source == "axiom" and r.endswith(" present"):
+        return f"the {r[:-len(' present')].strip()} must be there for that"
+    if source == "axiom":
+        return f"{r} is needed for that" if r else "that has a requirement"
+    return f"you told me that needs {r}" if r else "you told me what it needs"
+
+
+def _step_for_option(chain, option):
+    o = (option or "").lower()
+    for st in chain:
+        src = (st.get("src") or "").lower()
+        txt = (st.get("text") or "").lower()
+        if o and (o in src or src in o or o in txt):
+            return st
+    return None
+
+
+def _loser_clause(chain, losers) -> str:
+    for o in losers:
+        st = _step_for_option(chain, o)
+        t = (st.get("text") or "").strip().rstrip(".") if st else ""
+        if t:
+            return f" {t}."
+    return ""
+
+
+def _ask_surface(ask) -> str:
+    a = (ask or "").strip()
+    if not a:
+        return ""
+    a = a[0].lower() + a[1:]
+    if not a.endswith("?"):
+        a += "?"
+    return f"I don't know yet -- {a}"
+
+
+def _chain_reply(cv):
+    kind = cv.get("kind")
+    option = (cv.get("option") or "").strip()
+    verdicts = cv.get("verdicts") or {}
+    chain = cv.get("chain") or []
+    stance = (cv.get("stance") or "told").lower()
+    source = (cv.get("requirement_source") or "axiom").lower()
+
+    grounded = []
+    for st in chain:
+        t = st.get("text")
+        if t and t not in grounded:
+            grounded.append(t)
+
+    hedge = "From what you've seen, " if stance == "perception" else ""
+
+    if kind in ("recommend", "recommend_gap"):
+        if not option:
+            return None                      # nothing to recommend -> fall through
+        goal = _goal_phrase(chain)
+        req = _requirement_phrase(cv.get("requirement"), source)
+        losers = [o for o, v in verdicts.items() if v == "DEFEATS"]
+        lead = option if hedge else option.capitalize()
+        body = f"{hedge}{lead} -- you told me {goal}, and {req}.{_loser_clause(chain, losers)}"
+        if kind == "recommend_gap":
+            ask = _ask_surface(cv.get("ask"))
+            if ask:
+                body = body.rstrip(".") + f". {ask}"      # must END on the question
+        return _out(body, [(0, len(body), stance)], grounded, "inferred")
+
+    if kind == "tie":
+        winners = [o for o, v in verdicts.items() if v == "SATISFIES"]
+        body = (f"Either works for that -- both {_join(winners) or 'options'} get you "
+                f"there. What else matters to you here?")
+        return _out(body, [(0, len(body), stance)], grounded, "inferred")
+
+    if kind == "neither":
+        body = (f"Neither gets there -- {_join(list(verdicts.keys()))} both leave it "
+                f"behind. Is there another way?")
+        return _out(body, [(0, len(body), stance)], grounded, "inferred")
+
+    return None                              # unknown / unhandled -> fall through
 
 
 # ===========================================================================

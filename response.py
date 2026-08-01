@@ -150,6 +150,11 @@ SELF = {
 _GREET_RE = re.compile(r"^\s*(hi|hello|hey|yo|greetings|good\s+(morning|afternoon|evening))\b", re.I)
 _META_RE = re.compile(r"\b(have a (conversation|chat|talk)|let'?s (talk|chat)|can we (talk|chat|converse)|"
                       r"(want|wanna|like) to (talk|chat|converse|have a)|talk (to|with) you)\b", re.I)
+# permission-to-ask: "can/could/may I ask (you) (a) question(s)/something" -- a
+# social move deserving an immediate yes, never a recall round-trip (2026-08-01).
+_ASKPERM_RE = re.compile(
+    r"\b(?:can|could|may)\s+i\s+ask\s+(?:you\s+)?(?:a\s+|another\s+|some\s+|a\s+few\s+)?"
+    r"(?:questions?|something|anything)\b", re.I)
 _STATE_RE = re.compile(r"\bhow(?:'?s| is| are| you| are you)?\s*(you|it going|things|your day)\b", re.I)
 _CAP_RE = re.compile(r"\b(?:who are you|what are you(?!\s+doing)|what can you do|what do you do)\b", re.I)
 _OPINION_RE = re.compile(r"\b(?:do|would|did|are)\s+you\s+(?:like|enjoy|prefer|love|hate|into)\b"
@@ -210,6 +215,8 @@ def dialog_reply(query, prior_texts=(), self_model=None):
         who = f" {name}" if name else ""
         return (f"Hello{who}. What would you like to talk about?", "greet")
     # ACCEPT_META: an invitation to converse, not a fact to file
+    if _ASKPERM_RE.search(query or ""):
+        return ("Yes — ask away.", "accept_meta")
     if _META_RE.search(text):
         return ("I'd like that. What's on your mind?", "accept_meta")
     # --- small-talk + self-identity: drawn from the core (sm), no fact recall ----

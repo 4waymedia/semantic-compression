@@ -37,6 +37,29 @@ def run_case(case) -> dict:
     raise ValueError(f"unknown op {op!r}")
 
 
+# a licensed inference chain (choice resolver output) for the B3 chain cases
+_CHAIN = [
+    {"src": "washing car matters", "rel": "CO_PRESENCE", "dst": "car present",
+     "rule": "co_presence", "ceiling": 0.65, "stance": "told",
+     "text": "washing the car matters"},
+    {"src": "driving", "rel": "ENABLES", "dst": "car present",
+     "rule": "enables", "ceiling": 0.65, "stance": "told",
+     "text": "Driving takes the car with you"},
+    {"src": "walking", "rel": "PREVENTS", "dst": "car present",
+     "rule": "blocks", "ceiling": 0.75, "stance": "told",
+     "text": "Walking leaves it behind"},
+]
+
+
+def _cv(**over):
+    cv = {"kind": "recommend", "option": "drive",
+          "verdicts": {"drive": "SATISFIES", "walk": "DEFEATS"},
+          "requirement": "car present", "requirement_source": "axiom",
+          "chain": _CHAIN, "confidence": 0.65, "stance": "told", "ask": None}
+    cv.update(over)
+    return cv
+
+
 # --- the cases (>=10 per op, incl. degradation) ----------------------------
 CASES = [
     # ---- label ----
@@ -118,6 +141,19 @@ CASES = [
     {"op": "verbalize", "args": {"input": {
         "shape": {"shape": "statement"},
         "seeds": [{"id": "s1", "text": "it might rain tomorrow", "stance": "speculation"}]}}},  # stance
+    # --- B3 chain verbalization: one per kind + perception + taught + fall-through
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv()}}},                 # recommend
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(
+        kind="recommend_gap", verdicts={"drive": "SATISFIES", "walk": "UNKNOWN"},
+        ask="Does walk affect car present?")}}},                                      # recommend_gap
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(
+        kind="tie", option=None, verdicts={"drive": "SATISFIES", "cycle": "SATISFIES"})}}},  # tie
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(
+        kind="neither", option=None, verdicts={"walk": "DEFEATS", "swim": "DEFEATS"})}}},     # neither
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(stance="perception")}}},      # John rule
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(requirement_source="taught")}}},  # taught vs axiom
+    {"op": "verbalize", "args": {"input": {                                            # unknown -> fall-through
+        "chain_verdict": {"kind": "unknown", "chain": _CHAIN}, "seeds": []}}},
 ]
 
 

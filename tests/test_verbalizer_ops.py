@@ -192,5 +192,79 @@ class TestStanceMapping(unittest.TestCase):
         self.assertEqual(r["stance_marks"][0]["stance"], "speculation")
 
 
+class TestChain(unittest.TestCase):
+    """B3: verbalize speaks a licensed inference chain in inferred voice."""
+
+    CHAIN = [
+        {"src": "washing car matters", "rel": "CO_PRESENCE", "dst": "car present",
+         "rule": "co_presence", "ceiling": 0.65, "stance": "told",
+         "text": "washing the car matters"},
+        {"src": "driving", "rel": "ENABLES", "dst": "car present",
+         "rule": "enables", "ceiling": 0.65, "stance": "told",
+         "text": "Driving takes the car with you"},
+        {"src": "walking", "rel": "PREVENTS", "dst": "car present",
+         "rule": "blocks", "ceiling": 0.75, "stance": "told",
+         "text": "Walking leaves it behind"},
+    ]
+
+    def _recommend(self, **over):
+        cv = {"kind": "recommend", "option": "drive",
+              "verdicts": {"drive": "SATISFIES", "walk": "DEFEATS"},
+              "requirement": "car present", "requirement_source": "axiom",
+              "chain": self.CHAIN, "confidence": 0.65, "stance": "told", "ask": None}
+        cv.update(over)
+        return cv
+
+    def test_recommend_is_inferred_and_cited(self):
+        r = verbalize({"chain_verdict": self._recommend()})
+        self.assertEqual(r["basis"], "inferred")            # only a chain says this
+        self.assertTrue(r["text"].startswith("Drive"))
+        self.assertIn("washing the car matters", r["text"])
+        self.assertIn("the car must be there", r["text"])   # axiom, rendered
+        self.assertIn("Walking leaves it behind", r["text"])  # loser effect
+        self.assertEqual(len(r["grounded_on"]), 3)          # every step
+        self.assertEqual(r["stance_marks"][0]["stance"], "told")
+
+    def test_chain_wins_over_seed_recall(self):
+        # even with a recalled seed present, the chain composes the answer
+        r = verbalize({"chain_verdict": self._recommend(),
+                       "seeds": [{"id": "s9", "text": "cars are red", "stance": "told"}]})
+        self.assertEqual(r["basis"], "inferred")
+
+    def test_recommend_gap_ends_on_the_question(self):
+        cv = self._recommend(kind="recommend_gap",
+                             verdicts={"drive": "SATISFIES", "walk": "UNKNOWN"},
+                             ask="Does walk affect car present?")
+        r = verbalize({"chain_verdict": cv})
+        self.assertEqual(r["basis"], "inferred")
+        self.assertTrue(r["text"].rstrip().endswith("?"))   # opens a capture slot
+
+    def test_tie_and_neither_ask(self):
+        tie = verbalize({"chain_verdict": self._recommend(
+            kind="tie", option=None, verdicts={"drive": "SATISFIES", "cycle": "SATISFIES"})})
+        self.assertTrue(tie["text"].startswith("Either works"))
+        self.assertTrue(tie["text"].rstrip().endswith("?"))
+        neither = verbalize({"chain_verdict": self._recommend(
+            kind="neither", option=None, verdicts={"walk": "DEFEATS", "swim": "DEFEATS"})})
+        self.assertTrue(neither["text"].startswith("Neither"))
+
+    def test_perception_stance_hedges(self):
+        r = verbalize({"chain_verdict": self._recommend(stance="perception")})
+        self.assertTrue(r["text"].startswith("From what you've seen,"))   # John rule
+        self.assertEqual(r["stance_marks"][0]["stance"], "perception")
+
+    def test_taught_requirement_reads_differently_than_axiom(self):
+        r = verbalize({"chain_verdict": self._recommend(requirement_source="taught")})
+        self.assertNotIn("must be there", r["text"])         # not the axiom phrasing
+        self.assertIn("you told me that needs", r["text"])
+
+    def test_unknown_falls_through(self):
+        # kind 'unknown' composes NOTHING from the chain -> the ladder floor holds
+        r = verbalize({"chain_verdict": {"kind": "unknown", "chain": self.CHAIN},
+                       "seeds": []})
+        self.assertNotEqual(r["basis"], "inferred")
+        self.assertEqual(r["basis"], "gap")
+
+
 if __name__ == "__main__":
     unittest.main()
