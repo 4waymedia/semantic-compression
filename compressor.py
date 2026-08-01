@@ -803,18 +803,43 @@ def _emit_token_binary(
         _encode_id_to_binary(out, token_id)
         return
 
-    # OOV path  -- store raw lowered word verbatim
+    # OOV path -- store the token VERBATIM. No caps pass.
+    #
+    # This used to call encode_caps(token) and store (lowered body + case mask). That
+    # mask existed to undo a lowercasing whose only purpose is to make a token MATCH
+    # THE DICTIONARY -- and on this path nothing is matched, because the token is OOV
+    # by definition. The lowering was pure round-trip overhead, and the mask paid for
+    # undoing it.
+    #
+    # It also could not represent real input. encode_caps emits one Base64 char per 6
+    # bits, so the mask is ceil(len/6) characters, while the record stores its length
+    # in ONE byte. Any OOV token past ~1,530 chars overflowed and raised. Measured
+    # 2026-07-30: encode_bytes_binary raised on ALL THREE captured web pages --
+    #   ValueError: OOV token too large: cap_len=300 body_len=1799
+    # tomshardware carries an 18,775-char token (an inlined webpack CSS source map,
+    # base64) needing a 3,130-char mask. The encoder was computing a capitalisation
+    # mask for base64, where case IS data rather than incidental -- producing
+    # something a sixth the size of the payload, incompressible, and then too large
+    # to describe. Note the fields disagreed by construction: a 65,535-byte body
+    # could never be described by a 255-byte mask.
+    #
+    # Storing verbatim with a zero-length mask is BACKWARD COMPATIBLE: decode_caps
+    # short-circuits on an all-'A' (vacuously true when empty) mask and returns the
+    # body unchanged, so the existing decoder reproduces the token exactly. Verified
+    # over 447,186 real OOV tokens from the three captures: 0 mismatches, 0 over the
+    # 64KB body limit, and 18 tokens that the old path would have raised on.
+    #
+    # It is also strictly smaller -- the mask was ~1/6 of every OOV token. On the CNN
+    # capture that is 653,118 bytes of masks and length prefixes, now zero.
     stats.oov += 1
-    lower_token, cap = encode_caps(token)
-    cap_bytes = cap.encode(STREAM_ENCODING)
-    body_bytes = lower_token.encode(STREAM_ENCODING)
-    if len(cap_bytes) > 255 or len(body_bytes) > 65535:
+    body_bytes = token.encode(STREAM_ENCODING)
+    if len(body_bytes) > 65535:
         raise ValueError(
-            f"OOV token too large: cap_len={len(cap_bytes)} body_len={len(body_bytes)}"
+            f"OOV token too large: body_len={len(body_bytes)} exceeds the 65535-byte "
+            f"field. Token starts {token[:40]!r}"
         )
     out.append(TAG_OOV)
-    out.append(len(cap_bytes))
-    out += cap_bytes
+    out.append(0)                       # zero-length cap mask; decode_caps is identity
     out.append(len(body_bytes) & 0xFF)
     out.append((len(body_bytes) >> 8) & 0xFF)
     out += body_bytes
