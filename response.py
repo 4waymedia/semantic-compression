@@ -258,9 +258,15 @@ def compose_response(turn, priors: Iterable, contradiction_pairs=frozenset(),
     pairs = frozenset(contradiction_pairs)
 
     # DIALOG ACT first: greet / introduce / accept-a-conversation sit above fact recall.
+    # BUT 'acknowledge' (a bare "X is Y" note, "Got it -- noted.") must NOT preempt the
+    # reaction path: contradiction / agreement / novelty are the informative reply for a
+    # statement, and a statement goes through _react (not the recall echo the acknowledge
+    # branch was added to avoid). Regression found 2026-08-01: the acknowledge act
+    # shadowed contradiction detection (6 test_response failures). Let social acts win;
+    # let acknowledge fall through to _react, whose 'novelty' already says "Noted:".
     d = dialog_reply(getattr(turn, "raw_text", ""),
                      [getattr(p, "raw_text", "") for p in (all_seeds or priors)])
-    if d is not None:
+    if d is not None and d[1] != "acknowledge":
         return Response(d[0], "dialog", d[1], concept, (tid,), 0.90)
 
     if _is_question(turn):
@@ -447,17 +453,31 @@ def read_shape(surfaces) -> Shape:
     # rebuild. Read the surface here; move it to the lexicon at the next build.
     qwords = {s.lower() for s, names, _u in read if 'QUESTION' in names}
 
+    # EMBEDDED WH IS NOT A QUESTION (live 2026-07-31): the TEACH "A car wash is a
+    # place where you take your car to have it washed" carries a QUESTION cue on
+    # 'where' -- a relative clause -- plus DEFINITION_CUE on 'is', and was answered
+    # with "I have not been told what 'car wash' means. What is it?": Elo re-asking
+    # the question WHILE BEING TAUGHT the answer. The structural tell: an assertion
+    # verb BEFORE the first question-cued surface means the wh serves the assertion.
+    # "What is a car wash" -> wh first -> question. "A car wash is a place where..."
+    # -> 'is' first -> statement.
+    _q_i = next((i for i, (_s, n, _u) in enumerate(read) if 'QUESTION' in n), None)
+    _a_i = next((i for i, (sf, _n, _u) in enumerate(read)
+                 if sf.lower() in ('is', 'are', 'means')), None)
+    is_teach = (_q_i is not None and _a_i is not None and _a_i < _q_i)
+
     if options and 'MODAL' in cues:
         name = 'modal_choice'
     elif compared:
         name = 'comparison'
-    elif 'why' in qwords or ('CAUSE' in cues and 'QUESTION' in cues):
+    elif not is_teach and ('why' in qwords
+                           or ('CAUSE' in cues and 'QUESTION' in cues)):
         name = 'causal'
     elif 'CONDITION' in cues:
         name = 'conditional'
-    elif 'DEFINITION_CUE' in cues and 'QUESTION' in cues:
+    elif not is_teach and 'DEFINITION_CUE' in cues and 'QUESTION' in cues:
         name = 'definition'
-    elif 'QUESTION' in cues:
+    elif not is_teach and 'QUESTION' in cues:
         name = 'question'
     else:
         name = 'statement'
@@ -476,7 +496,7 @@ SHAPE_TEMPLATES = {
     'causal':       ("That asks why{about}. I have nothing stored about the cause."),
     'conditional':  ("That sets a condition I have nothing stored{about}. "
                      "Tell me what follows from it and I will keep it."),
-    'definition':   ("I have not been told what{about} means."),
+    'definition':   ("I have not been told what{about} means. What is it?"),
     'question':     ("I have nothing stored about{about} yet."),
 }
 
@@ -518,6 +538,25 @@ def shape_unknown_reply(shape: Shape, fallback: str) -> str:
 GROUNDED_TEMPLATES = {
     'modal_choice': 'You told me: "{fact}" Between {a} and {b} -- nothing I have '
                     'stored says how you weigh that. What matters to you here?',
+    # INTENT GUARD (live 2026-07-31): the user answered "I want to get the car
+    # washed", Elo re-asked the choice and claimed "nothing I have stored says how
+    # you weigh that" -- a false statement made while HOLDING the answer. When a
+    # recalled seed carries intent, cite it and name only the genuinely open part.
+    # Never fake the inference from intent to option (car wash washes cars => the
+    # car goes => drive is REASONING, not templating).
+    'modal_choice_intent':      'You told me: "{fact}" And you told me: "{intent}" '
+                                'Neither settles {a} versus {b} on its own -- which '
+                                'way do you lean?',
+    'modal_choice_intent_same': 'You told me: "{fact}" That says what you want -- '
+                                'not whether {a} or {b}. Which way?',
+    # MENTION IS NOT DEFINITION (live 2026-07-31): asked "do you know what a car
+    # wash is?", recall served the intent seed "I want to wash the car" -- the only
+    # seed containing the words -- and the fallback quoted it as if it answered.
+    # A seed that MENTIONS the subject does not DEFINE it. When the top seed is not
+    # definitional, say exactly that split: what is held, what is missing.
+    'definition_mention':       'You told me: "{fact}" -- that mentions {subject}, '
+                                'but I have not been told what {subject} is. '
+                                'What is a {subject}?',
     'comparison':   'You told me: "{fact}" That is one side of it; I have nothing '
                     'that measures {a} against {b}.',
     'causal':       'You told me: "{fact}" That is what I hold -- nothing stored '
@@ -527,22 +566,44 @@ GROUNDED_TEMPLATES = {
 }
 
 
-def shape_grounded_reply(shape: Shape, fact: str, fallback: str) -> str:
+def shape_grounded_reply(shape: Shape, fact: str, fallback: str,
+                         intent: str = None) -> str:
     """Compose the recalled fact into the shape of the question.
 
     Returns `fallback` unchanged for shapes with no specific form, and for shapes
     whose slots are empty -- a reply naming neither options nor compared terms is
     the quoting fallback with extra words."""
     tpl = GROUNDED_TEMPLATES.get(shape.name)
-    if not tpl or not fact:
+    if not fact:
+        return fallback
+    if not tpl and shape.name != 'definition':   # definition composes without a base tpl
         return fallback
     fact = fact.strip()
     if shape.name == 'modal_choice':
         if len(shape.options) < 2:
             return fallback
-        return tpl.format(fact=fact, a=shape.options[0], b=shape.options[1])
+        a, b = shape.options[0], shape.options[1]
+        if intent:
+            intent = intent.strip()
+            if intent == fact:
+                return GROUNDED_TEMPLATES['modal_choice_intent_same'].format(
+                    fact=fact, a=a, b=b)
+            return GROUNDED_TEMPLATES['modal_choice_intent'].format(
+                fact=fact, intent=intent, a=a, b=b)
+        return tpl.format(fact=fact, a=a, b=b)
     if shape.name == 'comparison':
         if len(shape.compared) < 2:
             return fallback
         return tpl.format(fact=fact, a=shape.compared[0], b=shape.compared[1])
+    if shape.name == 'definition':
+        if not shape.subject:
+            return fallback
+        # A definitional seed ('car wash is/are/means ...') answers a definition
+        # question -- the quoting fallback serves it verbatim, which is right.
+        # A seed that merely mentions the subject does not.
+        if re.search(rf"\b{re.escape(shape.subject)}\s+(?:is|are|means)\b",
+                     fact, re.I):
+            return fallback
+        return GROUNDED_TEMPLATES['definition_mention'].format(
+            fact=fact, subject=shape.subject)
     return tpl.format(fact=fact)

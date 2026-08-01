@@ -115,9 +115,11 @@ class TestAttribute(unittest.TestCase):
         self.assertIsNone(parse_assertion("the system crashed"))
 
     def test_parse_question(self):
-        self.assertEqual(parse_question("whats your name?"), "name")
-        self.assertEqual(parse_question("what is your name?"), "name")
-        self.assertEqual(parse_question("what's my deadline?"), "deadline")
+        # parse_question returns (attr, poss): the possessive matters because
+        # "your name?" and "my name?" ask about different subjects.
+        self.assertEqual(parse_question("whats your name?"), ("name", "your"))
+        self.assertEqual(parse_question("what is your name?"), ("name", "your"))
+        self.assertEqual(parse_question("what's my deadline?"), ("deadline", "my"))
         self.assertIsNone(parse_question("is the system stable?"))
 
     def test_name_exchange_answers_with_value(self):

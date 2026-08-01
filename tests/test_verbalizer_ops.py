@@ -1,0 +1,147 @@
+"""
+test_verbalizer_ops.py -- probes for label / summarize / verbalize.
+
+Measured, not predicted (invariant #7): pure cases always run; facet-dependent
+cases SKIP (never PASS) when the substrate is absent. Includes the two "beat"
+probes -- label vs labelTopic, verbalize vs the quoting fallback -- and the
+degradation cases (empty seeds, no shape, budget 1).
+
+    python -m unittest tests.test_verbalizer_ops -v      (run from semantic_compression/)
+"""
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # semantic_compression/
+
+from verbalizer_ops import label, summarize, verbalize          # noqa: E402
+from response import cue_read                                   # noqa: E402
+
+_FACETS = bool(cue_read(["word"]))          # facet channel importable here?
+
+
+# ------------------------------------------------------------------ label ----
+class TestLabel(unittest.TestCase):
+
+    def test_prefers_multiword_content(self):
+        # a learned phrase surface beats scattered single terms (no facets needed)
+        r = label([{"id": "i1", "text": "..."}],
+                  {"surfaces": ["car wash", "drive", "walk"]})
+        self.assertEqual(r["label"], "car wash")
+        self.assertEqual(r["basis"], ["car wash"])
+
+    def test_grounds_on_item_ids(self):
+        r = label([{"id": "a", "text": "x"}, {"id": "b", "text": "y"}],
+                  {"surfaces": ["system"]})
+        self.assertEqual(r["grounded_on"], ["a", "b"])
+
+    def test_label_is_1_to_4_words(self):
+        r = label([{"id": "i", "text": "x"}], {"surfaces": ["the quick brown fox jumps"]})
+        self.assertLessEqual(len(r["label"].split()), 4)
+
+    @unittest.skipUnless(_FACETS, "facet channel unavailable")
+    def test_beats_labeltopic_by_dropping_function_words(self):
+        # labelTopic would return the most frequent term ('the'); the facet utility
+        # bit marks it FUNCTION, so label picks the content word instead.
+        r = label([{"id": "i", "text": "x"}], {"surfaces": ["the", "the", "the", "system"]})
+        self.assertEqual(r["label"], "system")
+
+
+# --------------------------------------------------------------- summarize ----
+class TestSummarize(unittest.TestCase):
+
+    def _items(self):
+        return [
+            {"id": "s1", "kind": "filler", "text": "well anyway"},
+            {"id": "s2", "kind": "fact", "text": "the server has 128 GB of ram"},
+            {"id": "s3", "kind": "intent", "text": "i want to upgrade it"},
+        ]
+
+    def test_budget_and_dropped(self):
+        r = summarize(self._items(), budget=2)
+        self.assertEqual(len(r["sentences"]), 2)
+        self.assertEqual(r["dropped"], 1)                 # no silent truncation
+
+    def test_salience_fact_first(self):
+        r = summarize(self._items(), budget=1)
+        self.assertEqual(r["sentences"][0]["grounded_on"], ["s2"])   # fact outranks filler
+
+    def test_numbers_preserved(self):
+        r = summarize([{"id": "s2", "kind": "fact", "text": "the server has 128 GB of ram"}], 1)
+        self.assertIn("128", r["summary"])                # invariant #6
+
+    def test_each_sentence_cites_its_source(self):
+        r = summarize(self._items(), budget=3)
+        for sent in r["sentences"]:
+            self.assertEqual(len(sent["grounded_on"]), 1)
+
+    def test_budget_one_degradation(self):
+        r = summarize(self._items(), budget=1)
+        self.assertEqual(len(r["sentences"]), 1)
+        self.assertEqual(r["dropped"], 2)
+
+
+# --------------------------------------------------------------- verbalize ----
+class TestVerbalize(unittest.TestCase):
+
+    def test_gap_in_shape_definition(self):
+        # no seeds, a definition-shaped ask -> names the subject, not "nothing stored"
+        r = verbalize({"shape": {"shape": "definition", "subject": "car wash"}, "seeds": []})
+        self.assertIn("car wash", r["text"])
+        self.assertEqual(r["grounded_on"], [])
+
+    def test_grounded_modal_choice_beats_quoting(self):
+        fact = "You are 100 feet from the car wash"
+        r = verbalize({
+            "shape": {"shape": "modal_choice", "options": ["drive", "walk"], "subject": "car wash"},
+            "seeds": [{"id": "s1", "kind": "fact", "text": fact, "stance": "told"}],
+        })
+        # names both options + the open part -- not the bare quote
+        self.assertIn("drive", r["text"])
+        self.assertIn("walk", r["text"])
+        self.assertIn("What matters", r["text"])
+        self.assertNotEqual(r["text"], f'From what you have told me: "{fact}."')
+        self.assertEqual(r["grounded_on"], ["s1"])
+        self.assertEqual(r["stance_marks"][0]["stance"], "told")
+
+    def test_definition_mention_not_definition(self):
+        r = verbalize({
+            "shape": {"shape": "definition", "subject": "car wash"},
+            "seeds": [{"id": "s1", "text": "i want to wash the car", "stance": "told"}],
+        })
+        self.assertIn("mentions car wash", r["text"])     # invariant #4
+
+    def test_attribute_answer_via_query(self):
+        r = verbalize({
+            "query": "whats your name?",
+            "seeds": [{"id": "s1", "text": "Your name is Elo"}],
+        })
+        self.assertEqual(r["text"], "My name is Elo.")
+        self.assertEqual(r["grounded_on"], ["s1"])
+
+    def test_social_act_via_query(self):
+        r = verbalize({"query": "hello", "seeds": []})
+        self.assertIn("Hello", r["text"])
+        self.assertEqual(r["grounded_on"], [])
+
+    def test_inferred_stance_uses_inferred_voice(self):
+        r = verbalize({
+            "shape": {"shape": "statement"},
+            "seeds": [{"id": "r1", "text": "the deploy contributes_to the outage", "stance": "inferred"}],
+        })
+        self.assertTrue(r["text"].startswith("That would suggest"))
+        self.assertEqual(r["stance_marks"][0]["stance"], "inferred")
+
+    def test_no_shape_defaults_to_statement(self):
+        r = verbalize({"seeds": [{"id": "s1", "text": "the sky is blue", "stance": "told"}]})
+        self.assertIn("told me", r["text"])
+        self.assertEqual(r["grounded_on"], ["s1"])
+
+    def test_empty_seeds_no_shape(self):
+        r = verbalize({"seeds": []})
+        self.assertTrue(r["text"])                        # a legible gap, not a crash
+        self.assertEqual(r["grounded_on"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
