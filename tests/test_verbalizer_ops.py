@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # semantic_compression/
 
-from verbalizer_ops import label, summarize, verbalize          # noqa: E402
+from verbalizer_ops import label, summarize, verbalize, stance_from_seed   # noqa: E402
 from response import cue_read                                   # noqa: E402
 
 _FACETS = bool(cue_read(["word"]))          # facet channel importable here?
@@ -141,6 +141,55 @@ class TestVerbalize(unittest.TestCase):
         r = verbalize({"seeds": []})
         self.assertTrue(r["text"])                        # a legible gap, not a crash
         self.assertEqual(r["grounded_on"], [])
+
+
+class TestBasis(unittest.TestCase):
+    """A1: verbalize reports which rung fired -- the gateway keys side effects on it."""
+
+    def test_basis_social(self):
+        self.assertEqual(verbalize({"query": "hello", "seeds": []})["basis"], "social")
+
+    def test_basis_attribute(self):
+        r = verbalize({"query": "whats your name?",
+                       "seeds": [{"id": "s1", "text": "Your name is Elo"}]})
+        self.assertEqual(r["basis"], "attribute")
+
+    def test_basis_gap(self):
+        self.assertEqual(verbalize({"seeds": []})["basis"], "gap")   # -> _wonder_on_gap
+
+    def test_basis_grounded(self):
+        r = verbalize({"shape": {"shape": "modal_choice", "options": ["drive", "walk"]},
+                       "seeds": [{"id": "s1", "text": "You are 100 feet from the car wash",
+                                  "stance": "told"}]})
+        self.assertEqual(r["basis"], "grounded")
+
+    def test_basis_fallback_when_shape_has_no_form(self):
+        # statement shape -> no specific form -> the seed is quoted -> 'fallback'
+        r = verbalize({"shape": {"shape": "statement"},
+                       "seeds": [{"id": "s1", "text": "the sky is blue", "stance": "told"}]})
+        self.assertEqual(r["basis"], "fallback")
+
+
+class TestStanceMapping(unittest.TestCase):
+    """A3: one spec'd mapping from stored seed fields -> stance."""
+
+    def test_told_is_default(self):
+        self.assertEqual(stance_from_seed(claim_type="factual"), "told")
+
+    def test_reasoning_is_inferred(self):
+        self.assertEqual(stance_from_seed(from_reasoning=True), "inferred")
+
+    def test_low_certainty_is_speculation(self):
+        self.assertEqual(stance_from_seed(certainty=0.2), "speculation")
+
+    def test_speculative_memory_type(self):
+        self.assertEqual(stance_from_seed(memory_type="speculation"), "speculation")
+
+    def test_speculation_voice_in_verbalize(self):
+        r = verbalize({"shape": {"shape": "statement"},
+                       "seeds": [{"id": "s1", "text": "it might rain", "stance": "speculation"}]})
+        self.assertTrue(r["text"].startswith("One possibility"))
+        self.assertEqual(r["stance_marks"][0]["stance"], "speculation")
 
 
 if __name__ == "__main__":

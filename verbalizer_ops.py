@@ -124,7 +124,7 @@ def verbalize(inp) -> dict:
     if query:
         social = dialog_reply(query, [(s.get("text") or "") for s in seeds])
         if social is not None:
-            return _out(social[0], [], [])
+            return _out(social[0], [], [], "social")
         aq = parse_question(query)
         if aq:
             q_attr, q_poss = aq
@@ -133,12 +133,12 @@ def verbalize(inp) -> dict:
                 if a and a[0] == q_attr and a[2] == q_poss:
                     _attr, value, poss = a
                     text = f"{_FLIP.get(poss, poss).capitalize()} {_attr} is {value}."
-                    return _out(text, [(0, len(text), "told")], [s.get("id")])
+                    return _out(text, [(0, len(text), "told")], [s.get("id")], "attribute")
 
-    # 4. gap, in shape
+    # 4. gap, in shape -- the gateway keys _wonder_on_gap on basis=='gap'
     if not seeds:
         fallback = TEMPLATES["unknown"][0].format(concept=(shape.subject or "that"))
-        return _out(shape_unknown_reply(shape, fallback), [], [])
+        return _out(shape_unknown_reply(shape, fallback), [], [], "gap")
 
     # 3. grounded, in shape -- compose the salient recalled seed
     top = seeds[0]
@@ -148,17 +148,21 @@ def verbalize(inp) -> dict:
     if stance == "told":
         fallback = f'From what you told me: "{fact.rstrip(".")}".'
         body = shape_grounded_reply(shape, fact, fallback, intent=intent)
+        # 'grounded' = composed into the shape; 'fallback' = no shape form applied,
+        # the seed was quoted verbatim. The gateway may treat the quote differently.
+        basis = "grounded" if body != fallback else "fallback"
     else:
         # inferred / speculation: hedged, inferred voice, cited. R1's licensing
         # lexicon (contributes_to/requires/...) refines this at integration.
         lead = "That would suggest" if stance == "inferred" else "One possibility"
         body = f'{lead}: {fact.rstrip(".")}.'
+        basis = "grounded"
 
     prefix = ""
     if answered and answered.get("subject"):
         prefix = f"Noted on {answered['subject']}. "
     text = prefix + body
-    return _out(text, [(len(prefix), len(text), stance)], [top.get("id")])
+    return _out(text, [(len(prefix), len(text), stance)], [top.get("id")], basis)
 
 
 def _shape_from(d) -> Shape:
@@ -170,7 +174,35 @@ def _shape_from(d) -> Shape:
                  d.get("subject", ""))
 
 
-def _out(text, marks, grounded_on) -> dict:
+def _out(text, marks, grounded_on, basis) -> dict:
     return {"text": text,
+            "basis": basis,                       # social|attribute|grounded|gap|fallback
             "stance_marks": [{"span": [a, b], "stance": st} for (a, b, st) in marks],
             "grounded_on": list(grounded_on)}
+
+
+# ===========================================================================
+# stance mapping -- ONE spec'd place (A3). MemorySeed has no `stance`; the gateway
+# and browser adapters map their local seed fields into it BEFORE calling the ops,
+# and must use the identical mapping. This is that mapping, portable and pinned.
+# ===========================================================================
+def stance_from_seed(claim_type=None, memory_type=None, certainty=None,
+                     from_reasoning=False) -> str:
+    """Map a stored seed's fields -> stance ('told'|'inferred'|'speculation').
+
+        from_reasoning (R1-derived provenance)      -> inferred
+        certainty < 0.35, or memory_type speculative -> speculation
+        else (a plain asserted fact)                 -> told
+
+    told = the user said it; inferred = a licensed reasoning step produced it
+    (cite the step); speculation = low-confidence, hedged. Voice must match."""
+    if from_reasoning:
+        return "inferred"
+    if (memory_type or "").lower() in ("speculation", "speculative", "hypothesis"):
+        return "speculation"
+    try:
+        if certainty is not None and float(certainty) < 0.35:
+            return "speculation"
+    except (TypeError, ValueError):
+        pass
+    return "told"

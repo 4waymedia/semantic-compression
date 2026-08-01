@@ -115,6 +115,9 @@ CASES = [
     {"op": "verbalize", "args": {"input": {
         "shape": {"shape": "statement"}, "answered": {"question": "your name", "subject": "name"},
         "seeds": [{"id": "s1", "text": "you said hi", "stance": "told"}]}}},       # answered weave
+    {"op": "verbalize", "args": {"input": {
+        "shape": {"shape": "statement"},
+        "seeds": [{"id": "s1", "text": "it might rain tomorrow", "stance": "speculation"}]}}},  # stance
 ]
 
 

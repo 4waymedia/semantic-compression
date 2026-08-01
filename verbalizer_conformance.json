@@ -547,6 +547,7 @@
       },
       "expected": {
         "text": "I have not been told what 'car wash' means. What is it?",
+        "basis": "gap",
         "stance_marks": [],
         "grounded_on": []
       }
@@ -575,6 +576,7 @@
       },
       "expected": {
         "text": "You told me: \"You are 100 feet from the car wash\" Between drive and walk -- nothing I have stored says how you weigh that. What matters to you here?",
+        "basis": "grounded",
         "stance_marks": [
           {
             "span": [
@@ -608,6 +610,7 @@
       },
       "expected": {
         "text": "You told me: \"i want to wash the car\" -- that mentions car wash, but I have not been told what car wash is. What is a car wash?",
+        "basis": "grounded",
         "stance_marks": [
           {
             "span": [
@@ -641,6 +644,7 @@
       },
       "expected": {
         "text": "From what you told me: \"a car wash is a place where you clean your car\".",
+        "basis": "fallback",
         "stance_marks": [
           {
             "span": [
@@ -670,6 +674,7 @@
       },
       "expected": {
         "text": "My name is Elo.",
+        "basis": "attribute",
         "stance_marks": [
           {
             "span": [
@@ -694,6 +699,7 @@
       },
       "expected": {
         "text": "Hello. What would you like to talk about?",
+        "basis": "social",
         "stance_marks": [],
         "grounded_on": []
       }
@@ -716,6 +722,7 @@
       },
       "expected": {
         "text": "That would suggest: the deploy contributes_to the outage.",
+        "basis": "grounded",
         "stance_marks": [
           {
             "span": [
@@ -745,6 +752,7 @@
       },
       "expected": {
         "text": "From what you told me: \"the sky is blue\".",
+        "basis": "fallback",
         "stance_marks": [
           {
             "span": [
@@ -768,6 +776,7 @@
       },
       "expected": {
         "text": "I have nothing stored about that yet.",
+        "basis": "gap",
         "stance_marks": [],
         "grounded_on": []
       }
@@ -795,6 +804,7 @@
       },
       "expected": {
         "text": "You told me: \"a hard drive is fast\" That is one side of it; I have nothing that measures hard drive against car wash.",
+        "basis": "grounded",
         "stance_marks": [
           {
             "span": [
@@ -831,6 +841,7 @@
       },
       "expected": {
         "text": "Noted on name. From what you told me: \"you said hi\".",
+        "basis": "fallback",
         "stance_marks": [
           {
             "span": [
@@ -838,6 +849,39 @@
               52
             ],
             "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "s1"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "shape": {
+            "shape": "statement"
+          },
+          "seeds": [
+            {
+              "id": "s1",
+              "text": "it might rain tomorrow",
+              "stance": "speculation"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "text": "One possibility: it might rain tomorrow.",
+        "basis": "grounded",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              40
+            ],
+            "stance": "speculation"
           }
         ],
         "grounded_on": [

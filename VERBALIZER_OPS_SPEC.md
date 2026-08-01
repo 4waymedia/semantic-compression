@@ -67,6 +67,22 @@ StanceMark = { "span": [int,int], "stance": "told"|"inferred"|"speculation" }
 voice. `told` = the user said it; `inferred` = an R1 step licensed it (cite the
 step); `speculation` = explicitly hedged. Voice must match stance.
 
+### 2.1 Stance mapping (A3) — one place, both adapters
+
+`MemorySeed` carries `seed_class` / `claim_type` / `memory_type` / `certainty`, **not
+`stance`**. The caller (gateway now, browser at port) maps its local seed fields into
+`stance` *before* calling the ops, and both adapters MUST use the identical mapping.
+That mapping is spec'd here and shipped as `verbalizer_ops.stance_from_seed(...)`:
+
+```
+from_reasoning (R1-derived provenance)          -> inferred
+certainty < 0.35, or memory_type speculative     -> speculation
+else (a plain asserted fact, e.g. claim_type=factual) -> told
+```
+
+A conformance case per stance pins verbalize's voice for each; `stance_from_seed`
+itself is pinned by probe. The op never sees raw seed fields — it receives `stance`.
+
 ---
 
 ## 3. Op signatures + semantics
@@ -116,9 +132,18 @@ verbalize(input: {
     answered?: Answered,              # a just-captured answer to weave in
   })
   -> { "text": str,
+       "basis": "social"|"attribute"|"grounded"|"gap"|"fallback",  # which rung fired
        "stance_marks": [StanceMark],  # told vs inferred visibly distinct
        "grounded_on": [id, ...] }
 ```
+
+**`basis` is required output, not optional (A1).** The gateway's side effects depend
+on which rung resolved: a `gap` (empty recall / definition-gap) triggers the teaching
+loop (`_wonder_on_gap` — curiosity files and asks); a `social` act must NOT open a
+downstream pending slot; `fallback` is a grounded seed quoted verbatim (no shape form
+applied) and may be handled differently from a shaped `grounded` answer. This mirrors
+`Response.basis` in `compose_response`, which already models exactly this. Composition
+stays pure; the gateway keeps its verbs by reading `basis`.
 
 Structured state → composed sentences, in the **shape** of what was asked, citing
 the seeds, marking stance. The unification of the ladder (§7). Order of resolution

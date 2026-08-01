@@ -9,44 +9,65 @@
 
 ---
 
-## 1. Gateway — `memory_reply` → one `verbalize` call
+## 1. Gateway — the composition ladder in `_memory_reply_core` → one `verbalize` call
 
-`08-MCP-ToolInterface/mcp_tools/tool_api.py::memory_reply` (line 736) currently
-assembles a reply by calling the ladder members directly and in sequence:
+**Location (corrected, A2):** post the P1 split, the composition ladder lives in
+`08-MCP-ToolInterface/mcp_tools/tool_api.py::_memory_reply_core`. `memory_reply` is
+the **conversation wrapper** (dialog-act exclusion, slot capture, `memory_count` /
+`answered_question` / `nudge`) — this landing must **not touch it**. Only the core's
+composition branches collapse:
 
-| current call site | maps to `verbalize` step |
+| current call site (in `_memory_reply_core`) | maps to `verbalize` step / `basis` |
 |---|---|
-| `dialog_reply(query, self_model=…)` — line 807/812 | 1. social act |
-| `_attribute_answer` path — line 905 | 2. attribute answer |
-| `read_shape(surfaces)` + `shape_grounded_reply(sh, text, reply, intent=…)` — line 940–948 | 3. grounded, in shape |
-| `read_shape(surfaces)` + `shape_unknown_reply(sh, generic)` — line 863–866 | 4. gap, in shape |
-| the quoting fallback ("From what you have told me: …") — line 177 note | the `fallback` arg inside verbalize; no longer assembled here |
+| `dialog_reply(query, self_model=…)` | 1. social act → `basis:"social"` |
+| `_attribute_answer` path | 2. attribute answer → `basis:"attribute"` |
+| `read_shape` + `shape_grounded_reply(…, intent=…)` | 3. grounded → `basis:"grounded"` (or `"fallback"` when quoted) |
+| `read_shape` + `shape_unknown_reply(…)` | 4. gap → `basis:"gap"` |
 
-**Replace** that whole sequence with a single call:
+**Replace** the composition with one call — and **preserve the wire contract (A2)**.
+`memory_reply`'s return is a protocol the browser branches on; the adapter maps
+`basis→act` and passes `shape` through as today (only when it changed the reply),
+and leaves the conversation-aware wrapper fields untouched:
 
 ```python
-from verbalizer_ops import verbalize
+from verbalizer_ops import verbalize, stance_from_seed
 result = verbalize({
     "query":    query,                       # enables social + attribute (steps 1-2)
-    "shape":    read_shape(surfaces).to_dict(),   # gateway still owns the encoder surfaces
+    "shape":    shape.to_dict(),             # gateway still computes read_shape(surfaces)
     "seeds":    [{"id": s.id, "kind": s.kind, "text": s.text,
-                 "stance": s.stance} for s in recalled],
-    "intent":   held_intent_text,            # if a held intent seed exists
-    "answered": captured_answer,             # {question, subject} if this turn answered one
+                 "stance": stance_from_seed(s.claim_type, s.memory_type, s.certainty,
+                                            from_reasoning=s.from_r1)} for s in recalled],
+    "intent":   held_intent_text,            # from the gateway's _INTENT_RE (A4)
+    "answered": captured_answer,
 })
-reply, grounded_on = result["text"], result["grounded_on"]
+# --- adapter: op output -> wire protocol (do NOT drop these) ---
+reply       = result["text"]
+grounded_on = result["grounded_on"]
+act         = _BASIS_TO_ACT.get(result["basis"])   # social basis -> dialog act (circle-back guard)
+# 'shape', 'memory_count', 'answered_question', 'nudge' set by the wrapper as today;
+# pass 'shape' through only when the op used it (basis in {grounded, gap}).
+if result["basis"] == "gap":
+    _wonder_on_gap(shape, query)             # gateway verb stays gateway-side
 ```
 
-**Deleted:** the branch-by-branch `if shape == … / elif …` composition, the
-duplicate `read_shape` imports scattered through the function, and the local
-quoting-fallback assembly. `verbalize` owns the order-of-resolution (§3.3 of the
-spec) and the stance marks. `read_shape` stays in the gateway (it needs the
-encoder's surfaces); its **output** flows in as the `shape` field — the op never
-re-tokenizes.
+**Deleted:** only the branch-by-branch composition inside `_memory_reply_core` and
+its local quoting-fallback assembly. **Not deleted / not touched:** `memory_reply`
+the wrapper, the `act`/`shape`/`memory_count`/`answered_question`/`nudge` fields,
+`read_shape` (stays in the gateway — the op takes its *output*, never re-tokenizes).
 
-> The gateway keeps ownership of *recall* (which seeds) and *encoding* (surfaces /
-> `read_shape`); `verbalize` owns *composition*. Clean seam: substrate on the
-> gateway side, pure composition on the op side.
+> The gateway keeps *recall*, *encoding* (`read_shape`), and its *verbs*
+> (`_wonder_on_gap`, slot capture), reading `verbalize`'s `basis` to know which
+> fired. `verbalize` owns only *composition*. Substrate on the gateway side, pure
+> composition on the op side.
+
+### 1a. Two guards stay gateway-side (A4)
+
+The op receives **clean** inputs and must not re-implement or assume them:
+
+- **Recall hygiene** — wonder-question / request filtering ("a recall is not an
+  answer") runs before the op sees `seeds`. The op trusts the seed set it is given.
+- **Intent extraction** — `_INTENT_RE` over the recalled set produces the `intent`
+  string. The op consumes `intent`; it does not scan for it.
 
 ---
 
@@ -64,6 +85,10 @@ def memory_verbalize(self, query, entity="self", budget=3):
 
 **Deleted:** any bespoke truncation/joining. `summarize` reports `dropped`
 (no silent truncation) and cites each sentence — the gateway just forwards.
+
+> **Caution:** `memory_verbalize`'s current return shape may have consumers
+> (`eloAi.verbalize`). Check them before slimming to the bare `summarize` output —
+> keep a compatibility wrapper if the shape is depended on.
 
 ---
 
@@ -83,7 +108,13 @@ second runner; this repo's `test_verbalizer_conformance.py` is the first). Fix t
 `whats`-topic bug in the same pass — `read_shape` reads the cue mask, not
 frequency, so the interrogative no longer wins.
 
-**Deleted:** the affect-only reply floor for turns that have a store hit.
+**Keep the EPA affect read as *tone*, don't delete it.** The original design pairing:
+**shape picks the frame, affect colors it.** `respond()`'s EPA read stays as tone
+input alongside `verbalize`'s shaped composition — the affect note is only *replaced*
+as the reply floor for turns with a store hit, not removed.
+
+**Deleted:** the affect-only reply floor for turns that have a store hit (affect
+persists as tone, above).
 
 ---
 
