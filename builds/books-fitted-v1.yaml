@@ -1,0 +1,101 @@
+# ============================================================================
+# Dictionary build spec — books-fitted-v1
+#
+# A CORPUS-FITTED dictionary, built to answer one question: does an Elo dictionary
+# sized to its corpus beat a trained zstd dictionary at the same resident cost?
+#
+# WHY (measured 2026-07-31):
+#   elo-browser-v01b ships 261,872 entries. A 200-transcript corpus uses 31,274 of
+#   them — 88% of the shipped dictionary never fires, while a third of its capacity
+#   is HTML structure and CSS utility classes that transcripts never contain. The
+#   fitted simulation had FEWER OOV than the shipped build despite being 8x smaller:
+#   it was not short of vocabulary, it was carrying the wrong vocabulary.
+#
+#   That matters because the resident-size asymmetry is what lost the comparison to
+#   zstd. A 2.1 MB trained zstd dictionary beat elo + xz by 25% while needing 2.1 MB
+#   against our 13 MB. Fit the dictionary to the corpus and that gap closes.
+#
+# THE TEST THIS SUPPORTS:
+#   ONE Elo dictionary and ONE zstd dictionary, both trained on the same 22 books,
+#   both evaluated on the same 4 held-out books. A per-file dictionary would be
+#   meaningless — you would have to ship it with the file.
+#
+#   Resolver: python -m semantic_compression.build_from_spec \
+#               semantic_compression/builds/books-fitted-v1.yaml
+# ============================================================================
+
+meta:
+  name: books-fitted-v1
+  version: "1.0.0"
+  date: "2026-07-31"
+  author: "Paul (4waymedia)"
+  llm_model: "n/a — compression experiment, not a vocabulary contract"
+  status: staged
+  purpose: >
+    A dictionary fitted to the literary-prose corpus: 22 public-domain books,
+    4 held out for evaluation. Built to test whether corpus-fitting closes the
+    resident-size gap against a trained zstd dictionary. NOT a shipping artifact
+    and NOT an LLM vocabulary contract — it exists to be measured against.
+  goals:
+    - One dictionary over one corpus, evaluated on held-out members of that corpus.
+    - char-3, so every entry costs at most 3 characters and Tier 3 is never reached.
+    - Small enough that its on-disk size is comparable to a trained zstd dictionary.
+  use_cases:
+    - Compression comparison against zstd --train at matched resident cost.
+
+build:
+  size: char-3                  # tiers 0-2 = 64 + 1,280 + 81,920 = 83,264 slots.
+                                # Books vocabulary should fit, so NO 4-char ids at
+                                # all — the tier promotion that fitting buys.
+  select_strategy: frequency
+  min_freq: 1
+  tier1_word_reserve: 1024
+  # PHRASES FROM THIS CORPUS, not the shipped transcript inventory. Without this the
+  # build inherits data/phrase_candidates.txt (327M tokens of transcripts) and those
+  # phrases win every slot on frequency: first attempt gave 81,434 transcript phrases
+  # against 1,819 book words, dropping 163,118 book words.
+  phrase_file: semantic_compression/data/phrase_candidates_books.txt
+
+  suite: minimal                # CORE ONLY. No facets/epa/vectors — this build is
+                                # measured for bytes, not queried for meaning, and
+                                # the asset cascade needs a GPU we do not need here.
+
+  # The structural floor still applies: these characters must be reachable or the
+  # frame can be corrupted by the document's own content (see the pipe paper).
+  force_include:
+    - "_"
+    - "{"
+    - "}"
+    - "|"
+    - ">"
+    - "<"
+    - "`"
+    - "~"
+    - "\r\n"
+    - "\r"
+    - "\xa0"
+
+corpus:
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg)
+
+eval:
+  harness: bench_dict_efficiency
+  # HELD OUT — excluded from the corpus by build_from_spec.resolve_corpus, so these
+  # four contribute nothing to the frequency ranking and are genuinely unseen.
+  held_out_books:
+    - Alices_Adventures_in_Wonderland.txt
+    - frankenstein.txt
+    - dracula.txt
+    - a_christmas_carol.txt
+
+instructions: >
+  Build, then compare against a zstd dictionary trained on the SAME 22 books and
+  evaluated on the SAME 4 held-out books. Report both the compressed bytes and the
+  resident cost of each dictionary — a ratio that ignores what the receiver must
+  hold is not a like-for-like number, which is the error the 2026-07-31 paper
+  corrects. Expect zero 4-char ids; if any appear, the corpus vocabulary exceeded
+  83,264 surfaces and the char-3 assumption is wrong.

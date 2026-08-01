@@ -135,7 +135,20 @@ def main() -> None:
         force_include=build.get("force_include") or [],
         with_facets=("facets" in enabled),          # SUITE-gated (was raw with_facets)
         word_freq_file=wf,
-        phrase_file=repo_root / 'semantic_compression/data/phrase_candidates.txt',
+        # PHRASES ARE PART OF THE CORPUS DECLARATION, not a fixed asset.
+        #
+        # This was hardcoded to data/phrase_candidates.txt — phrases mined from the
+        # 327M-token TRANSCRIPT corpus, carrying transcript frequencies. So a build
+        # declaring a different `corpus:` still inherited transcript phrases, and they
+        # won on frequency because they were counted against a corpus 20x larger.
+        #
+        # Measured 2026-07-31 on books-fitted-v1 (22 public-domain books): the build
+        # produced 81,434 phrases and 1,819 words, dropping 163,118 book words. The
+        # top phrases were 'you know' (539,244) and 'going to' (275,046) — Victorian
+        # novels do not say 'you know' half a million times. The `corpus:` block only
+        # ever controlled the WORD half of the competition.
+        phrase_file=(repo_root / build["phrase_file"]) if build.get("phrase_file")
+                    else (repo_root / 'semantic_compression/data/phrase_candidates.txt'),
         extra_manifest=extra)
     # Meta layer (System-1 deterministic) -> meta.db  — only if the suite declares it
     if "meta" in enabled:
