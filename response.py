@@ -504,7 +504,7 @@ SHAPE_TEMPLATES = {
     'conditional':  ("That sets a condition I have nothing stored{about}. "
                      "Tell me what follows from it and I will keep it."),
     'definition':   ("I have not been told what{about} means. What is it?"),
-    'question':     ("I have nothing stored about{about} yet."),
+    'question':     ("I have nothing stored{about} yet."),
 }
 
 
