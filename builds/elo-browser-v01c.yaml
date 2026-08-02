@@ -1,0 +1,126 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-v01c   (ships as "elo-v3")
+#
+# IDENTICAL to elo-browser-v01b in every respect except one line: `expand_tiers`.
+# Same corpus, same phrase inventory, same strategy, same reserve, same structural
+# floor. Nothing is re-ordered and nothing is re-mined. The ONLY change is the
+# leading-character alphabet used to mint ids, which widens every tier by 3.15x.
+#
+# WHY (measured 2026-07-31, HANDOFF-tier-first-char-capacity.md):
+#   The original design encoded the TIER in an id's first character, so each tier
+#   needed a disjoint range — hence TIER_WORD_FIRST_CHARS = 'g-z', 20 of 64. That
+#   design was replaced: `detect_tier` uses LENGTH, the binary format carries the
+#   tier in the top two tag bits with the first char in the low six, and the Rust
+#   port derives tier from `id.chars().count()`. The restriction is what remained
+#   after the change, and it costs 69% of every tier's capacity.
+#
+#   Verified across config.py, compressor.py, elo.rs, dictionary_builder_v03.py and
+#   verify_config.py: nothing left standing depends on it. Tier 4 ('-' prefix) is
+#   dead — no build emits a '-'-prefixed id — so '-' stays reserved and we use 63.
+#
+#   | tier | v01b      | v01c        |
+#   |------|-----------|-------------|
+#   | 1    | 1,280     | 4,032       |
+#   | 2    | 81,920    | 258,048     |
+#   | 3    | 5,242,880 | 16,515,072  |
+#
+#   Re-priced over v01b's UNCHANGED ranking: 2,752 entries promote into Tier 1 and
+#   176,128 into Tier 2, worth 2.7-4.0% of the encoded stream on captured pages
+#   (cnn 4.0%, tomshardware 2.9%, google-search 2.7%). That estimate is a cost
+#   model over id lengths, NOT encoder output — this build exists to measure the
+#   real number.
+#
+#   Resolver: python -m semantic_compression.build_dictionary semantic_compression/builds/elo-browser-v01c.yaml
+# ============================================================================
+
+meta:
+  name: elo-browser-v01c              # -> db/builds/elo-browser-v01c/  (v01b stays immutable)
+  version: "1.2.0"
+  date: "2026-07-31"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: staged                      # staged until measured against v01b, then decide
+  purpose: >
+    elo-browser-v01b with the tier first-character alphabet widened from 20 to 63.
+    A controlled experiment: one variable changed, everything else held. Ships to
+    the browser as "elo-v3" for side-by-side comparison against elo-v2 (v01b).
+  goals:
+    - Measure the real encoder gain from tier expansion, not a cost model.
+    - Prove a full build + asset cascade succeeds with 63 leading characters.
+    - Keep v01b byte-reproducible — the change is opt-in, not global.
+  use_cases:
+    - A/B against elo-v2 in the browser's dictionary comparison list.
+    - Decide whether expansion lands in the char-4 stabilization build.
+
+build:                                # === IDENTICAL TO v01b EXCEPT expand_tiers ===
+  size: char-4
+  select_strategy: frequency
+  min_freq: 1
+  tier1_word_reserve: 1024
+  suite: full
+
+  # -------------------------------------------------------------------------
+  # THE ONE CHANGE. Widens the leading-character alphabet to all 63 non-'-'
+  # Base64 characters. '-' stays reserved for the (currently dead) tier-4 phrase
+  # namespace. Everything downstream — ranking, phrases, floor — is untouched.
+  # -------------------------------------------------------------------------
+  expand_tiers: true
+
+  # Structural floor, unchanged from v01b. Verified single tokens.
+  force_include:
+    - "_"
+    - "{"
+    - "}"
+    - "|"
+    - ">"
+    - "<"
+    - "`"
+    - "~"
+    - "\r\n"
+    - "\r"
+    - "\xa0"
+
+  assets:
+    facets: true
+    meta: true
+    epa: true
+    meta_layer2: true
+    vectors: true
+    browser: true
+
+corpus:                               # unchanged from v01b — same three sources
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure
+    precomputed: semantic_compression/data/web_terms_frequencies.txt
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []
+
+instructions: >
+  Build, then run the asset cascade and export the browser family. AFTER THE BUILD,
+  verify in this order:
+    1. dict_stats.json records tier_first_char_count = 63 and the new tier_capacity.
+    2. Tier counts shifted as predicted: ~4,032 in Tier 1 (was 1,280) and a large
+       Tier 3 -> Tier 2 migration. If Tier 1 is still 1,280, expand_tiers did not
+       reach the builder.
+    3. Entry count matches v01b (437,995). Same corpus and ranking means the same
+       entries — only their ID LENGTHS change. A different count means something
+       other than the alphabet moved.
+    4. Gates: verify_facets and verify_lossless BOTH against this package.
+    5. Export assets, then measure the SAME captured pages under v01b and v01c.
+       The cost model predicts 2.7-4.0%; report what the encoder actually does.
+    6. Point the browser at it via dictionary/ACTIVE_BUILD:
+         dictionary=elo-browser-v01c
+         display=elo-v3

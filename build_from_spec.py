@@ -133,6 +133,12 @@ def main() -> None:
         # Structural characters are grammar, not vocabulary — guaranteed a slot in
         # every cut regardless of corpus frequency (see dictionary_builder_v03).
         force_include=build.get("force_include") or [],
+        # TIER CAPACITY. `expand_tiers: true` widens the leading-character alphabet
+        # from the historical 20 (g-z) to all 63 non-'-' Base64 chars, multiplying
+        # every tier by 3.15x. Opt-in per build so v01a/v01b stay byte-reproducible.
+        tier_first_chars=(bld.TIER_FIRST_CHARS_EXPANDED
+                          if build.get("expand_tiers")
+                          else bld.TIER_FIRST_CHARS_LEGACY),
         with_facets=("facets" in enabled),          # SUITE-gated (was raw with_facets)
         word_freq_file=wf,
         # PHRASES ARE PART OF THE CORPUS DECLARATION, not a fixed asset.

@@ -88,12 +88,36 @@ FORCED_DICT_TOKENS = ['|']
 TIER1_WORD_RESERVE_DEFAULT = 1024     # of 1280 Tier 1 slots, reserve 1024 for words
 DROP_TIER0_BIGRAMS_DEFAULT = True     # filter zero-savings 2-grams
 
-# Tier capacity from g-z first chars (20 prefixes)
-TIER_CAPACITY = {
-    1: len(TIER_WORD_FIRST_CHARS) * 64,         # 1,280
-    2: len(TIER_WORD_FIRST_CHARS) * 64 ** 2,    # 81,920
-    3: len(TIER_WORD_FIRST_CHARS) * 64 ** 3,    # 5,242,880
-}
+# ---------------------------------------------------------------------------
+# TIER FIRST CHARS — a BUILD PARAMETER, not a global constant.
+#
+# The original design encoded the tier in the first character, so each tier needed a
+# disjoint character range; `TIER_WORD_FIRST_CHARS = 'g-z'` (20 of 64) is what remains
+# of that. The shipped design does not work that way: `detect_tier` uses LENGTH, the
+# binary format carries the tier in the top two tag bits with the first char in the low
+# six, and the Rust port derives tier from `id.chars().count()`. Verified 2026-07-31
+# across config.py, compressor.py, elo.rs and verify_config.py — nothing left standing
+# depends on the restriction. See handoffs/HANDOFF-tier-first-char-capacity.md.
+#
+# Widening to the 63 non-'-' characters multiplies every tier by 3.15x. Re-priced over
+# elo-browser-v01b's UNCHANGED ranking, that promotes 2,752 entries into Tier 1 and
+# 176,128 into Tier 2, worth 2.7-4.0% of the encoded stream on captured pages.
+#
+# It is a PARAMETER because changing the global would silently alter every future
+# rebuild of v01a/v01b, and those must stay byte-reproducible. Default = the historical
+# 20; a build opts in via `tier_first_chars` in its spec.
+# ---------------------------------------------------------------------------
+TIER_FIRST_CHARS_LEGACY   = TIER_WORD_FIRST_CHARS                 # 'g-z', 20
+TIER_FIRST_CHARS_EXPANDED = ''.join(c for c in BASE64_CHARS if c != '-')   # 63
+
+def tier_capacity_for(first_chars: str) -> dict:
+    """Tier capacity is len(first_chars) x 64^(n-1)."""
+    return {1: len(first_chars) * 64,
+            2: len(first_chars) * 64 ** 2,
+            3: len(first_chars) * 64 ** 3}
+
+# Module default — the historical 20-char behaviour.
+TIER_CAPACITY = tier_capacity_for(TIER_FIRST_CHARS_LEGACY)   # 1,280 / 81,920 / 5,242,880
 
 # Profile sizes (powers of 2, content slots only; bytes + special added at runtime)
 PROFILE_CONTENT_SIZES = {
@@ -121,17 +145,22 @@ SPECIAL_TOKENS = [
 # ID encoder
 # ---------------------------------------------------------------------------
 
-def _encode_id(tier: int, counter: int) -> str:
-    """Encode sequential counter to Base64 ID at given tier (2/3/4 chars)."""
+def _encode_id(tier: int, counter: int, first_chars: str = TIER_FIRST_CHARS_LEGACY) -> str:
+    """Encode sequential counter to Base64 ID at given tier (2/3/4 chars).
+
+    `first_chars` is the alphabet for the LEADING character only; the trailing
+    characters always use the full 64. It is the single point in the build where a
+    first character is chosen, so it is also the single lever for tier capacity.
+    """
     length = tier + 1
     chars = []
     remaining = counter
     for _ in range(length - 1):
         chars.append(BASE64_CHARS[remaining % 64])
         remaining //= 64
-    if remaining >= len(TIER_WORD_FIRST_CHARS):
+    if remaining >= len(first_chars):
         raise OverflowError(f'Tier {tier} ID space exhausted at counter={counter}')
-    chars.append(TIER_WORD_FIRST_CHARS[remaining])
+    chars.append(first_chars[remaining])
     return ''.join(reversed(chars))
 
 
@@ -212,6 +241,7 @@ def build(
     tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
     select_strategy: Callable[..., float] = score_by_frequency,
     force_include: "list[str] | None" = None,
+    tier_first_chars: str = TIER_FIRST_CHARS_LEGACY,
     max_tier: int = 3,
     token_ids_csv: Path | None = None,
     special_tok_json: Path | None = None,
@@ -446,6 +476,8 @@ def build(
     # Assign Base64 string IDs (Tier 0 pre-set, Tier 1+ sequential)
     # ----------------------------------------------------------------------
     string_id_of: dict[str, str] = {}
+    # Capacity follows the chosen first-char alphabet (see _encode_id).
+    TIER_CAP = tier_capacity_for(tier_first_chars)
     tier_of: dict[str, int] = {}
 
     # Tier 0 pre-seeded
@@ -459,7 +491,7 @@ def build(
     for token in FORCED_DICT_TOKENS:
         if token in tier0_set:
             continue
-        token_id = _encode_id(1, t1_counter)
+        token_id = _encode_id(1, t1_counter, tier_first_chars)
         t1_counter += 1
         string_id_of[token] = token_id
         tier_of[token] = 1
@@ -473,18 +505,18 @@ def build(
     def _assign(surface: str) -> None:
         """Place 'surface' in the next available tier slot."""
         nonlocal t1_counter, t2_counter, t3_counter, skipped_overflow
-        if max_tier >= 1 and t1_counter < TIER_CAPACITY[1]:
-            sid = _encode_id(1, t1_counter)
+        if max_tier >= 1 and t1_counter < TIER_CAP[1]:
+            sid = _encode_id(1, t1_counter, tier_first_chars)
             t1_counter += 1
             tier_counts[1] += 1
             tier_of[surface] = 1
-        elif max_tier >= 2 and t2_counter < TIER_CAPACITY[2]:
-            sid = _encode_id(2, t2_counter)
+        elif max_tier >= 2 and t2_counter < TIER_CAP[2]:
+            sid = _encode_id(2, t2_counter, tier_first_chars)
             t2_counter += 1
             tier_counts[2] += 1
             tier_of[surface] = 2
-        elif max_tier >= 3 and t3_counter < TIER_CAPACITY[3]:
-            sid = _encode_id(3, t3_counter)
+        elif max_tier >= 3 and t3_counter < TIER_CAP[3]:
+            sid = _encode_id(3, t3_counter, tier_first_chars)
             t3_counter += 1
             tier_counts[3] += 1
             tier_of[surface] = 3
@@ -664,7 +696,9 @@ def build(
         'tier3_count':              tier_counts[3],
         'words_in_dict':            word_count_in_dict + tier0_in_dict,
         'phrases_in_dict':          phrase_count_in_dict,
-        'tier_capacity':            TIER_CAPACITY,
+        'tier_capacity':            TIER_CAP,
+        'tier_first_chars':         tier_first_chars,
+        'tier_first_char_count':    len(tier_first_chars),
         'forced_assigned':          forced_assigned,
         'profile_cuts':             profile_cuts,
         'special_token_count':      SPECIAL_TOKEN_COUNT,
@@ -766,6 +800,7 @@ def _read_build_lock(lmdb_path: Path) -> dict:
 
 
 def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False,
+                  tier_first_chars: str = TIER_FIRST_CHARS_LEGACY,
                   max_tier: int = 3, min_freq: int = MIN_FREQ_FOR_DICT,
                   tier1_word_reserve: int = TIER1_WORD_RESERVE_DEFAULT,
                   drop_tier0_bigrams: bool = DROP_TIER0_BIGRAMS_DEFAULT,
@@ -808,7 +843,8 @@ def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False
                   tier1_word_reserve=tier1_word_reserve,
                   drop_tier0_bigrams=drop_tier0_bigrams,
                   select_strategy=select_strategy,
-                  force_include=force_include,       # structural floor (slots spec §3)
+                  force_include=force_include,             # structural floor (slots spec §3)
+                  tier_first_chars=tier_first_chars,       # tier capacity (HANDOFF-tier-first-char-capacity)
                   word_freq_file=word_freq_file or WORD_FREQ_FILE,
                   phrase_file=phrase_file or PHRASE_FILE)
 
