@@ -1,5 +1,20 @@
 # Dictionary Slot Allocation — Spec (draft v0)
 
+> **UPDATE 2026-08-02 — the capacity numbers below are the LEGACY alphabet.**
+> Tier capacity is now a build property: 20 leading characters by default,
+> **63 with `expand_tiers: true`** (Tier 1 1,280 → **4,032**, Tier 2 81,920 →
+> **258,048**). The rank→tier boundaries quoted in §2 and the "Tier 1 is 1,280"
+> arithmetic in §6 hold only for legacy builds (v0.2, v01a, v01b); `v01c` and
+> anything after it use the expanded alphabet. The v01a *measurements* below are
+> a dated record and stay as written. Normative source for tiers and capacity:
+> [`spec-tier-system.md`](spec-tier-system.md).
+>
+> This matters here more than anywhere else: **the expansion is what makes a
+> reserved band affordable.** Under the legacy alphabet, `tier1_word_reserve:
+> 1024` left exactly 256 free Tier-1 slots, so a 256-slot reservation consumed
+> *the entire remainder*. Under the expanded alphabet the remainder is 3,008 and
+> the same band is 8.5% of it. See `ELO_CODE_BAND_SPEC.md`.
+
 > **The build mechanic for deciding WHERE a surface lands, not just whether it's included.**
 > Today a dictionary is one frequency-ranked list with a single hardcoded exception
 > (`tier1_word_reserve`). This spec generalizes that into declarative slot allocation, so a

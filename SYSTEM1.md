@@ -221,9 +221,13 @@ The vocabulary pipeline is being rebuilt for v0.4 — better vocabulary from a
    ~67% of corpus token coverage, dominated by single-space.
 
 8. 4-CHAR (TIER 3) IS THE PRODUCTION BOUNDARY
-   Tier 1 (2-char): 1,280 IDs    -- top words + 256 high-freq phrases
-   Tier 2 (3-char): 81,920 IDs   -- mid-frequency mix
-   Tier 3 (4-char): 5.2M IDs     -- long tail (~290k used in v0.3)
+   Capacity = len(leading alphabet) x 64^n, so it is a BUILD property:
+                        legacy (20)      expanded (63, expand_tiers)
+   Tier 1 (2-char):          1,280                   4,032
+   Tier 2 (3-char):         81,920                 258,048
+   Tier 3 (4-char):      5,242,880              16,515,072
+   v0.3 and v01a/v01b are legacy; v01c is expanded. See
+   docs/compression/spec-tier-system.md.
 
 9. LMDB IS PRODUCTION STORAGE
    ~100ns lookup. Memory-mapped. C-readable directly.
@@ -302,8 +306,11 @@ d ACTION       e PROGRESS  f RESULT
 ```
 
 Tier detection by LENGTH (1 = Tier 0, 2 = Tier 1, 3 = Tier 2, 4 = Tier 3).
-g-z double-duty as both Tier 0 single-char IDs AND Tier 1/2/3 first chars
-without ambiguity because length resolves the disambiguation.
+Because length resolves the ambiguity, a Tier 0 single-char ID and a Tier 1/2/3
+FIRST char may be the same character with no collision -- 'g' is a Tier 0
+structural ID, 'gA' is a Tier 1 entry. That is what allows the leading-character
+alphabet to be widened (expand_tiers: 20 -> 63) without a format change; the
+'-' prefix is the one reserved leading character, marking Tier 4 phrases.
 
 ---
 

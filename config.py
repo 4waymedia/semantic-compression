@@ -130,28 +130,53 @@ assert not (set(PRIMITIVES) & set(RESERVED_IDS)), "Collision between active and 
 # ---------------------------------------------------------------------------
 # Tier system — word library ID tiers
 #
-# Tier 0: single-char (defined above)
-# Tier 1: 2-char, first char from g-z  →  20 × 64 = 1,280 IDs
-# Tier 2: 3-char, first char from g-z  →  20 × 64² = 81,920 IDs
-# Tier 3: 4-char, first char from g-z  →  20 × 64³ = 5,242,880 IDs
-# Phrase: 4-char, first char = '-'     →  64³ = 262,144 IDs
+# TIER IS DETERMINED BY LENGTH, NOT BY THE FIRST CHARACTER.
 #
-# Tier detection: first char + length (no ambiguity with Tier 0 since
-# active Tier 0 uses A-Z + 0-2 + -_, and Tier 1-3 use g-z as first char).
+#   len 1 -> Tier 0        len 3 -> Tier 2
+#   len 2 -> Tier 1        len 4 -> Tier 3
+#   leading '-'  -> Tier 4 (phrase namespace; no build emits these yet)
+#
+# HISTORY — corrected 2026-08-02. The ORIGINAL design encoded the tier IN the
+# first character, so each tier needed a disjoint range. TIER_WORD_FIRST_CHARS
+# is the residue of that scheme: it is exactly [a-z] minus the six stage-
+# reserved Tier 0 ids (a-f), which is why it is 20 characters and not a round
+# number. That design was replaced by length in three places independently:
+# detect_tier() below, the Rust port (`tier_of` is `id.chars().count()`), and
+# the binary format (the .eloB tag carries tier in the top two bits and the
+# first character as a 6-bit index over ALL 64 charset bytes). Nothing
+# operational ever depended on the 20-character range — but the restriction
+# outlived its reason and cost 69% of every tier's capacity.
+#
+# elo-browser-v01c widened the alphabet to 63 ('-' stays reserved for Tier 4)
+# over an UNCHANGED corpus and ranking: Tier 1 1,280 -> 4,032, Tier 2 81,920 ->
+# 258,048, and 178,880 entries promoted out of Tier 3. 4,032 is 98.4% of the
+# theoretical maximum for 2-char ids; there is no further expansion available
+# in this scheme.
+#
+# TIER_WORD_FIRST_CHARS KEEPS ITS LEGACY VALUE. v0.2 (dictionary_builder.py)
+# and builds v01a/v01b must stay byte-reproducible, and both builders read it
+# to mint ids. A build opts into the wider alphabet via `expand_tiers` in its
+# spec; see dictionary_builder_v03.py.
 # ---------------------------------------------------------------------------
 
-# First chars for Tier 1/2/3 dictionary IDs.
-# Important:
-#   g-z and 3-9 are now active Tier 0 structural IDs when length == 1.
-#   They are still valid first chars for multi-character Tier 1/2/3 IDs.
-#   Tier detection remains unambiguous because length determines Tier 0.
-TIER_WORD_FIRST_CHARS = 'ghijklmnopqrstuvwxyz'
+TIER_WORD_FIRST_CHARS = 'ghijklmnopqrstuvwxyz'      # LEGACY alphabet — 20 of 64
+TIER_FIRST_CHARS_EXPANDED = ''.join(c for c in BASE64_CHARS if c != '-')   # 63
 
-TIER_CAPACITY = {
-    1: len(TIER_WORD_FIRST_CHARS) * 64,            # 1,280
-    2: len(TIER_WORD_FIRST_CHARS) * 64 ** 2,       # 81,920
-    3: len(TIER_WORD_FIRST_CHARS) * 64 ** 3,       # 5,242,880
-}
+
+def tier_capacity_for(first_chars: str) -> dict:
+    """Capacity of each word tier under a given leading-character alphabet.
+
+    A Tier n id is n+1 characters: the leading one drawn from the build's
+    alphabet, the remaining n from all 64. So capacity is
+    len(first_chars) x 64^n -- NOT 64^(n-1). Tier 1 ids are two characters.
+    """
+    return {n: len(first_chars) * 64 ** n for n in (1, 2, 3)}
+
+
+# Capacity under the LEGACY alphabet. This is not a global truth — a build that
+# sets expand_tiers computes its own via tier_capacity_for(). Both builders
+# shadow this locally; verify_config.py is its only reader.
+TIER_CAPACITY = tier_capacity_for(TIER_WORD_FIRST_CHARS)   # 1,280 / 81,920 / 5,242,880
 
 TIER_FREQ_RANK = {
     1: (1, 1000),       # top ~1,000 by corpus frequency (capped at Tier 1 capacity)
@@ -161,20 +186,29 @@ TIER_FREQ_RANK = {
 
 
 def detect_tier(token_id: str) -> int:
-    """Return tier of a token ID without a DB lookup."""
+    """Return tier of a token ID without a DB lookup.
+
+    LENGTH decides. The first character carries no tier information; the only
+    thing it can signal is '-', which marks the Tier 4 phrase namespace. Any
+    of the other 63 charset characters is valid in front of a Tier 1/2/3 id,
+    which is what lets a build widen its alphabet (expand_tiers) without a
+    format change or a new FORMAT_VERSION.
+
+    This previously also tested the first character against
+    TIER_WORD_FIRST_CHARS, which made it raise on every id minted by a build
+    with an expanded alphabet -- 'AA', '1j' and 'Aq7y' are all legal v01c ids.
+    """
     n = len(token_id)
     if n == 1:
         return 0
-    first = token_id[0]
-    if first == '-':
+    if token_id[0] == '-':
         return 4   # phrase / collocation / pragmatic
-    if first in TIER_WORD_FIRST_CHARS:
-        if n == 2:
-            return 1
-        if n == 3:
-            return 2
-        if n == 4:
-            return 3
+    if n == 2:
+        return 1
+    if n == 3:
+        return 2
+    if n == 4:
+        return 3
     raise ValueError(f"Unknown tier for ID: {token_id!r}")
 
 

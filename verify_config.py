@@ -7,6 +7,7 @@ from semantic_compression.config import (
     SYSTEM_IDS, WORD_IDS, STRUCTURAL_IDS, RESERVED_IDS,
     WORD_TO_ID, STRUCTURAL_TO_ID,
     TIER_WORD_FIRST_CHARS, TIER_CAPACITY,
+    TIER_FIRST_CHARS_EXPANDED, tier_capacity_for,
     MULTI_WORD_FILLERS, SINGLE_WORD_FILLERS, COMPRESSION_MODES,
     detect_tier,
 )
@@ -63,26 +64,54 @@ for k, v in PRIMITIVES.items():
 print('[OK] PRIMITIVES_REVERSE inverts PRIMITIVES correctly')
 
 # ---- 10. Tier detection
-# Length disambiguates: single char = Tier 0, 2/3/4 = Tier 1/2/3
+# LENGTH decides. The first character carries no tier information except '-',
+# which marks the Tier 4 phrase namespace.
+#
+# The samples below MUST include leading characters outside the legacy g-z
+# range. Until 2026-08-02 every multi-char sample here started with 'g' or '-',
+# so the suite passed while detect_tier raised ValueError on every id minted by
+# elo-browser-v01c -- it asserted an output it had itself constrained. Real ids
+# from that build are marked (v01c) and are the regression guard.
 samples = [
     ('T',    0),    # word ID (the)
     ('g',    0),    # structural single char (space)
     ('0',    0),    # system marker
-    ('gA',   1),    # Tier 1 dictionary entry
-    ('gAA',  2),    # Tier 2
-    ('gAAA', 3),    # Tier 3
+    ('gA',   1),    # Tier 1, legacy alphabet
+    ('gAA',  2),    # Tier 2, legacy alphabet
+    ('gAAA', 3),    # Tier 3, legacy alphabet
     ('-AAA', 4),    # phrase
+    ('AA',   1),    # (v01c) '|'        -- leading 'A', outside g-z
+    ('CV',   1),    # (v01c) '_'
+    ('1j',   1),    # (v01c) 'car'      -- leading digit
+    ('Aq7y', 3),    # (v01c) backtick
 ]
 for tid, expected in samples:
     got = detect_tier(tid)
     assert got == expected, f'detect_tier({tid!r}) = {got}, want {expected}'
-print('[OK] Tier detection: length disambiguates Tier 0 from 1/2/3')
+# Every non-'-' charset character must be a legal leading character.
+for c in TIER_FIRST_CHARS_EXPANDED:
+    assert detect_tier(c + 'A') == 1, f'leading {c!r} rejected at Tier 1'
+print(f'[OK] Tier detection: length decides; all {len(TIER_FIRST_CHARS_EXPANDED)} '
+      f'non-"-" leading chars accepted')
 
 # ---- 11. Tier capacities
-assert TIER_CAPACITY[1] == 1280
-assert TIER_CAPACITY[2] == 81920
-assert TIER_CAPACITY[3] == 5_242_880
-print(f'[OK] Tier capacities: T1={TIER_CAPACITY[1]:,}  T2={TIER_CAPACITY[2]:,}  T3={TIER_CAPACITY[3]:,}')
+# Capacity is a function of the BUILD's leading-character alphabet, not a
+# constant -- a hardcoded 1,280 is what made the v01c expansion look like a
+# config violation. But assert the RELATIONSHIP *and* known-good literals for
+# both alphabets: a relationship checked against itself is a tautology, and on
+# 2026-08-02 that tautology passed a tier_capacity_for() written with the wrong
+# exponent (64^(n-1)). The literals below are what caught it.
+assert TIER_CAPACITY == tier_capacity_for(TIER_WORD_FIRST_CHARS)
+assert len(TIER_FIRST_CHARS_EXPANDED) == 63 and '-' not in TIER_FIRST_CHARS_EXPANDED
+_exp = tier_capacity_for(TIER_FIRST_CHARS_EXPANDED)
+# A Tier n id is n+1 chars: 1 from the alphabet, n from all 64.
+assert TIER_CAPACITY[1] ==  1_280 and _exp[1] ==      4_032   # 2-char
+assert TIER_CAPACITY[2] == 81_920 and _exp[2] ==    258_048   # 3-char
+assert TIER_CAPACITY[3] == 5_242_880 and _exp[3] == 16_515_072  # 4-char
+print(f'[OK] Tier capacity legacy  ({len(TIER_WORD_FIRST_CHARS)} chars): '
+      f'T1={TIER_CAPACITY[1]:,}  T2={TIER_CAPACITY[2]:,}  T3={TIER_CAPACITY[3]:,}')
+print(f'[OK] Tier capacity expanded({len(TIER_FIRST_CHARS_EXPANDED)} chars): '
+      f'T1={_exp[1]:,}  T2={_exp[2]:,}  T3={_exp[3]:,}')
 
 # ---- 12. Filler maps still present
 print(f'[OK] Multi-word fillers: {len(MULTI_WORD_FILLERS)} (longest-first)')

@@ -29,17 +29,25 @@ meaning (facets/EPA), so the compressed form is machine-operable, not just zippe
 IDs use a **64-character URL-safe alphabet** (`A–Z a–z 0–9 - _`). An ID's **length
 tells you its tier** — no lookup needed:
 
-| Tier | ID width | What lives here | Capacity |
+| Tier | ID width | What lives here | Capacity (legacy → expanded) |
 |---|---|---|---|
-| **Tier 0** | 1 char | ~64 **primitives** — EPA poles, filler classes, process stages, logic/structural atoms | 64 slots |
-| **Tier 1** | 2 char | the most frequent / highest-value words | 1,280 |
-| **Tier 2** | 3 char | mid-frequency words | 81,920 |
-| **Tier 3** | 4 char | low-frequency + high-meaning words | ~5,242,880 |
-| **Phrases** | 4 char (`-` prefix) | multi-word units / collocations / pragmatic formulas | separate partition |
+| **Tier 0** | 1 char | 64 **primitives** — EPA poles, filler classes, process stages, logic/structural atoms | 64 slots, fully allocated |
+| **Tier 1** | 2 char | the most frequent / highest-value words | 1,280 → **4,032** |
+| **Tier 2** | 3 char | mid-frequency words | 81,920 → **258,048** |
+| **Tier 3** | 4 char | low-frequency + high-meaning words | 5,242,880 → **16,515,072** |
+| **Phrases** | 4 char (`-` prefix) | reserved namespace — no build emits these | — |
 
-The **first character encodes the tier**, so a reader knows an ID's tier instantly.
-Reserved slots (Tier-0 primitives, ~1,024 single-word slots in Tier 1) are honored
-at every build — never reassigned.
+**Length is the only tier signal** — the first character carries none (the sole
+exception is `-`, which marks the phrase namespace). Capacity therefore depends
+on the build's leading-character alphabet: 20 characters (`g`–`z`) by default,
+63 with `expand_tiers: true`. Both columns above are real; which one applies is
+a property of the build, not of the scheme.
+
+Reserved slots (Tier-0 primitives, the `tier1_word_reserve` words in Tier 1) are
+honored at every build — never reassigned.
+
+> Full detail, history, and the measured effect of the expansion:
+> [`../../docs/compression/spec-tier-system.md`](../../docs/compression/spec-tier-system.md).
 
 ---
 
