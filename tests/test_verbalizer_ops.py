@@ -238,10 +238,23 @@ class TestChain(unittest.TestCase):
         self.assertIn("the car must be there", r["text"])
 
     def test_goal_surface_is_voiced_when_present(self):
-        # when the FULL surface is supplied it IS read back -- grammatical, the
-        # form gaps file. This is the "right one" (vs the core).
+        # a marker-less MATTER goal is reported plainly (no pronoun to flip).
         r = verbalize({"chain_verdict": self._recommend(goal_surface="washing the car matters")})
         self.assertIn("you told me washing the car matters", r["text"])
+
+    def test_desire_goal_flips_to_second_person(self):
+        # "i want to X" is the user's aim -> spoken back to them, no doubled marker
+        r = verbalize({"chain_verdict": self._recommend(
+            goal_surface="i want to have the car washed")})
+        self.assertIn("you want to have the car washed", r["text"])
+        self.assertNotIn("you told me i want", r["text"])
+
+    def test_purpose_goal_reads_as_a_want(self):
+        # a bare purpose "to X" must not read as a command ("you told me to ...")
+        r = verbalize({"chain_verdict": self._recommend(
+            goal_surface="to get the car washed")})
+        self.assertIn("you want to get the car washed", r["text"])
+        self.assertNotIn("you told me to get", r["text"])
 
     def test_chain_wins_over_seed_recall(self):
         # even with a recalled seed present, the chain composes the answer

@@ -12,6 +12,7 @@ a memory. Every emitted sentence cites what it stood on (`grounded_on` / `basis`
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 # Absorb the ladder (bare imports, sc convention). response.py is pure + substrate-
@@ -234,6 +235,56 @@ def _requirement_phrase(requirement, source) -> str:
     return f"you told me that needs {r}" if r else "you told me what it needs"
 
 
+# The goal is the USER'S -- read it back in the SECOND person, their own aim
+# spoken to them ("i want to X" -> "you want to X"), not reported flatly with a
+# doubled marker ("you told me i want to X"). This is a whole-clause first->second
+# person flip, distinct from response._FLIP (possessive your<->my only). Surfaces
+# arrive lowercased + punctuation-stripped from goal_former._norm.
+_FIRST_TO_SECOND = {
+    "i": "you", "we": "you", "me": "you", "us": "you",
+    "my": "your", "our": "your", "mine": "yours", "ours": "yours",
+    "myself": "yourself", "ourselves": "yourselves",
+    "i'd": "you'd", "we'd": "you'd", "i'll": "you'll", "we'll": "you'll",
+    "i've": "you've", "we've": "you've", "i'm": "you're", "we're": "you're",
+    "am": "are",     # only after a just-flipped 'you' (from "i am")
+}
+# a purpose goal leads with the marker, not a subject: "to get the car washed"
+_PURPOSE_TO = re.compile(r"^(?:in order to|to)\s+(.+)$", re.I)
+
+
+def _second_person(text):
+    """First->second person over a clause. Returns (flipped, changed?)."""
+    out, changed = [], False
+    for tok in (text or "").split():
+        repl = _FIRST_TO_SECOND.get(tok)
+        if repl is None:
+            out.append(tok)
+            continue
+        if tok == "am" and not (out and out[-1] == "you"):
+            out.append(tok)             # a bare "am" that isn't from "i am"
+            continue
+        out.append(repl)
+        changed = True
+    return " ".join(out), changed
+
+
+def _goal_readback(surface) -> str:
+    """The user's goal, voiced to them. desire/matter flip to second person and
+    lead directly; a purpose 'to X' becomes 'you want to X'; a marker-less matter
+    ('washing the car matters') is reported plainly. Never the goal_core."""
+    surf = (surface or "").strip().rstrip(".")
+    if not surf:
+        return ""
+    m = _PURPOSE_TO.match(surf)
+    if m:                                                   # "to get the car washed"
+        rest, _ = _second_person(m.group(1))
+        return f"you want to {rest}"
+    flipped, changed = _second_person(surf)
+    if changed:
+        return flipped                                      # "you want to have the car washed"
+    return f"you told me {surf}"                            # "you told me washing the car matters"
+
+
 def _ask_surface(ask) -> str:
     a = (ask or "").strip()
     if not a:
@@ -272,7 +323,7 @@ def _chain_reply(cv):
         req = _requirement_phrase(cv.get("requirement"), source)
         lead = option if hedge else option.capitalize()
         if goal:
-            reason = f"you told me {goal}, and {req}"
+            reason = f"{_goal_readback(goal)}, and {req}"
         else:
             winner = _effect_text(chain, "ENABLES")
             winner = (winner[0].lower() + winner[1:]) if winner else ""

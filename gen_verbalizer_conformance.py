@@ -155,8 +155,12 @@ CASES = [
     {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # goal_core NEVER read back
         chain=[dict(_CHAIN[0], text="the car to be clean so i want to have the car washed"),
                _CHAIN[1], _CHAIN[2]])}}},
-    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # full surface IS voiced
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # matter surface, plain
         goal_surface="washing the car matters")}}},
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # desire -> 2nd person
+        goal_surface="i want to have the car washed")}}},
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # purpose -> "you want to"
+        goal_surface="to get the car washed")}}},
     {"op": "verbalize", "args": {"input": {                                            # unknown -> fall-through
         "chain_verdict": {"kind": "unknown", "chain": _CHAIN}, "seeds": []}}},
 ]

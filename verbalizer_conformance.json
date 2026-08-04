@@ -1431,6 +1431,142 @@
       "args": {
         "input": {
           "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null,
+            "goal_surface": "i want to have the car washed"
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you want to have the car washed, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              103
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null,
+            "goal_surface": "to get the car washed"
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you want to get the car washed, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              102
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
             "kind": "unknown",
             "chain": [
               {
