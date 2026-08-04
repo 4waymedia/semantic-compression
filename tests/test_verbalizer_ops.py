@@ -219,11 +219,29 @@ class TestChain(unittest.TestCase):
         r = verbalize({"chain_verdict": self._recommend()})
         self.assertEqual(r["basis"], "inferred")            # only a chain says this
         self.assertTrue(r["text"].startswith("Drive"))
-        self.assertIn("washing the car matters", r["text"])
+        self.assertIn("takes the car with you", r["text"])  # winner's taught effect
         self.assertIn("the car must be there", r["text"])   # axiom, rendered
         self.assertIn("Walking leaves it behind", r["text"])  # loser effect
-        self.assertEqual(len(r["grounded_on"]), 3)          # every step
+        self.assertEqual(len(r["grounded_on"]), 3)          # every step cited
         self.assertEqual(r["stance_marks"][0]["stance"], "told")
+
+    def test_goal_core_is_never_read_back(self):
+        # the CO_PRESENCE step carries the RESOLVE-time core (goal_former sec.3c).
+        # Live it was ungrammatical and got quoted at the user; it must not appear.
+        core = "the car to be clean so i want to have the car washed"
+        cv = self._recommend()
+        cv["chain"] = [dict(cv["chain"][0], text=core)] + cv["chain"][1:]
+        r = verbalize({"chain_verdict": cv})
+        self.assertNotIn(core, r["text"])                   # the bug, guarded
+        self.assertNotIn("you told me the car", r["text"])
+        self.assertTrue(r["text"].startswith("Drive"))      # still a real answer
+        self.assertIn("the car must be there", r["text"])
+
+    def test_goal_surface_is_voiced_when_present(self):
+        # when the FULL surface is supplied it IS read back -- grammatical, the
+        # form gaps file. This is the "right one" (vs the core).
+        r = verbalize({"chain_verdict": self._recommend(goal_surface="washing the car matters")})
+        self.assertIn("you told me washing the car matters", r["text"])
 
     def test_chain_wins_over_seed_recall(self):
         # even with a recalled seed present, the chain composes the answer

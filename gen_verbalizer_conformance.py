@@ -152,6 +152,11 @@ CASES = [
         kind="neither", option=None, verdicts={"walk": "DEFEATS", "swim": "DEFEATS"})}}},     # neither
     {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(stance="perception")}}},      # John rule
     {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(requirement_source="taught")}}},  # taught vs axiom
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # goal_core NEVER read back
+        chain=[dict(_CHAIN[0], text="the car to be clean so i want to have the car washed"),
+               _CHAIN[1], _CHAIN[2]])}}},
+    {"op": "verbalize", "args": {"input": {"chain_verdict": _cv(                        # full surface IS voiced
+        goal_surface="washing the car matters")}}},
     {"op": "verbalize", "args": {"input": {                                            # unknown -> fall-through
         "chain_verdict": {"kind": "unknown", "chain": _CHAIN}, "seeds": []}}},
 ]

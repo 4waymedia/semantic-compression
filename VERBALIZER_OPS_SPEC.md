@@ -66,7 +66,9 @@ ChainVerdict = {  # B3: the choice resolver's ChoiceVerdict.to_dict() (Reasoning
     "option": str|null, "verdicts": {opt: "SATISFIES"|"DEFEATS"|"UNKNOWN"},
     "requirement": str, "requirement_source": "taught"|"axiom",
     "chain": [{src, rel, dst, rule, ceiling, stance, text}],  # every step licensed
-    "confidence": float, "stance": "told"|"perception", "ask": str|null }
+    "confidence": float, "stance": "told"|"perception", "ask": str|null,
+    "goal_surface"?: str }  # OPTIONAL: the goal's full surface, for readback (§3.4).
+                            # Absent -> the reply never voices the goal_core.
 ```
 
 `stance` is first-class because §5.5 forbids saying an inferred thing in a told
@@ -185,12 +187,26 @@ the one path allowed to emit **`basis:"inferred"`** — the licensed-inference v
 in the caller's `chain_verdict`, so the footer can name them — making the axiom's
 work (`co_presence` ⇒ "the car must be there") **auditable** (rule #1).
 
+**The goal is never read back from the core.** The `CO_PRESENCE` step's `text` is
+`goal_core` — a RESOLVE-time machine form (`goal_former.py` §3c: *"the core is used
+at RESOLVE time only"*), and live it is ungrammatical
+(*"the car to be clean so i want to have the car washed"*). The chain reply MUST NOT
+voice it. It references the goal through: (a) the optional `chain_verdict.goal_surface`
+— the **full surface** gaps file — when the caller supplies it; else (b) the winner's
+own **taught ENABLES sentence** (clean prose: *"driving takes the car with you"*),
+matched by relation, never by the option string. The requirement always renders from
+the minted node (`requirement` ⇒ *"the car must be there for that"*), not from the
+step text. The core stays in `grounded_on` for provenance but is never spoken.
+
 Per kind (voice targets; conformance pins the wording):
 
-- **recommend** — inferred voice, never told: *"Drive — you told me washing the car
-  matters, and the car must be there for that. Walking would leave it behind."*
-- **recommend_gap** — the recommendation **then the `ask` as a real question that
-  ends the reply** (so the conversation layer opens a capture slot).
+- **recommend** — inferred voice, never told. With a surface: *"Drive — you told me
+  washing the car matters, and the car must be there for that. Walking leaves it
+  behind."* Without one: *"Drive — driving takes the car with you, and the car must be
+  there for that. Walking leaves it behind."*
+- **recommend_gap** — the recommendation (no defeated option to cite) **then the `ask`
+  as a real question that ends the reply** (so the conversation layer opens a capture
+  slot).
 - **tie** — *"Either works for that — both drive and cycling get you there. What else
   matters here?"* (ends on a question → capture slot).
 - **neither** — *"Neither gets there — walking and swimming both leave it behind. Is

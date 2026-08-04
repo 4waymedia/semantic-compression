@@ -212,11 +212,17 @@ def _join(items) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
-def _goal_phrase(chain) -> str:
-    for st in chain:                        # the co-presence step's text IS the goal
-        if st.get("rule") == "co_presence" or st.get("rel") == "CO_PRESENCE":
+def _effect_text(chain, rel) -> str:
+    """The FIRST step of relation `rel`, as clean spoken prose.
+
+    ENABLES/PREVENTS step texts are the raw TAUGHT sentences (relational_seeds:
+    "Driving takes the car with you") -- fluent, the user's own words, safe to
+    voice. This is matched by RELATION, never by the option string, so the
+    e-dropping gerund (drive~driving) can't miss it."""
+    for st in chain:
+        if st.get("rel") == rel:
             return (st.get("text") or "").strip().rstrip(".")
-    return ((chain[0].get("text") or "").strip().rstrip(".")) if chain else "that"
+    return ""
 
 
 def _requirement_phrase(requirement, source) -> str:
@@ -226,25 +232,6 @@ def _requirement_phrase(requirement, source) -> str:
     if source == "axiom":
         return f"{r} is needed for that" if r else "that has a requirement"
     return f"you told me that needs {r}" if r else "you told me what it needs"
-
-
-def _step_for_option(chain, option):
-    o = (option or "").lower()
-    for st in chain:
-        src = (st.get("src") or "").lower()
-        txt = (st.get("text") or "").lower()
-        if o and (o in src or src in o or o in txt):
-            return st
-    return None
-
-
-def _loser_clause(chain, losers) -> str:
-    for o in losers:
-        st = _step_for_option(chain, o)
-        t = (st.get("text") or "").strip().rstrip(".") if st else ""
-        if t:
-            return f" {t}."
-    return ""
 
 
 def _ask_surface(ask) -> str:
@@ -276,11 +263,24 @@ def _chain_reply(cv):
     if kind in ("recommend", "recommend_gap"):
         if not option:
             return None                      # nothing to recommend -> fall through
-        goal = _goal_phrase(chain)
+        # The goal is voiced ONLY from its FULL SURFACE (goal_former.py sec.3c:
+        # the CO_PRESENCE step's text is `goal_core`, a RESOLVE-time machine form
+        # -- "you told me the car to be clean so i want to have the car washed".
+        # Never read it back). Absent a surface, the winner's own taught effect
+        # (a clean ENABLES sentence) carries the "why"; the core stays mute.
+        goal = (cv.get("goal_surface") or "").strip().rstrip(".")
         req = _requirement_phrase(cv.get("requirement"), source)
-        losers = [o for o, v in verdicts.items() if v == "DEFEATS"]
         lead = option if hedge else option.capitalize()
-        body = f"{hedge}{lead} -- you told me {goal}, and {req}.{_loser_clause(chain, losers)}"
+        if goal:
+            reason = f"you told me {goal}, and {req}"
+        else:
+            winner = _effect_text(chain, "ENABLES")
+            winner = (winner[0].lower() + winner[1:]) if winner else ""
+            reason = f"{winner}, and {req}" if winner else req
+        body = f"{hedge}{lead} -- {reason}."
+        loser = _effect_text(chain, "PREVENTS")
+        if loser and kind == "recommend":     # a gap has no defeated option
+            body += f" {loser}."
         if kind == "recommend_gap":
             ask = _ask_surface(cv.get("ask"))
             if ask:

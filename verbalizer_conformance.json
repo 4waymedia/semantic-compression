@@ -938,13 +938,13 @@
         }
       },
       "expected": {
-        "text": "Drive -- you told me washing the car matters, and the car must be there for that. Walking leaves it behind.",
+        "text": "Drive -- driving takes the car with you, and the car must be there for that. Walking leaves it behind.",
         "basis": "inferred",
         "stance_marks": [
           {
             "span": [
               0,
-              107
+              102
             ],
             "stance": "told"
           }
@@ -1005,13 +1005,13 @@
         }
       },
       "expected": {
-        "text": "Drive -- you told me washing the car matters, and the car must be there for that. I don't know yet -- does walk affect car present?",
+        "text": "Drive -- driving takes the car with you, and the car must be there for that. I don't know yet -- does walk affect car present?",
         "basis": "inferred",
         "stance_marks": [
           {
             "span": [
               0,
-              131
+              126
             ],
             "stance": "told"
           }
@@ -1206,13 +1206,13 @@
         }
       },
       "expected": {
-        "text": "From what you've seen, drive -- you told me washing the car matters, and the car must be there for that. Walking leaves it behind.",
+        "text": "From what you've seen, drive -- driving takes the car with you, and the car must be there for that. Walking leaves it behind.",
         "basis": "inferred",
         "stance_marks": [
           {
             "span": [
               0,
-              130
+              125
             ],
             "stance": "perception"
           }
@@ -1273,13 +1273,148 @@
         }
       },
       "expected": {
-        "text": "Drive -- you told me washing the car matters, and you told me that needs car present. Walking leaves it behind.",
+        "text": "Drive -- driving takes the car with you, and you told me that needs car present. Walking leaves it behind.",
         "basis": "inferred",
         "stance_marks": [
           {
             "span": [
               0,
-              111
+              106
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "washing the car matters",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "the car to be clean so i want to have the car washed"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- driving takes the car with you, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              102
+            ],
+            "stance": "told"
+          }
+        ],
+        "grounded_on": [
+          "the car to be clean so i want to have the car washed",
+          "Driving takes the car with you",
+          "Walking leaves it behind"
+        ]
+      }
+    },
+    {
+      "op": "verbalize",
+      "args": {
+        "input": {
+          "chain_verdict": {
+            "kind": "recommend",
+            "option": "drive",
+            "verdicts": {
+              "drive": "SATISFIES",
+              "walk": "DEFEATS"
+            },
+            "requirement": "car present",
+            "requirement_source": "axiom",
+            "chain": [
+              {
+                "src": "washing car matters",
+                "rel": "CO_PRESENCE",
+                "dst": "car present",
+                "rule": "co_presence",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "washing the car matters"
+              },
+              {
+                "src": "driving",
+                "rel": "ENABLES",
+                "dst": "car present",
+                "rule": "enables",
+                "ceiling": 0.65,
+                "stance": "told",
+                "text": "Driving takes the car with you"
+              },
+              {
+                "src": "walking",
+                "rel": "PREVENTS",
+                "dst": "car present",
+                "rule": "blocks",
+                "ceiling": 0.75,
+                "stance": "told",
+                "text": "Walking leaves it behind"
+              }
+            ],
+            "confidence": 0.65,
+            "stance": "told",
+            "ask": null,
+            "goal_surface": "washing the car matters"
+          }
+        }
+      },
+      "expected": {
+        "text": "Drive -- you told me washing the car matters, and the car must be there for that. Walking leaves it behind.",
+        "basis": "inferred",
+        "stance_marks": [
+          {
+            "span": [
+              0,
+              107
             ],
             "stance": "told"
           }
