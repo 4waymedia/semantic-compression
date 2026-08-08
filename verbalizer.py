@@ -1,31 +1,35 @@
 """
-verbalizer.py — DEPRECATION SHIM. The implementation graduated to
-packages/eloai-verbalizer (import: `eloai_verbalizer`) on 2026-07-12 per
-ELO_PACKAGING_STANDARD.md §12.3 ("move the proven code into src/; retire the
-incubation copy").
+verbalizer.py — TRANSITIONAL SHIM (repointed 2026-08-05).
 
-This shim keeps `import verbalizer` / `from verbalizer import ...` consumers
-(06-RecalEngine, step14, the MCP gateway bootstrap) working against the ONE
-real implementation. New code must import `eloai_verbalizer` directly.
+The base `verbalizer` package now OWNS the `verbalizer` import name (renamed from
+eloai-verbalizer; SYSTEMS.md §1b — base packages carry the plain name). Because this
+shim file is itself named `verbalizer`, it cannot `from verbalizer import *` (that
+would import itself). Instead it loads the real base package from packages/elo-verbalizer
+and installs it as `verbalizer` in sys.modules, replacing this shim — so consumers
+doing `import verbalizer` transparently resolve the base package.
 
-Remove this file once no consumer imports the top-level `verbalizer` name.
+Retire in migration step 5, once consumers resolve the base `verbalizer` package on
+their own sys.path and no longer route through semantic_compression.
 """
 from __future__ import annotations
+import importlib.util as _ilu
+import sys as _sys
+import warnings as _w
+from pathlib import Path as _P
 
-import sys
-import warnings
-from pathlib import Path
+_PKGDIR = _P(__file__).resolve().parent.parent / 'packages' / 'elo-verbalizer' / 'src' / 'verbalizer'
+_INIT = _PKGDIR / '__init__.py'
+if not _INIT.is_file():
+    raise ImportError("base `verbalizer` package not found at %s" % _PKGDIR)
 
-# The reference package source, resolvable from any R&D checkout layout.
-_PKG_SRC = Path(__file__).resolve().parent.parent / 'packages' / 'eloai-verbalizer' / 'src'
-if _PKG_SRC.is_dir() and str(_PKG_SRC) not in sys.path:
-    sys.path.insert(0, str(_PKG_SRC))
+# Load the real base package under the name `verbalizer`, replacing this shim.
+_spec = _ilu.spec_from_file_location(
+    'verbalizer', _INIT, submodule_search_locations=[str(_PKGDIR)])
+_mod = _ilu.module_from_spec(_spec)
+_sys.modules['verbalizer'] = _mod          # supersede this shim in the module table
+_spec.loader.exec_module(_mod)
 
-from eloai_verbalizer import *          # noqa: F401,F403  (re-export the contract surface)
-from eloai_verbalizer import __version__ as _pkg_version   # noqa: F401
-
-warnings.warn(
-    "import verbalizer (semantic_compression shim) is deprecated -- "
-    "the implementation lives in packages/eloai-verbalizer; "
-    "use `import eloai_verbalizer` instead.",
+_w.warn(
+    "import verbalizer via semantic_compression is deprecated -- the base "
+    "`verbalizer` package should be on sys.path directly (migration step 5).",
     DeprecationWarning, stacklevel=2)
