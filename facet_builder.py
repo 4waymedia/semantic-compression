@@ -42,7 +42,7 @@ from facet_reader import (
 )
 
 DEFAULT_DB        = Path('db/dictionary.lmdb')
-DEFAULT_OVERRIDES = Path('data/facet_overrides.tsv')
+DEFAULT_OVERRIDES = Path(__file__).resolve().parent / 'data' / 'facet_overrides.tsv'
 DEFAULT_STATS     = Path('db/dict_stats_facets.json')
 MAP_SIZE_BYTES    = 2 * 1024 ** 3   # headroom over the ~1GB general build
 
