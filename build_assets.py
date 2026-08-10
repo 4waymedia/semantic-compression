@@ -114,9 +114,14 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         dict(n=8, name="browser-neighbours", script=BROWSER_TOOLS / "export_neighbours.py",
              cwd=ROOT, dep="faiss", argv=["--build", str(pkg), "--index", str(pkg),
              "--out", str(browser_out)], out=[browser_out / "neighbours.bin"]),
-        dict(n=9, name="registry", script=None, cwd=SC, dep=None, argv=[],
-             out=[pkg / "manifest.json"],
-             note="artifact_identity.write_registry (run by build_from_spec)"),
+        # RE-DERIVE THE REGISTRY *AFTER* THE ASSETS EXIST. Previously script=None: the
+        # manifest was written once by build_from_spec at CORE-build time, before epa
+        # (stage 3) / meta_layer2 / vectors ran, so it froze a pre-epa view --
+        # artifacts.epa.present=false while epa.bin shipped (spec-publish-dictionary
+        # sec 1.2). Running write_registry here, and always (gate), makes the manifest
+        # reflect the finished package and tags deliverables build-vs-bundle (sec 1.3).
+        dict(n=9, name="registry", script=SC / "artifact_identity.py", cwd=SC, dep=None,
+             argv=[str(pkg)], out=[pkg / "manifest.json"], gate=True),
         dict(n=10, name="stamp", script=SC / "stamp_meta.py", cwd=SC, dep=None,
              argv=["--db", str(lmdb), "--release", stamp_release,
                    "--status", stamp_status], out=[]),

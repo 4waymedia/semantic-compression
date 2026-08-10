@@ -185,6 +185,33 @@ def registry_from_package(pkg_dir: str | Path) -> dict:
     return reg
 
 
+# Files that SHIP in a published bundle (spec-publish-dictionary.md sec 2). Everything
+# else a build produces is build-time input/intermediate and must NOT ship. The vocab
+# <name>.browser.json also ships (it defines the index n the channels are parallel to).
+BUNDLE_FILES = ("facets.bin", "epa.bin", "neighbours.bin", "facets.names.json")
+
+
+def classify_deliverables(pkg_dir: str | Path) -> dict:
+    """Partition a build dir's files into 'bundle' (shipped) vs 'build' (inputs /
+    intermediate). Makes spec-publish-dictionary sec 1.3 visible in the build dir: the
+    flat `deliverables` list implied 1.5 GB of denotative INPUTS were the deliverable,
+    when the shipped object is the browser bundle. Publishing is stage 12's job; this
+    just labels which files it would ever ship."""
+    pkg = Path(pkg_dir)
+    bundle, build = [], []
+    for p in sorted(pkg.iterdir()):
+        if p.is_dir():
+            build.append(p.name + "/")
+            continue
+        if p.name in BUNDLE_FILES or p.name.endswith(".browser.json"):
+            bundle.append(p.name)
+        else:
+            build.append(p.name)
+    return {"bundle": bundle, "build": build,
+            "note": "bundle = shippable (also exported to the browser bundle dir); "
+                    "build = build-time inputs/intermediate, never shipped (spec-publish-dictionary sec 2)"}
+
+
 def write_registry(pkg_dir: str | Path) -> dict:
     """Compose + merge the artifacts registry into the package manifest.json."""
     pkg = Path(pkg_dir)
@@ -193,6 +220,7 @@ def write_registry(pkg_dir: str | Path) -> dict:
     man = json.loads(man_path.read_text()) if man_path.exists() else {}
     man["artifacts"] = reg
     man["artifacts_problems"] = validate_registry(reg)
+    man["deliverables_by_kind"] = classify_deliverables(pkg)
     man_path.write_text(json.dumps(man, indent=2), encoding="utf-8")
     return reg
 

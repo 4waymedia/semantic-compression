@@ -242,8 +242,15 @@ def run_layer2(build_dir: Path, word_freq_file: Path | None = None,
     tmp.unlink()
 
     total = len(rows)
+    # Bind stats to the build (read the stamped fingerprint, never type it).
+    _dfp_env = lmdb.open(str(build_dir / "dictionary.lmdb"), readonly=True, lock=False, max_dbs=8)
+    _dfp_db = _dfp_env.open_db(b"meta", create=False)      # open handle BEFORE the txn
+    with _dfp_env.begin() as _t:
+        _dfp = _t.get(b"dictionary_fingerprint", db=_dfp_db)
+    _dfp_env.close()
     stats = {
         "rows": total,
+        "dictionary_fingerprint": _dfp.decode() if _dfp else None,
         "epa_filled": filled,
         "epa_unrated": unrated,
         "pct_filled": round(filled / total * 100, 1),

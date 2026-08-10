@@ -171,7 +171,14 @@ def match_epa(pkg_dir: str | Path, *, compose: bool = True,
     content = t["rated_word"] + t["unrated_word"] + t["rated_phrase_direct"] + t["composed"] + t["phrase_uncovered"]
     phrase_total = t["rated_phrase_direct"] + t["composed"] + t["phrase_uncovered"]
     covered = t["rated_word"] + t["rated_phrase_direct"] + t["composed"]
+    # Bind stats to the build (read the stamped fingerprint, never type it).
+    _dfp_env = lmdb.open(str(lm), readonly=True, lock=False, max_dbs=8)
+    _dfp_db = _dfp_env.open_db(b"meta", create=False)      # open handle BEFORE the txn
+    with _dfp_env.begin() as _t:
+        _dfp = _t.get(b"dictionary_fingerprint", db=_dfp_db)
+    _dfp_env.close()
     stats = {
+        "dictionary_fingerprint": _dfp.decode() if _dfp else None,
         "global_epa_words": len(norms), "global_epa_version": global_epa_version,
         "warriner_csv": WARRINER_CSV,
         **t,

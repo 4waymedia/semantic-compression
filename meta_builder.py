@@ -137,7 +137,17 @@ def build_meta(lmdb_path, out_db, overrides_path="data/facet_overrides.tsv",
     if vrows != len(rows):
         raise RuntimeError(f"meta.db verify failed: {vrows} rows on disk != {len(rows)} built")
 
-    stats = {"rows": len(rows), "meta_fingerprint": fingerprint, "out": str(out_db),
+    # Bind this stats file to the build: READ the dictionary_fingerprint the build
+    # already stamped (facet_builder), never type it. Closes the CHAIN BROKEN gap
+    # (meta_stats was UNBOUND) without reintroducing hand-typed identity.
+    _dfp_env = lmdb.open(str(lmdb_path), readonly=True, lock=False, max_dbs=8)
+    _dfp_db = _dfp_env.open_db(b"meta", create=False)      # open handle BEFORE the txn
+    with _dfp_env.begin() as _t:
+        _dfp = _t.get(b"dictionary_fingerprint", db=_dfp_db)
+    _dfp_env.close()
+    stats = {"rows": len(rows),
+             "dictionary_fingerprint": _dfp.decode() if _dfp else None,
+             "meta_fingerprint": fingerprint, "out": str(out_db),
              "bucket_dist": dist, "abstract_marked": abst, "causality_marked": causal,
              "meta_layer": 1}
     (out_db.parent / "meta_stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
