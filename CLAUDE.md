@@ -11,22 +11,39 @@
 
 ## How a dictionary is built (don't reinvent this)
 
-- **One YAML spec fully defines a build.** Author it in `builds/<name>.yaml`, then:
-  `python -m semantic_compression.build_from_spec semantic_compression/builds/<name>.yaml`
+- **One YAML spec fully defines a build**, and **one command builds it end to end**:
+  `python -m semantic_compression.build_dictionary semantic_compression/builds/<name>.yaml --device cuda`.
+  That chains the CORE build (`build_from_spec`: dictionary + LLM profile cuts + the
+  suite's facets/meta) and the ASSET CASCADE (`build_assets`: epa → meta_layer2 →
+  vectors → browser export → registry → stamp → verify) for whatever `build.suite`
+  declares. Both underlying stages stay independently runnable; `build_dictionary`
+  just runs A then B. **A build is not "done" until its `assets_pipeline.json` ledger
+  is green.** (`build_from_spec` alone is CORE-ONLY — it leaves epa/vectors/browser
+  unbuilt; don't judge a package by a core-only manifest.)
 - The resolver hashes every corpus source into a **corpus fingerprint**, builds the
   package, derives facets (if `with_facets`), runs `meta_builder` → `meta.db`, and
   writes a self-contained package under `db/builds/<name>/`:
-  `dictionary.lmdb` (forward/reverse/facets) · `meta.db` · `token-ids.csv.gz` ·
+  `dictionary.lmdb` (forward/reverse/facets[/epa]) · `meta.db` · `token-ids.csv.gz` ·
   `special-tokens.json` · `profile-cuts.json` · `byte-fallback.csv` · `manifest.json`.
 - **Engine = `dictionary_builder_v03.py`** (current, despite the name). Facets =
   `facet_builder.py`/`facets.py`; per-surface semantics = `meta_builder.py` (keyed by
-  **surface**; IDs are provisional). EPA columns are reserved (filled by the embedding
-  layer in `library_builder.py`, which needs spaCy/faiss — `build_from_spec` does NOT
-  call it).
+  **surface**; IDs are provisional). **EPA is filled by the cascade** — `epa_match.py`
+  (stage 3) joins `Memory/data/epa_substrate.lmdb` into the `epa` sub-DB; a core-only
+  build has no epa. The registry (stage 9) is **re-derived after the cascade**, so
+  `artifacts.epa.present` reflects the finished package, not a pre-epa snapshot.
 - **meta.db carries a `complement` column** (verb subcategorization; canonical table
   `verb_complements.py`) — the POS-resolution instruction set the extraction pipeline
   reads to disambiguate "to X" homographs (`seem`→to_infinitive vs `map`→to_noun).
   Deterministic, re-derived per build, in `meta_fingerprint`. Spec: `spec-meta-db.md`.
+- **Building ≠ publishing.** `publish_dictionary.py` (stage 12, a SEPARATE verb)
+  assembles ONLY the shippable bundle (`<build>.browser.json` + facets/epa/neighbours
+  `.bin` + `facets.names.json` + `BUNDLE.json`), runs gates G1–G8, and refuses on any
+  failure. Specs: `docs/compression/spec-publish-dictionary.md`, `DICTIONARY-BUILD-RUNBOOK.md`.
+- **Per-build knobs the v01a→v01c builds added:** `expand_tiers: true` widens the id
+  leading-char alphabet 20→63 (+3.15× tier capacity); browser assets land in a
+  **per-build** subfolder `dictionary/<build>/`, never loose in the root; a rebuild is
+  a **new build name** (or `--force`/overwrite the same one). Directions table:
+  `DICTIONARY-BUILD-RUNBOOK.md`.
 
 ## Sizes, tiers, profiles (commonly confused)
 

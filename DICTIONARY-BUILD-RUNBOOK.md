@@ -1,4 +1,15 @@
-# Dictionary Build Runbook — how `elo-browser-v01` was built, and how to rebuild with matching assets
+# Dictionary Build Runbook — build any dictionary from its spec, with a matched, publishable asset set
+
+> **Updated 2026-08-07.** This was written for `elo-browser-v01`; the three builds after it
+> (`v01a`/`v01b`/`v01c`) added the build directions now folded in below — one-command build,
+> per-build asset subfolders, oracle-naming-after-build, `expand_tiers`, and a separate publish
+> verb. Section 1 keeps the original v01 walk-through as the worked example; §4–§6 are current.
+>
+> **The one command (build core + full asset cascade):**
+> ```powershell
+> python -m semantic_compression.build_dictionary semantic_compression/builds/<name>.yaml --device cuda
+> ```
+> Then publish (§ Stage 12). `build_from_spec` alone is CORE-ONLY — see §5.
 
 > For the dictionary cowork. Reconstructed from the build's own `manifest.json`,
 > `builds/elo-browser-v01.yaml`, and `docs/compression/spec-asset-pipeline.md`
@@ -97,7 +108,7 @@ scripts below exist (`export_browser_assets.py` 283 lines, `export_neighbours.py
 | 6 | browser vocab | `export_browser_vocab.py --cut full` | `<build>.browser.json` (`{surface,id,n}`) |
 | 7 | browser epa/facets | `ELO-Browser/tools/export_browser_assets.py` | `epa.bin`, `facets.bin`, `assets.meta.json` |
 | 8 | browser neighbours | `ELO-Browser/tools/export_neighbours.py` | `neighbours.bin` (+ updates `assets.meta`) |
-| 9 | registry | `artifact_identity.write_registry` | `manifest.json` artifacts registry |
+| 9 | registry | `artifact_identity.py <pkg>` (always-run gate) | `manifest.json` artifacts registry — **re-derived AFTER stages 1–8**, so `epa.present` reflects reality (fixes the pre-epa freeze, spec-publish-dictionary §1.2) and `deliverables_by_kind` tags each file build-vs-bundle (§1.3) |
 | 10 | stamp | `stamp_meta.py --status staged` | meta stamp in lmdb |
 | 11 | verify | `verify_lossless.py`, `verify_facets.py`, `bench_dict_efficiency.py` | pass/fail gates |
 
@@ -110,6 +121,26 @@ python build_assets.py db/builds/elo-browser-v01 --dry-run    # plan; run nothin
 python build_assets.py db/builds/elo-browser-v01 --force      # rebuild everything
 python build_assets.py db/builds/elo-browser-v01 --from 5 --device cuda   # embed onward, GPU
 ```
+
+### Stage 12 — publish (a SEPARATE verb)
+
+Building derives the channels; **publishing** assembles only the shippable files into one
+verified bundle. It is deliberately not part of `build_assets.py` — spec-publish-dictionary.md
+sec 4. Run it after stage 11 passes:
+
+```powershell
+# [venv: yes — root]   from semantic_compression/
+python publish_dictionary.py db/builds/<build> --dry-run   # assemble + run gates G1–G8, write nothing
+python publish_dictionary.py db/builds/<build>             # publish -> dist/dictionary/<build>/BUNDLE.json
+python publish_dictionary.py --verify dist/dictionary/<build>   # re-check a published bundle
+```
+
+Gates (all must pass, results recorded in `BUNDLE.json.gates`): **G1** one vocabulary/one `n`,
+**G2** channel *and* build-LMDB fingerprints agree (catches a bundle exported from a since-replaced
+build), **G3** manifest present-flags match shipped channels, **G4** no build-time artifact in the
+bundle, **G5** round-trip, **G6** facets, **G7** coverage measured from the files, **G8** end-to-end
+spot read of one surface through all three channels. It **refuses on any failure** — a partial or
+inconsistent bundle is never published.
 
 ---
 
@@ -138,79 +169,68 @@ browser should read to verify it holds a matched set (this is the browser's
 
 ---
 
-## 4. Current state of `elo-browser-v01` (verified 2026-07-08)
+## 4. Build directions added by v01a → v01c (what changed after the original v01)
 
-| asset | state |
-|---|---|
-| `dictionary.lmdb` forward/reverse | ✅ built |
-| facets sub-DB, meta.db | ✅ L1 built; **L2 present** (epa_e, polarity, abstraction, frequency 98.3%) |
-| epa sub-DB | ✅ present |
-| `epa.bin`, `facets.bin`, `assets.meta.json` in browser dir | ✅ present (stage 7 output landed) |
-| `neighbours.bin` (stage 8, denotative) | ⚠️ **UNVERIFIED** — confirm on Windows |
-| `assets_pipeline.json` ledger | ❌ **absent** → `build_assets.py` was never run end-to-end as the orchestrator; stages were run piecemeal |
+The original v01 walk-through (§1) is still accurate for the CORE build, but four
+directions were added by the builds after it. **These are now the defaults; use them.**
 
-**Read this correctly:** the assets mostly exist, but they were produced by running
-individual stage scripts by hand, not by `build_assets`. So there is **no ledger
-proving they are all from the same dictionary signature.** The first refactor action
-is to run `build_assets db/builds/elo-browser-v01 --force` once, so the ledger exists
-and the matched-set guarantee is real rather than assumed.
+| build | direction it introduced | why |
+|---|---|---|
+| **v01a → v01b** | **Per-build asset subfolder.** Browser assets land in `dictionary/<build>/`, never loose in the `dictionary/` root; the exporter derives the path from `--build`, so no run can drop one build's `.bin` beside another's. | v01a assets were loaded while `vocab_version` reported v01 — a consumer restating an identity that disagreed with the artifact. |
+| **v01b** | **Oracles named after their build.** `poc/conformance/<build>/{epa,facets}.json` — one file per build, so exporting a new build can't overwrite an older build's test evidence. | The oracle used to be one flat file every export overwrote; it always described the newest build and could never fail against an older one. |
+| **v01c** | **`expand_tiers: true`** — widen the id leading-character alphabet 20→63 (all non-`-` Base64). +3.15× per-tier capacity (T1 1,280→4,032, T2 81,920→258,048). Opt-in per build so earlier builds stay byte-reproducible. | 69% of every tier's capacity was stranded by a restriction left over after tier detection moved to id LENGTH. |
+| **2026-08-07** | **One command + separate publish.** `build_dictionary.py` chains core+cascade (§5); `publish_dictionary.py` (stage 12) is the separate publish verb. Stage 9 registry is re-derived **after** the cascade so `artifacts.epa.present` is truthful. | `build_from_spec` printed `downstream(build_assets)` but didn't run it; the manifest froze a pre-epa view; build and publish were entangled. |
 
----
-
-## 5. The refactor — what "matching assets" should mean operationally
-
-Everything below is a wiring/contract change. The machinery exists.
-
-1. **One command, or an enforced hand-off.** `build_from_spec` prints
-   `downstream(build_assets)` but doesn't run it. Either have it invoke
-   `build_assets` at the end, or add a `build_dictionary.py <spec>` wrapper that runs
-   A then B. A dictionary is not "done" until its ledger is green — encode that.
-
-2. **The ledger is the source of truth for freshness.** After any core rebuild,
-   `build_assets` must be re-run; the fingerprint guard already rebuilds only what
-   went stale. Make a green ledger a release gate (stage 11 verify must pass).
-
-3. **The browser consumes the matched set, never a snapshot.** Ship stages 6–8
-   output (`<build>.browser.json`, `epa.bin`, `facets.bin`, `neighbours.bin`,
-   `assets.meta.json`) into `src-tauri/dictionary/` as ONE atomic drop. The browser
-   reads `assets.meta.json` to confirm they match; it must not read a hand-maintained
-   `epa.json` (that legacy 13,905-entry file is what caused stale affect — it should
-   be retired in favour of `epa.bin`, which covers 236,645 surfaces incl. phrases).
-
-4. **`stamp_meta --status staged` until a model is trained.** IDs are provisional
-   while staged; downstream binds to surfaces or re-derives. Only `frozen` (post
-   model-train) makes the fingerprint a contract. Don't let the browser treat a
-   staged build's ids as permanent.
-
-5. **`domain` / `register` are still empty** in meta L2 (reserved, never populated).
-   If the browser needs topic/domain semantics, that is a **new stage** (a tagger),
-   not a wiring fix. Scope it separately; don't assume L2 provides it.
+**Rebuild discipline.** A rebuild is a **new build name** — or `--force`/overwrite the same
+one. `build_from_spec` overwrites `db/builds/<name>/` by default; if the LMDB can't be
+unlinked (a process holds it, or a sandboxed FS), build to a fresh `<name>` instead. Every
+build is a version/tag; a *published* bundle is immutable (spec-publish-dictionary §4.2).
 
 ---
 
-## 6. Fresh-machine reproduce (start to shippable assets)
+## 5. `build_from_spec` is CORE-ONLY — `build_dictionary` is the whole thing
+
+`build_from_spec` builds the core (dictionary + LLM profile cuts + the suite's facets/meta)
+and **prints** `downstream(build_assets)=…` but does **not** run the cascade. Running only it
+leaves epa/meta_layer2/vectors/browser unbuilt — the exact trap that made an early manifest
+report `epa.present=false` while epa.bin shipped.
+
+`build_dictionary.py` is the single entrypoint that runs **A then B** from the spec's
+`suite:` — core, then `build_assets` (epa → meta_layer2 → vectors → browser export →
+registry → stamp → verify). The two stay independently runnable; this just chains them.
+**A dictionary is not "done" until its `assets_pipeline.json` ledger is green.**
+
+Still-true contract points (unchanged): `stamp_meta --status staged` keeps ids **provisional**
+until a model is trained (`frozen`/`locked`); downstream binds to **surfaces**, not raw ids.
+`domain`/`register` in meta L2 remain reserved (empty) — topic semantics would be a new tagger
+stage, not a wiring fix.
+
+---
+
+## 6. Fresh-machine reproduce (start to a published bundle)
 
 ```powershell
 # [venv: yes — root]   from R-D-concepts/
 .\.venv\Scripts\Activate.ps1
 python -c "import sys; print(sys.prefix)"          # must end \R-D-concepts\.venv (uv venv)
 
-# Stage A — core
-python -m semantic_compression.build_from_spec semantic_compression/builds/elo-browser-v01.yaml
+# Build core + full asset cascade in ONE command (embed stage wants the GPU)
+python -m semantic_compression.build_dictionary semantic_compression/builds/<name>.yaml --device cuda
 
-# Stage B — all derived assets, from scratch (embed stage wants a GPU)
+# Confirm the matched set + gates (every stage SKIP == fresh + consistent; ledger green)
 cd semantic_compression
-python build_assets.py db/builds/elo-browser-v01 --force --device cuda
+python build_assets.py db/builds/<name> --dry-run
+type db\builds\<name>\assets_pipeline.json
 
-# Confirm the matched set + gates
-python build_assets.py db/builds/elo-browser-v01 --dry-run     # every stage SKIP == fresh + consistent
-type db\builds\elo-browser-v01\assets_pipeline.json            # ledger green
+# Publish: assemble the bundle, run gates G1-G8, write BUNDLE.json (refuses on any failure)
+python publish_dictionary.py db/builds/<name> --dry-run     # preview gates, write nothing
+python publish_dictionary.py db/builds/<name>               # -> dist/dictionary/<name>/
 ```
 
 Inputs required (all present today): `data/word_frequencies.txt`,
 `data/web_terms_frequencies.txt`, `data/phrase_candidates.txt`, `Resources/books/`,
 `Memory/data/epa_substrate.lmdb`, `Memory/data/concreteness_substrate.lmdb`, and the
-mpnet model for stage 5.
+mpnet model for stage 5 (`--device cuda`).
 
 ---
 
