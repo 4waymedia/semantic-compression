@@ -111,6 +111,14 @@ scripts below exist (`export_browser_assets.py` 283 lines, `export_neighbours.py
 | 9 | registry | `artifact_identity.py <pkg>` (always-run gate) | `manifest.json` artifacts registry — **re-derived AFTER stages 1–8**, so `epa.present` reflects reality (fixes the pre-epa freeze, spec-publish-dictionary §1.2) and `deliverables_by_kind` tags each file build-vs-bundle (§1.3) |
 | 10 | stamp | `stamp_meta.py --status staged` | meta stamp in lmdb |
 | 11 | verify | `verify_lossless.py`, `verify_facets.py`, `bench_dict_efficiency.py` | pass/fail gates |
+| 13 | vfacets | `vfacet_builder.py` (deterministic half) | `b'vfacets'` sub-DB + `vfacets_stats.json` (`llm_enriched=false`; `vfacet_llm.py` enrichment stays OUT of the cascade) |
+
+> **Stage numbers are append-only ids, not positions.** Execution follows list order — stage 13
+> (vfacets) actually runs after meta-L2, before denotative. Numbered 13 so `--only`/`--from` and
+> every existing `assets_pipeline.json` ledger (keyed `"1"…"12"`) keep their meaning. vfacets is a
+> **declared suite asset** (`assets: vfacets: true`; in `preset: full`; requires `epa`).
+> Note its keying: `b'vfacets'` is **id-keyed**, unlike `epa.bin`/`facets.bin`/`neighbours.bin`
+> which are parallel arrays over the vocab index `n` — the names invite the assumption; don't.
 
 ### Run it
 

@@ -51,8 +51,8 @@ Owning scripts (v0.4 corpus front-end + builder hooks):
 | 4 | builder `select_strategy` (default `score_by_frequency`) + `--max-tier`; harness `docs/compression/spec-dict-testgroups.md` | chosen config |
 | 5 | `dictionary_builder_v03.py` (`--max-tier`, `--with-facets`) | `db/dictionary.lmdb` (forward/reverse), `db/dict_stats_v03.json` |
 | 6 | `library_builder.py` (embeddings/EPA/FAISS) | `db/faiss.index`, `db/canonical.db` |
-| 7 | `vfacet_builder.py` | `b'vfacets'` sub-DB: polarity, temporal, domain, agency, direction |
-| 7b | `vfacet_llm.py` | LLM fill for agency + direction UNKNOWNs → see [`docs/compression/GUIDE-vfacet-llm.md`](docs/compression/GUIDE-vfacet-llm.md) |
+| 7 | `vfacet_builder.py` — **now cascade stage 13** (`build_assets.py`), no longer hand-run (2026-08-10) | `b'vfacets'` sub-DB (deterministic half: polarity, temporal, domain) + `vfacets_stats.json` |
+| 7b | `vfacet_llm.py` — enrichment, deliberately NOT in the cascade (needs an LLM; a build stage must reproduce offline) | agency + direction fill; flips `llm_enriched=true` in `vfacets_stats.json` → see [`docs/compression/GUIDE-vfacet-llm.md`](docs/compression/GUIDE-vfacet-llm.md) |
 | 8 | `generate_essentials.py` + builder artifacts | `data/*-v1.csv(.gz)/.json` |
 | 9 | `llm-training/` (`build_tokenizer.py` → `train.py`) | tokenizer + checkpoints |
 

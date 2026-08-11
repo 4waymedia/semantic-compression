@@ -27,6 +27,11 @@ Three of the assets form the browser's runtime substrate, and share one key:
 > parallel arrays over the SAME vocab index `n` (from `<build>.browser.json`).
 > `facets` says what you may do with a word, `epa` how it feels, `neighbours` what
 > it means. They must be built from the same build, or `channel[n]` disagrees.
+>
+> **`b'vfacets'` is NOT one of them.** It is keyed by dictionary **id**, not by the
+> vocab index `n` — a different keying scheme in the same build. The names invite
+> the assumption that `facets` and `vfacets` align; they do not (see the runbook's
+> stage-13 note and PROCESS.md §7).
 
 > **Status:** `epa.bin` and `facets.bin` **ship today**. `neighbours.bin`'s emitter
 > (`export_neighbours.py`, stage 8) is now **written and self-tested** (CSR packing +

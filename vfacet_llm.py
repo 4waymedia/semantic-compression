@@ -1342,6 +1342,22 @@ def main() -> None:
     if args.stats:
         print_stats(db_path)
 
+    # Record that enrichment ran (2026-08-10 review §5.2): flip llm_enriched in the
+    # build's vfacets_stats.json, so a deterministic-only build is distinguishable
+    # from one this pass touched. Both show agency=UNKNOWN on unenriched ids; only
+    # the record says which pass produced the state.
+    if not args.dry_run and (args.llm or args.temporal):
+        _sp = Path(db_path).parent / 'vfacets_stats.json'
+        if _sp.exists():
+            try:
+                _s = json.loads(_sp.read_text(encoding='utf-8'))
+                _s['llm_enriched'] = True
+                _s['llm_enriched_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                _sp.write_text(json.dumps(_s, indent=2), encoding='utf-8')
+                print(f'  vfacets_stats.json: llm_enriched=true')
+            except Exception as e:
+                print(f'  [warn] could not update vfacets_stats.json: {e}')
+
 
 if __name__ == '__main__':
     main()

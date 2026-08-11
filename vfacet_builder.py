@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 import time
 from collections import Counter
@@ -284,6 +285,31 @@ def build_vfacets(
             stats[f'p_{polarity}'] += 1
 
     stats['elapsed_s'] = round(time.perf_counter() - t0, 3)
+
+    # Bind + record (2026-08-10 review, §5.1/§5.2): write vfacets_stats.json next to
+    # the LMDB so (a) the artifact registry can say whether a build HAS vfacets --
+    # the absence of this record is how the missing channel went unnoticed -- and
+    # (b) `llm_enriched: false` distinguishes "deterministic pass only" from "also
+    # got vfacet_llm.py". The fingerprint is READ from the build's meta, never typed.
+    if not dry_run:
+        try:
+            meta_db = env.open_db(b'meta', create=False)
+            with env.begin() as txn:
+                _fp = txn.get(b'dictionary_fingerprint', db=meta_db)
+        except Exception:
+            _fp = None
+        out = {
+            'dictionary_fingerprint': _fp.decode() if _fp else None,
+            'vfacets_format_version': 1,
+            'record_width': 2,
+            'key_scheme': 'base64_id',           # id-keyed, NOT vocab index n
+            'llm_enriched': False,               # flipped by vfacet_llm.py when it runs
+            'deterministic_fields': ['polarity', 'temporality', 'domain'],
+            'unknown_fields': ['agency', 'direction'],
+            **{k: v for k, v in stats.items()},
+        }
+        (Path(str(lmdb_path)).parent / 'vfacets_stats.json').write_text(
+            json.dumps(out, indent=2), encoding='utf-8')
     env.close()
     return dict(stats)
 

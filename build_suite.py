@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Dependency order (also the build order). Index in this list = stage order.
-ORDER = ["dictionary", "facets", "meta", "epa", "meta_layer2",
+ORDER = ["dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
          "vectors", "browser", "templates"]
 
 # Declaration deps: each asset requires these OTHER assets to also be enabled.
@@ -49,6 +49,11 @@ DEPS: dict[str, list[str]] = {
     "facets":      ["dictionary"],
     "meta":        ["dictionary"],
     "epa":         ["dictionary"],
+    # vfacets: the verbalizer facet channel (b'vfacets'). Polarity derives from
+    # EPA.E, so it REQUIRES epa -- a suite without epa would write 437,995 rows of
+    # NEUTRAL/UNKNOWN that look like data. First-class (2026-08-10) so a build
+    # DECLARES it rather than inheriting it silently from `epa: true`.
+    "vfacets":     ["epa"],
     "meta_layer2": ["meta", "epa"],
     "vectors":     ["meta"],
     "browser":     ["facets", "epa"],   # neighbours sub-channel also wants `vectors`
@@ -58,14 +63,14 @@ DEPS: dict[str, list[str]] = {
 # Which `artifact_identity` KIND records the asset (None = no identity kind yet).
 IDENTITY_KIND: dict[str, str | None] = {
     "dictionary": "dictionary", "facets": "facets", "meta": "meta",
-    "epa": "epa", "meta_layer2": "meta", "vectors": None,
+    "epa": "epa", "vfacets": "vfacets", "meta_layer2": "meta", "vectors": None,
     "browser": None, "templates": "templates",
 }
 
 PRESETS: dict[str, set[str]] = {
     "minimal":  {"dictionary"},
     "standard": {"dictionary", "facets", "meta"},
-    "full":     {"dictionary", "facets", "meta", "epa", "meta_layer2",
+    "full":     {"dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
                  "vectors", "browser"},
 }
 

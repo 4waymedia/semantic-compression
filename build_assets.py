@@ -49,7 +49,14 @@ PY = sys.executable
 # neighbours (correctly "off"), instead of failing for a missing index.
 STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                6: "browser", 7: "browser", 8: "vectors",
-               9: None, 10: None, 11: None, 12: None}
+               9: None, 10: None, 11: None, 12: None,
+               # 13 = vfacets, now a FIRST-CLASS suite asset (2026-08-10 review):
+               # gating on "epa" made every epa-declaring build inherit it silently
+               # with no way to decline. It gates on its own declaration; the
+               # epa REQUIREMENT lives in build_suite.DEPS["vfacets"] = ["epa"],
+               # which fails fast at resolve time instead of writing 437,995 rows
+               # of NEUTRAL/UNKNOWN that look like data.
+               13: "vfacets"}
 
 
 def _sig(path: Path) -> str:
@@ -96,6 +103,35 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
              argv=[str(pkg)], out=[pkg / "epa_stats.json"]),
         dict(n=4, name="meta-L2", script=SC / "meta_layer2.py", cwd=SC, dep="lmdb",
              argv=[str(pkg)], out=[pkg / "meta_layer2_stats.json"]),
+        # VFACETS -- the verbalizer's facet channel (b'vfacets' sub-db).
+        #
+        # WHY IT IS HERE NOW: it was step 7 of PROCESS.md and never a stage, so
+        # no build produced it. Measured 2026-08-10: db/dictionary.lmdb carried
+        # 437,995 vfacet records and db/builds/elo-browser-v01c/ carried none --
+        # from the SAME build (identical fingerprint 9a77e623…, identical ids on
+        # 20,000/20,000 probed surfaces). Someone ran the pass by hand against
+        # one path. The verbalizer's lookup_vfacet worked only because paths.py
+        # still defaults to that legacy path, and 06's facet_recall ranks on it.
+        #
+        # THIS STAGE IS THE DETERMINISTIC HALF ONLY -- polarity (EPA.E
+        # threshold), temporality (suffix heuristics), domain (word lists). No
+        # model, no network, seconds to run. `agency` and `direction` stay
+        # UNKNOWN and are patched by vfacet_llm.py as a separate ENRICHMENT,
+        # deliberately not in the cascade: a build stage that needs an LLM is a
+        # build that cannot be reproduced offline. 3 of 5 fields for free beats
+        # 0 of 5 waiting on the other 2.
+        #
+        # NUMBERING: n=13 is an append-only id, NOT its position -- execution
+        # follows LIST order (the loop iterates _stages()), and this must run
+        # after epa/meta-L2. Numbered high so every existing `--only`/`--from`
+        # invocation and the runbook's stage table keep their meaning.
+        # Renumbering to 5 and shifting 5-12 up is the tidy follow-up; it is a
+        # separate change because it rewrites a documented CLI contract.
+        dict(n=13, name="vfacets", script=SC / "vfacet_builder.py", cwd=SC,
+             dep="lmdb",
+             argv=["--db", str(lmdb),
+                   "--epa-db", str(ROOT / "Memory" / "data" / "epa_substrate.lmdb")],
+             out=[pkg / "vfacets_stats.json"]),
         dict(n=5, name="denotative", script=SC / "denotative_index.py", cwd=SC,
              dep="sentence_transformers", multi=[
                  ["embed", "--meta", str(pkg / "meta.db"), "--out", str(pkg)] + dev + limit,

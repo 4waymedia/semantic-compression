@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 STATUSES    = ("staged", "frozen", "locked")
-KINDS       = ("dictionary", "facets", "epa", "templates", "meta")
+KINDS       = ("dictionary", "facets", "epa", "vfacets", "templates", "meta")
 KEY_SCHEMES = ("base64_id", "surface", "lang_surface", "none")
 
 
@@ -59,7 +59,7 @@ def validate_registry(reg: dict) -> list[str]:
     """Return a list of problems ([] == valid)."""
     problems = []
     dfp = (reg.get("dictionary") or {}).get("fingerprint")
-    for kind in ("facets", "epa", "templates", "meta"):
+    for kind in ("facets", "epa", "vfacets", "templates", "meta"):
         a = reg.get(kind)
         if a and a.get("present"):
             bound = a.get("bound_refs", {}).get("dictionary")
@@ -179,6 +179,22 @@ def registry_from_package(pkg_dir: str | Path) -> dict:
         "meta", version=1, present=meta_present, status=status,
         fingerprint=meta_fp, key_scheme="surface", bound_refs={"dictionary": dfp},
         notes=None if meta_present else "meta DB not built (spec-meta-db.md)")
+
+    # vfacets: present iff the LMDB carries b'vfacets'. Stats (written by
+    # vfacet_builder since 2026-08-10) additionally record llm_enriched, so a
+    # deterministic-only build is distinguishable from one vfacet_llm.py touched --
+    # the §5.2 gap: both show agency=UNKNOWN, only the record says which.
+    vf_present = _has_subdb(lmdb_path, b"vfacets")
+    vf_stats_p = pkg / "vfacets_stats.json"
+    vf_stats = json.loads(vf_stats_p.read_text()) if vf_stats_p.exists() else {}
+    reg["vfacets"] = make_identity(
+        "vfacets", version=vf_stats.get("vfacets_format_version", 1),
+        present=vf_present, status=status,
+        fingerprint=None,                       # re-derived per build; id-keyed, no own fp yet
+        key_scheme="base64_id" if vf_present else "none",
+        bound_refs={"dictionary": dfp} if vf_present else None,
+        notes=(f"llm_enriched={vf_stats.get('llm_enriched', 'unknown')}"
+               if vf_present else "vfacet pass not run (vfacet_builder.py, stage 13)"))
 
     reg["templates"] = make_identity("templates", version=1, present=False,
                                      status=status, notes="System 2 (mneme), not matched")

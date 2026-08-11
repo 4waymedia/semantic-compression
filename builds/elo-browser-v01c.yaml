@@ -84,6 +84,7 @@ build:                                # === IDENTICAL TO v01b EXCEPT expand_tier
     facets: true
     meta: true
     epa: true
+    vfacets: true      # verbalizer facet channel (stage 13, deterministic half) — declared 2026-08-10
     meta_layer2: true
     vectors: true
     browser: true
