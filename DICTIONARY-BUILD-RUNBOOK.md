@@ -113,6 +113,14 @@ scripts below exist (`export_browser_assets.py` 283 lines, `export_neighbours.py
 | 11 | verify | `verify_lossless.py`, `verify_facets.py`, `bench_dict_efficiency.py` | pass/fail gates |
 | 13 | vfacets | `vfacet_builder.py` (deterministic half) | `b'vfacets'` sub-DB + `vfacets_stats.json` (`llm_enriched=false`; `vfacet_llm.py` enrichment stays OUT of the cascade) |
 
+> **The manifest updates itself — don't run builders by hand.** Stage 9 (registry) is
+> exempt from `--only`/`--from` filtering: every `build_assets` invocation re-derives
+> `manifest.json`'s `artifacts` from the artifact, so the config can't go stale behind a
+> partial run. If you DO hand-run an asset script, `python artifact_identity.py db/builds/<name>`
+> afterward is mandatory. Consumers should not read the manifest at runtime anyway — use
+> `compression_dictionary.dictionary_info(lmdb_path)` (one call: identity + available assets
+> + sidecar bindings, read from the artifact itself).
+>
 > **Stage numbers are append-only ids, not positions.** Execution follows list order — stage 13
 > (vfacets) actually runs after meta-L2, before denotative. Numbered 13 so `--only`/`--from` and
 > every existing `assets_pipeline.json` ledger (keyed `"1"…"12"`) keep their meaning. vfacets is a

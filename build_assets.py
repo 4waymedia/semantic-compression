@@ -333,9 +333,14 @@ def main() -> None:
     print(f"{'#':>2}  {'stage':<20}{'state':<26}action")
     print("-" * 70)
     for st in _stages(pkg, a.device, browser_out, stamp_release, stamp_status):
-        if only is not None and st["n"] not in only:
+        # STAGE 9 (registry) IS EXEMPT FROM FILTERING. It is how the manifest learns
+        # what a run changed; skipping it under --only/--from is how the manifest
+        # lied twice (epa.present=false while epa.bin shipped; vfacets invisible).
+        # It is cheap, idempotent, and reads only the artifact -- always re-derive.
+        _is_registry = (st["n"] == 9)
+        if only is not None and st["n"] not in only and not _is_registry:
             continue
-        if a.frm is not None and st["n"] < a.frm:
+        if a.frm is not None and st["n"] < a.frm and not _is_registry:
             continue
         asset = STAGE_ASSET.get(st["n"])
         if asset is not None and asset not in enabled:
