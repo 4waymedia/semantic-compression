@@ -82,14 +82,63 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
     lmdb = pkg / "dictionary.lmdb"
     vocab = pkg / f"{pkg.name}.browser.json"
     dev = ["--device", device] if device else []
-    # Embed scope = the browser vocab cut (profile-cuts.json 'full' content_size),
-    # so the 768-d index covers exactly the vocab n-range. profile-cuts.json is
-    # emitted by the CORE build (before stage 5), so no ordering inversion.
+
+    # ---- WHICH PROFILE THE BROWSER GETS -----------------------------------
+    # `reference` = the WHOLE dictionary. Changed from `full` 2026-08-11 (Paul).
+    #
+    # profile-cuts.json holds five cuts. FOUR OF THEM ARE LLM VOCABULARY SIZES:
+    #
+    #     tiny 32,768 · compact 65,536 · standard 131,072 · full 262,144
+    #
+    # -- powers of two, minus 256 byte-fallback and 16 special tokens. That
+    # arithmetic serves exactly one consumer: a model's embedding table, from
+    # the v0.3.0 "5 standardized LLM vocab profiles" work (docs/v1/profiles.md).
+    # `reference` is the only cut that is not an LLM size; it is all content.
+    #
+    # THE BROWSER IS NOT AN LLM. It has no embedding table and no reason to sit
+    # on a power of two -- it borrowed `--cut full` because the mechanism was
+    # here, and the rationale did not travel with it. The name is the trap:
+    # `full` means "full LLM profile", and reads as "full dictionary".
+    #
+    # MEASURED COST OF THE OLD DEFAULT (elo-browser-v01c, 2026-08-11):
+    #     dictionary       437,995 entries
+    #     browser vocab    261,872 entries
+    #     unaddressable    176,123  -- 40% of the dictionary
+    #
+    # And the cut is BY FREQUENCY RANK, which is correct for an LLM and exactly
+    # backwards here: a fact is specific precisely when its terms are rare.
+    # `9070`, `7600`, `nvme` are all in the dictionary and were all past the cut,
+    # so the browser had no id to hold "RX 9070 XT" with. Summaries could not
+    # state the article's facts because the tokens were unaddressable -- not
+    # because selection declined to choose them.
+    #
+    # Note the enrichment ordering this also fixes: facets/epa/vfacets/neighbours
+    # are built over ALL 437,995 entries in LMDB and were then truncated to
+    # 261,872 at export. We paid for the tail and shipped 60% of it.
+    #
+    # SAFETY, checked before the change: no 18-bit assumption exists in the Rust
+    # port. neighbours.bin uses u32 counts and u32 neighbour indices; facets.bin
+    # and epa.bin are parallel arrays sized from the vocab. 438k fits in u32 with
+    # room. Cost is roughly +67% on the .bin channel set (~11MB -> ~18MB).
+    # "full" is the browser's cut: every shipped channel (epa/facets/neighbours,
+    # 261,872 entries) is parallel to the FULL vocab's n-range, and
+    # export_browser_vocab supports exactly (tiny, compact, standard, full).
+    # 2026-08-10: this was briefly "reference", which that exporter does not
+    # accept (stage 6 exited 2). If a reference-cut browser vocab is ever wanted,
+    # add it to export_browser_vocab.CUTS and re-export EVERY channel together --
+    # a cut change changes n, and channels from different cuts must never mix.
+    BROWSER_CUT = "full"
+
+    # Embed scope = the browser vocab cut, so the 768-d index covers exactly the
+    # vocab n-range. profile-cuts.json is emitted by the CORE build (before
+    # stage 5), so no ordering inversion. MUST use the same cut as stage 6 --
+    # a denotative index over a different n-range than the vocab is silently
+    # misaligned, which is the "one vocabulary, one n" rule (spec-asset-pipeline §1).
     limit = []
     pc = pkg / "profile-cuts.json"
     if pc.exists():
         try:
-            cs = json.loads(pc.read_text(encoding="utf-8"))["full"]["content_size"]
+            cs = json.loads(pc.read_text(encoding="utf-8"))[BROWSER_CUT]["content_size"]
             limit = ["--limit", str(int(cs))]
         except Exception:
             limit = []
@@ -138,7 +187,7 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
                  ["finalize", "--meta", str(pkg / "meta.db"), "--out", str(pkg)]],
              out=[pkg / "dictionary.denotative.json"]),
         dict(n=6, name="browser-vocab", script=SC / "export_browser_vocab.py", cwd=SC,
-             dep=None, argv=["--build", str(pkg), "--cut", "full"], out=[vocab]),
+             dep=None, argv=["--build", str(pkg), "--cut", BROWSER_CUT], out=[vocab]),
         # --out-root, not --out: the exporter appends the build name itself, so the
         # versioned folder is guaranteed rather than assembled by each caller.
         dict(n=7, name="browser-epa+facets", script=BROWSER_TOOLS / "export_browser_assets.py",
@@ -242,7 +291,36 @@ def _stale(stage, pkg, ledger, dict_sig) -> tuple[bool, str]:
     scr = stage["script"]
     if scr and Path(scr).exists() and Path(scr).stat().st_mtime > rec.get("script_mtime", 0):
         return True, "script updated"
+    # ARGV IS PART OF THE INPUT. A stage whose ARGUMENTS changed is stale even
+    # when its inputs and script have not.
+    #
+    # Added 2026-08-11, because this is the mechanism that hid a 40% loss for
+    # months. Stage 6 ran `--cut full` (an LLM vocab profile, 2^18) instead of
+    # `--cut reference` (the whole dictionary), so 176,123 of 437,995 entries
+    # were unaddressable by the browser. Changing the flag did NOT mark the
+    # stage stale -- the dictionary was unchanged and the script untouched, so
+    # the cascade reported "up to date" and rebuilt nothing. A config change
+    # that the build cannot see is a config change that silently does not apply.
+    recorded = rec.get("argv_sig")
+    if recorded is None:
+        # Pre-2026-08-11 ledgers did not record arguments, so we cannot say what
+        # this stage was run with. UNKNOWN PROVENANCE IS STALE -- the same rule
+        # applied to every absent channel today: refuse to claim currency you
+        # cannot establish. Costs one rebuild per build, once.
+        return True, "arguments unknown (pre-argv ledger)"
+    if recorded != _argv_sig(stage):
+        return True, "arguments changed"
     return False, "up to date"
+
+
+def _argv_sig(stage) -> str:
+    """Signature of a stage's ARGUMENTS. Absolute paths are stripped so moving
+    the checkout does not read as a config change -- only the flags matter."""
+    parts = [str(a) for a in stage.get("argv") or []]
+    for m in stage.get("multi") or []:
+        parts += [str(a) for a in m]
+    norm = [p for p in parts if not Path(p).is_absolute()]
+    return hashlib.sha256("\x1f".join(norm).encode()).hexdigest()[:16]
 
 
 def _run(stage, ledger, dict_sig, dry) -> str:
@@ -265,6 +343,10 @@ def _run(stage, ledger, dict_sig, dry) -> str:
     ledger[str(stage["n"])] = {"name": stage["name"], "dict_sig": dict_sig,
                                "ran_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                "script_mtime": Path(scr).stat().st_mtime,
+                               # what the stage was RUN WITH -- see _stale()
+                               "argv_sig": _argv_sig(stage),
+                               "argv": [str(a) for a in (stage.get("argv") or [])
+                                        if not Path(str(a)).is_absolute()],
                                "outputs": [str(o) for o in stage["out"]]}
     return "OK"
 
@@ -325,7 +407,13 @@ def main() -> None:
 
     # Check the GPU before spending any time on stages 1-4.
     if not a.dry_run:
-        _preflight_device(a.device, a.allow_cpu)
+        # Preflight the GPU only when the embed stage (5) can actually run in this
+        # invocation -- `--only 2,3,4` on a CPU box must not fail a CUDA check for
+        # a stage it will never reach.
+        _embed_selected = ((only is None or 5 in only)
+                           and (a.frm is None or a.frm <= 5))
+        if _embed_selected:
+            _preflight_device(a.device, a.allow_cpu)
 
     print(f"assets for {pkg.name}   dict_sig={dict_sig}   suite={sorted(enabled)}"
           + ("   [DRY RUN]" if a.dry_run else ""))
