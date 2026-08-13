@@ -70,6 +70,7 @@ elo-dictionary/<build>/
   <build>.browser.json     vocab: {surface, id, n}      ~12.7 MB
   facets.bin               role      — parallel over n   ~1.0 MB
   epa.bin                  affect    — parallel over n   ~3.1 MB
+  vfacets.bin              reasoning — parallel over n   ~0.5 MB  (optional)
   neighbours.bin           meaning   — CSR over n        ~7.3 MB
   facets.names.json        code -> name legend             <1 KB
   BUNDLE.json              the manifest of record          <4 KB
@@ -101,6 +102,7 @@ One file, one identity, and the **only** thing a consumer must read to know what
   "channels": {
     "facets":     { "file": "facets.bin",     "sha256": "…", "entries": 261872, "coverage": 1.000 },
     "epa":        { "file": "epa.bin",        "sha256": "…", "entries": 208556, "coverage": 0.796 },
+    "vfacets":    { "file": "vfacets.bin",    "sha256": "…", "entries": 261872, "coverage": 1.000, "optional": true },
     "neighbours": { "file": "neighbours.bin", "sha256": "…", "entries":  84854, "coverage": 0.324,
                     "format": "CSR: 80B header + (count+1) u32 offsets + records(u32 n,u8 sim)",
                     "k": 16, "min_sim": 0.35 }
@@ -115,6 +117,8 @@ One file, one identity, and the **only** thing a consumer must read to know what
 **32.4%** of vocab entries (84,854 / 261,872 at `min_sim ≥ 0.35`). A consumer that treats
 denotative lookup as universally available is wrong two times in three by entry count. Publish it
 as a number so nobody has to discover it.
+
+**`vfacets` is an OPTIONAL channel.** It is present only when the source dictionary carries the `b'vfacets'` sub-DB; a consumer must treat its absence as valid. Its record, both homes, and the `vfacets_bin_sha256_16` pin are defined in [`spec-vfacets-db.md`](spec-vfacets-db.md).
 
 ---
 

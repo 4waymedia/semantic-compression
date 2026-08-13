@@ -28,10 +28,16 @@ Three of the assets form the browser's runtime substrate, and share one key:
 > `facets` says what you may do with a word, `epa` how it feels, `neighbours` what
 > it means. They must be built from the same build, or `channel[n]` disagrees.
 >
-> **`b'vfacets'` is NOT one of them.** It is keyed by dictionary **id**, not by the
-> vocab index `n` — a different keying scheme in the same build. The names invite
-> the assumption that `facets` and `vfacets` align; they do not (see the runbook's
-> stage-13 note and PROCESS.md §7).
+> **`b'vfacets'` (the sub-DB) is NOT one of them.** It is keyed by dictionary **id**,
+> not by the vocab index `n` — a different keying scheme in the same build. The names
+> invite the assumption that `facets` and `vfacets` align; they do not (see the
+> runbook's stage-13 note and PROCESS.md §7).
+>
+> **`vfacets.bin` (the exported channel, 2026-08-10) IS one of them** — stage 7
+> re-projects the id-keyed sub-DB onto the vocab index `n` (2-byte `<BB` records,
+> `0xFFFF` = absent), so the shipped file is a parallel array like the other three.
+> Agency/direction values come from the persistent enrichment substrate
+> (`vfacet_substrate.lmdb`) joined at stage 13; `vfacet_llm.py` writes through to it.
 
 > **Status:** `epa.bin` and `facets.bin` **ship today**. `neighbours.bin`'s emitter
 > (`export_neighbours.py`, stage 8) is now **written and self-tested** (CSR packing +
@@ -91,7 +97,7 @@ pinned embedding model (denotative, neighbours).
 | 4 | meta L2 | `meta_layer2.py <pkg>` | meta.db, epa sub-DB, concreteness norms | `meta.db` (layer 2) |
 | 5 | denotative | `denotative_index.py embed … && finalize …` | meta.db, mpnet | `dictionary.denotative.{vecs.f32,index,surfaces.json,json}` |
 | 6 | browser vocab | `export_browser_vocab.py --build <pkg> --cut full` | token-ids.csv.gz, profile-cuts.json | `<build>.browser.json` (`surface,id,n`) |
-| 7 | browser epa/facets | `../ELO-Browser/tools/export_browser_assets.py --build <pkg>` | vocab, epa, facets | `epa.bin`, `facets.bin`, `assets.meta.json` |
+| 7 | browser epa/facets/vfacets | `../ELO-Browser/tools/export_browser_assets.py --build <pkg>` | vocab, epa, facets, vfacets | `epa.bin`, `facets.bin`, `vfacets.bin` (optional), `assets.meta.json` |
 | 8 | browser neighbours | `../ELO-Browser/tools/export_neighbours.py --build <pkg>` | vocab, denotative index | `neighbours.bin` (+ `assets.meta` update) |
 | 9 | registry | `artifact_identity.write_registry(<pkg>)` | all above | `manifest.json` artifacts registry |
 | 10 | stamp | `stamp_meta.py --db <pkg>/dictionary.lmdb --release <rel> --status staged` | lmdb | meta stamp |
@@ -104,6 +110,8 @@ records. Magic is `ELOEPA\x01\x00` / `ELOFCT\x01\x00`. `epa.bin` record = `EPA_R
 `<fff>` (12 B: E, P, A float32 LE); `facets.bin` record = `FCT_REC` `<BHB>` (4 B:
 bucket u8, cue_mask u16, flags u8). Both are `include_bytes!`-mapped by the Rust
 side (`epa.rs`, `facets.rs`) — zero parse.
+
+`vfacets.bin` wire format (same 80-byte header; **optional** channel, emitted only when the build carries the `b'vfacets'` sub-DB): magic `ELOVFT\x01\x00`, record `VFT_REC` `<BB>` (2 B: agency/direction/temporal in byte 0, domain/polarity in byte 1). Full record layout + enums: [`spec-vfacets-db.md`](spec-vfacets-db.md).
 
 `neighbours.bin` wire format (same 80-byte header as above; matches
 `export_browser_assets` exactly): 80-byte

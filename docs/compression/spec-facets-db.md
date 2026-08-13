@@ -10,6 +10,7 @@
 > 2d2feb69…, all gates (T1/T3/T4/T5/T6/T9/T10/T12) pass.
 > Originally drafted pre-code; incorporates external review (ChatGPT + Grok rounds 1–2).
 > Predecessor context: v0.3.0 (dictionary frozen) + v0.4 (compression / LLM tracks).
+> Companion reasoning-facet layer (`b'vfacets'` sub-DB + `vfacets.bin`): [`spec-vfacets-db.md`](spec-vfacets-db.md).
 >
 > **What this is:** a *dictionary annotation layer* — three new id-keyed
 > records (`facets`, `meta`) beside the existing `forward`/`reverse`. It does
