@@ -230,7 +230,26 @@ def build_vfacets(
     epa_lookup: dict[str, tuple] = {}
     if epa_lmdb_path.exists():
         print(f'  Loading EPA from {epa_lmdb_path}...')
+    # Sniffed dual-source load (2026-08-27): id-keyed dictionary channel is
+    # PRIMARY when the target carries one; the external surface substrate blends
+    # underneath. If --epa-db points at a surface-keyed store, behaviour is
+    # unchanged from before.
+    epa_id_lookup: dict = {}
+    if not _epa_keys_are_surfaces(epa_lmdb_path):
+        epa_id_lookup = _load_epa_lookup_by_id(epa_lmdb_path)
+        epa_lookup = {}
+        print(f'  EPA source: ID-KEYED ({len(epa_id_lookup):,} entries) from {epa_lmdb_path}')
+    else:
         epa_lookup = _load_epa_lookup(epa_lmdb_path)
+        print(f'  EPA source: surface-keyed en| substrate ({len(epa_lookup):,} entries)')
+    # Blend: when reading the dictionary itself, ALSO load the external substrate
+    # as surface fallback if it exists beside the repo (best of both).
+    if epa_id_lookup and DEFAULT_EPA_DB.exists() and Path(str(DEFAULT_EPA_DB)) != epa_lmdb_path:
+        try:
+            epa_lookup = _load_epa_lookup(DEFAULT_EPA_DB)
+            print(f'  EPA blend fallback: {len(epa_lookup):,} surface-keyed entries')
+        except Exception:
+            epa_lookup = {}
         print(f'  EPA entries loaded: {len(epa_lookup):,}')
     else:
         print(f'  WARNING: EPA lmdb not found at {epa_lmdb_path} — polarity will be NEUTRAL')
@@ -251,11 +270,28 @@ def build_vfacets(
     stats['total_entries'] = len(surfaces)
     t0 = time.perf_counter()
 
+    # ENRICHMENT SUBSTRATE JOIN (2026-08-10): agency/direction come from the
+    # persistent surface-keyed cache vfacet_llm writes through to
+    # (vfacet_substrate.lmdb). Deterministic offline given the substrate file;
+    # unknown surface -> UNKNOWN, same as before the substrate existed. This is
+    # what lets enrichment SURVIVE rebuilds -- only new surfaces owe the LLM.
+    from vfacet_substrate import load_all as _load_substrate, \
+        substrate_version as _substrate_version, DEFAULT_SUBSTRATE as _SUB_DEFAULT
+    _sub = _load_substrate(_SUB_DEFAULT)
+    _sub_version = _substrate_version(_SUB_DEFAULT)
+    if _sub:
+        print(f'  Enrichment substrate: {len(_sub):,} surfaces (version {_sub_version})')
+    else:
+        print('  Enrichment substrate: empty/absent -- agency/direction stay UNKNOWN')
+
     if not dry_run:
         with env.begin(write=True) as txn:
             db_vf = env.open_db(VFACETS_DB, txn=txn, create=True)
             for id_bytes, surface in surfaces:
-                epa = epa_lookup.get(surface)
+                # id-keyed primary (the dictionary's own channel), surface-
+                # keyed external substrate as blend fallback -- free, and
+                # covers any term the channel lacks.
+                epa = epa_id_lookup.get(id_bytes) or epa_lookup.get(surface)
                 if epa:
                     polarity = _polarity_from_e(epa[0])
                     stats['epa_hit'] += 1
@@ -265,8 +301,13 @@ def build_vfacets(
 
                 temporal  = _classify_temporal(surface)
                 domain    = _classify_domain(surface)
-                agency    = AGENCY['UNKNOWN']
-                direction = DIRECTION['UNKNOWN']
+                _enr = _sub.get(surface)
+                if _enr is not None:
+                    agency, direction = _enr
+                    stats['enriched_from_substrate'] += 1
+                else:
+                    agency    = AGENCY['UNKNOWN']
+                    direction = DIRECTION['UNKNOWN']
 
                 txn.put(id_bytes, pack_vfacet(agency, direction, temporal, domain, polarity),
                         db=db_vf)
@@ -275,10 +316,10 @@ def build_vfacets(
                 stats[f'd_{domain}']   += 1
                 stats[f'p_{polarity}'] += 1
     else:
-        for _, surface in surfaces:
+        for id_bytes, surface in surfaces:
             temporal = _classify_temporal(surface)
             domain   = _classify_domain(surface)
-            epa      = epa_lookup.get(surface)
+            epa      = epa_id_lookup.get(id_bytes) or epa_lookup.get(surface)
             polarity = _polarity_from_e(epa[0]) if epa else POLARITY['NEUTRAL']
             stats[f't_{temporal}'] += 1
             stats[f'd_{domain}']   += 1
@@ -298,20 +339,86 @@ def build_vfacets(
                 _fp = txn.get(b'dictionary_fingerprint', db=meta_db)
         except Exception:
             _fp = None
+        # PROVENANCE (2026-08-27 review): the substrate's agency/direction values
+        # originate from vfacet_llm's passes -- carrying them forward via the
+        # substrate join makes them MODEL-DERIVED DATA in this artifact, even
+        # though no LLM ran in this build. `llm_enriched` therefore answers
+        # "does any field trace to an LLM?" (the question a reader actually
+        # asks), not "did vfacet_llm run in this build?" (which `llm_pass_ran`
+        # now records). `unknown_fields` was wrong once the join landed: those
+        # fields are partially populated, so report them as substrate_fields
+        # with the count instead of declaring them absent.
+        _n_sub = int(stats.get('enriched_from_substrate', 0))
         out = {
             'dictionary_fingerprint': _fp.decode() if _fp else None,
             'vfacets_format_version': 1,
             'record_width': 2,
             'key_scheme': 'base64_id',           # id-keyed, NOT vocab index n
-            'llm_enriched': False,               # flipped by vfacet_llm.py when it runs
+            'llm_enriched': _n_sub > 0,          # any field traces to an LLM
+            'llm_pass_ran': False,               # flipped by vfacet_llm.py when it runs
             'deterministic_fields': ['polarity', 'temporality', 'domain'],
-            'unknown_fields': ['agency', 'direction'],
+            # substrate-joined fields: LLM-derived values carried forward from
+            # the persistent cache (survives rebuilds; vfacet_llm writes
+            # through to it). Entries the substrate lacks stay UNKNOWN.
+            'substrate_fields': ['agency', 'direction'],
+            'enriched_from_substrate': _n_sub,
+            'substrate_version': _sub_version,
             **{k: v for k, v in stats.items()},
         }
         (Path(str(lmdb_path)).parent / 'vfacets_stats.json').write_text(
             json.dumps(out, indent=2), encoding='utf-8')
     env.close()
     return dict(stats)
+
+
+# ---------------------------------------------------------------------------
+# ID-KEYED EPA (2026-08-27). The dictionary grew its OWN `epa` sub-DB (236,645
+# entries under v04) keyed by id_bytes -- the convention every asset over the
+# dictionary follows. The surface loader above was written earlier, against the
+# EXTERNAL epa_substrate.lmdb (67,936 entries, keys b'en|surface' -- terms,
+# because human EPA ratings exist on terms before ids do), and was never
+# revisited when the dictionary's channel landed. Joining 437,995 surfaces
+# against 67,936 terms is the ROOT CAUSE of the polarity hole (50,174 matched /
+# 387,821 NEUTRAL, measured 2026-08-11) while 3.5x more ratings sat unused in
+# the same LMDB this builder already iterates. Finding: NLU/NLG lane
+# 2026-08-27, audited and validated same day.
+#
+# KEY SCHEME IS SNIFFED FROM THE ARTIFACT, never declared: sample the first
+# key -- b'en|' prefix means the external substrate, otherwise id-keyed. The
+# same derive-don't-declare rule as every identity read this month.
+# ---------------------------------------------------------------------------
+
+def _epa_keys_are_surfaces(epa_lmdb_path: Path) -> bool:
+    """Sniff: does this EPA store use b'en|surface' keys (external substrate)?"""
+    env = lmdb.open(str(epa_lmdb_path), max_dbs=24, readonly=True, lock=False)
+    try:
+        with env.begin() as txn:
+            db = env.open_db(b'epa', txn=txn)
+            cur = txn.cursor(db=db)
+            if not cur.first():
+                return False
+            k, _ = cur.item()
+            return k.startswith(b'en|')
+    finally:
+        env.close()
+
+
+def _load_epa_lookup_by_id(epa_lmdb_path: Path) -> dict[bytes, tuple[float, float, float]]:
+    """Load id-keyed EPA: id_bytes -> (E, P, A). No join needed downstream --
+    the build loop already iterates (id_bytes, surface)."""
+    lookup: dict[bytes, tuple[float, float, float]] = {}
+    env = lmdb.open(str(epa_lmdb_path), max_dbs=24, readonly=True, lock=False)
+    with env.begin() as txn:
+        db = env.open_db(b'epa', txn=txn)
+        cur = txn.cursor(db=db)
+        for k, v in cur.iternext():
+            try:
+                if len(v) == 12:
+                    lookup[bytes(k)] = _EPA_STRUCT.unpack(v)
+            except Exception:
+                continue
+    env.close()
+    return lookup
 
 
 # ---------------------------------------------------------------------------

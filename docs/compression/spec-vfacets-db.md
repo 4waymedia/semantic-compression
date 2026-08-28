@@ -140,10 +140,14 @@ is a function of the assignment pipeline and is still improving — do not read 
 `0` as an assertion of `UNKNOWN`, only as "not yet assigned":
 
 - **polarity / temporal / domain** — filled deterministically by
-  `vfacet_builder.py` from EPA + heuristics. Polarity is EPA-gated: on
-  `elo-browser-v01c` only the EPA-hit surfaces (~50% of vocab, bounded by the
-  `epa_substrate.lmdb` the builder reads) got a non-`NEUTRAL` polarity; the rest
-  default to `NEUTRAL`. Widening this is an open item — see §7.
+  `vfacet_builder.py` from EPA + heuristics. Polarity is EPA-gated: since
+  2026-08-27 the builder reads the build's **own id-keyed `b'epa'` channel** as
+  primary (236,645 entries under v04 = 54% of vocab; key scheme sniffed, the
+  67,936-term `en|` surface substrate kept as blend fallback). EPA-miss surfaces
+  default to `NEUTRAL`. Historical note: builds before 2026-08-27 joined
+  surfaces against the external substrate only — the "~50% coverage" figure of
+  earlier revisions understated what the dictionary already carried (v04
+  measured: polarity non-neutral 29,392 → 105,191 after the fix).
 - **agency / direction** — default `UNKNOWN`, then filled by `vfacet_llm.py` in
   two passes (Pass 1 deterministic from EPA A/E axes + curated lists; Pass 2
   LLM over the remaining UNKNOWNs). See `GUIDE-vfacet-llm.md`.
@@ -156,21 +160,20 @@ zero as absent, not as a negative assertion.
 ## 7. Build + open items
 
 **Build order.** `vfacets` is a stage over an already-built dictionary:
-`vfacet_builder.py --db <dictionary.lmdb> --epa-db ../Memory/data/epa_substrate.lmdb`,
-optionally followed by `vfacet_llm.py` for agency/direction. The bundle exporter
-then emits `vfacets.bin` + the authored pin.
+`vfacet_builder.py --db <dictionary.lmdb> --epa-db <the SAME dictionary.lmdb>`
+(the builder sniffs the key scheme: id-keyed `b'epa'` channel primary, external
+`en|` surface substrate as blend fallback — this is also what `build_assets.py`
+stage 13 passes since 2026-08-27), optionally followed by `vfacet_llm.py` for
+agency/direction. The bundle exporter then emits `vfacets.bin` + the authored pin.
 
-**Open items (declared, not yet closed):**
+**Open items:**
 
-1. **Fold `vfacet_builder` into the build/publish pipeline** so every build ships
-   `vfacets` (sub-DB + `vfacets.bin`) by construction. Today it is a manual
-   post-step; a rebuild that skips it produces a dictionary that silently loses
-   verbalizer recall (§3). This is the durable fix and belongs in
-   `spec-publish-dictionary.md` / `build_assets.py`.
-2. **Higher polarity coverage** — build vfacets against the fuller EPA source
-   (the dictionary's own `epa` sub-DB, ~236k entries) rather than the ~68k
-   `epa_substrate.lmdb`, if it can be adapted to the `b'en|surface'` key the
-   builder expects. Would lift polarity well above the current ~50%.
+1. ~~**Fold `vfacet_builder` into the build/publish pipeline**~~ — **CLOSED**:
+   `build_assets.py` stage 13 runs it in the standard cascade (after epa/meta-L2).
+2. ~~**Higher polarity coverage**~~ — **CLOSED 2026-08-27**: the builder reads the
+   dictionary's own id-keyed `epa` sub-DB directly (key scheme sniffed; no
+   `en|` adaptation needed — the concern that motivated the "if it can be
+   adapted" hedge). Measured on v04: polarity non-neutral 29,392 → 105,191.
 3. **Immutable build identity** — vfacets inherits the dictionary's build
    fingerprint, so a build re-exported *in place* under the same name carries a
    different `vfacets` than a doc pinning that name expects. The naming policy in

@@ -120,14 +120,15 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
     # port. neighbours.bin uses u32 counts and u32 neighbour indices; facets.bin
     # and epa.bin are parallel arrays sized from the vocab. 438k fits in u32 with
     # room. Cost is roughly +67% on the .bin channel set (~11MB -> ~18MB).
-    # "full" is the browser's cut: every shipped channel (epa/facets/neighbours,
-    # 261,872 entries) is parallel to the FULL vocab's n-range, and
-    # export_browser_vocab supports exactly (tiny, compact, standard, full).
-    # 2026-08-10: this was briefly "reference", which that exporter does not
-    # accept (stage 6 exited 2). If a reference-cut browser vocab is ever wanted,
-    # add it to export_browser_vocab.CUTS and re-export EVERY channel together --
-    # a cut change changes n, and channels from different cuts must never mix.
-    BROWSER_CUT = "full"
+    # "reference" = the WHOLE dictionary (437,995): the browser ships every entry,
+    # not the LLM `full` embedding cut (261,872). Paul's intent all along -- the
+    # first attempt failed only because export_browser_vocab lacked the choice
+    # (added 2026-08-10). Profile cuts remain an LLM-budget concept; the browser
+    # is not budget-bound, and every entry it lacks costs OOV bytes on the wire.
+    # A cut change changes n: stages 5-8 must re-run TOGETHER after changing this
+    # (the embed limit below follows it), and channels from different cuts must
+    # never mix -- G1/G2 enforce that at publish.
+    BROWSER_CUT = "reference"
 
     # Embed scope = the browser vocab cut, so the 768-d index covers exactly the
     # vocab n-range. profile-cuts.json is emitted by the CORE build (before
@@ -178,8 +179,16 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         # separate change because it rewrites a documented CLI contract.
         dict(n=13, name="vfacets", script=SC / "vfacet_builder.py", cwd=SC,
              dep="lmdb",
-             argv=["--db", str(lmdb),
-                   "--epa-db", str(ROOT / "Memory" / "data" / "epa_substrate.lmdb")],
+             # --epa-db points at the build's OWN LMDB (2026-08-27): stage 3
+             # (epa_match.py) has already written the id-keyed b'epa' channel
+             # by the time this stage runs, and the builder sniffs the key
+             # scheme -- id-keyed primary, the 67,936-term en| surface
+             # substrate as blend fallback. The old value here (the external
+             # substrate alone) was the root cause of the polarity hole:
+             # 437,995 surfaces joined against 67,936 terms while 236,645
+             # id-keyed ratings sat unused in the same LMDB. Measured on v04:
+             # polarity non-neutral 29,392 -> 105,191.
+             argv=["--db", str(lmdb), "--epa-db", str(lmdb)],
              out=[pkg / "vfacets_stats.json"]),
         dict(n=5, name="denotative", script=SC / "denotative_index.py", cwd=SC,
              dep="sentence_transformers", multi=[

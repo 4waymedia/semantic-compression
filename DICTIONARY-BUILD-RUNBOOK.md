@@ -111,7 +111,7 @@ scripts below exist (`export_browser_assets.py` 283 lines, `export_neighbours.py
 | 9 | registry | `artifact_identity.py <pkg>` (always-run gate) | `manifest.json` artifacts registry — **re-derived AFTER stages 1–8**, so `epa.present` reflects reality (fixes the pre-epa freeze, spec-publish-dictionary §1.2) and `deliverables_by_kind` tags each file build-vs-bundle (§1.3) |
 | 10 | stamp | `stamp_meta.py --status staged` | meta stamp in lmdb |
 | 11 | verify | `verify_lossless.py`, `verify_facets.py`, `bench_dict_efficiency.py` | pass/fail gates |
-| 13 | vfacets | `vfacet_builder.py` (deterministic half) | `b'vfacets'` sub-DB + `vfacets_stats.json` (`llm_enriched=false`; `vfacet_llm.py` enrichment stays OUT of the cascade) |
+| 13 | vfacets | `vfacet_builder.py` (deterministic half **+ enrichment-substrate join**) | `b'vfacets'` sub-DB + `vfacets_stats.json`. **EPA source is the build's OWN id-keyed `b'epa'` channel** (written by stage 3; `--epa-db` = the same `dictionary.lmdb` since 2026-08-27) — the builder sniffs the key scheme, keeps the 67,936-term `en\|` surface substrate as blend fallback, and this is what closed the polarity hole (v04: non-neutral 29,392 → 105,191). Agency/direction come from `Memory/data/vfacet_substrate.lmdb` — the persistent surface-keyed cache `vfacet_llm.py` writes through to — so **enrichment survives rebuilds**; only new surfaces ever owe the LLM. Also exported as `vfacets.bin` (2-byte records over `n`, `0xFFFF`=absent) by stage 7 and shipped/gated in the publish bundle when the build carries the channel. |
 
 > **The manifest updates itself — don't run builders by hand.** Stage 9 (registry) is
 > exempt from `--only`/`--from` filtering: every `build_assets` invocation re-derives
@@ -196,6 +196,14 @@ directions were added by the builds after it. **These are now the defaults; use 
 | **v01b** | **Oracles named after their build.** `poc/conformance/<build>/{epa,facets}.json` — one file per build, so exporting a new build can't overwrite an older build's test evidence. | The oracle used to be one flat file every export overwrote; it always described the newest build and could never fail against an older one. |
 | **v01c** | **`expand_tiers: true`** — widen the id leading-character alphabet 20→63 (all non-`-` Base64). +3.15× per-tier capacity (T1 1,280→4,032, T2 81,920→258,048). Opt-in per build so earlier builds stay byte-reproducible. | 69% of every tier's capacity was stranded by a restriction left over after tier detection moved to id LENGTH. |
 | **2026-08-07** | **One command + separate publish.** `build_dictionary.py` chains core+cascade (§5); `publish_dictionary.py` (stage 12) is the separate publish verb. Stage 9 registry is re-derived **after** the cascade so `artifacts.epa.present` is truthful. | `build_from_spec` printed `downstream(build_assets)` but didn't run it; the manifest froze a pre-epa view; build and publish were entangled. |
+
+**HARD RULE — a size limit never drops words (2026-08-10).** Capacity overflow evicts
+**non-lexical surfaces only** (tokens present solely in non-lexical sources — CSS names,
+JS classes, web-structure), lowest-scored first, on top of the selection strategy's
+ordering. If words alone exceed capacity the build **fails** with instructions (raise
+`size:` / `expand_tiers: true`) instead of silently dropping. Verified 2026-08-10: a
+119-slot shortfall evicted 119 css-tokens and 0 of 3,950 words; a 969-word shortfall
+refused to build. See `evicted_nonlexical` in dict_stats.
 
 **Rebuild discipline.** A rebuild is a **new build name** — or `--force`/overwrite the same
 one. `build_from_spec` overwrites `db/builds/<name>/` by default; if the LMDB can't be

@@ -1342,6 +1342,35 @@ def main() -> None:
     if args.stats:
         print_stats(db_path)
 
+    # WRITE-THROUGH TO THE ENRICHMENT SUBSTRATE (2026-08-10). Every verdict this
+    # pass produced -- LLM or deterministic, whichever write site -- is harvested
+    # from the build's vfacets and upserted into the persistent surface-keyed
+    # cache (vfacet_substrate.lmdb). One harvest catches all write sites and is
+    # idempotent. From then on, stage 13 joins the cache at build time, so this
+    # enrichment SURVIVES rebuilds instead of resetting to UNKNOWN.
+    if not args.dry_run:
+        try:
+            from vfacet_substrate import put_many as _sub_put
+            _env3 = lmdb.open(str(db_path), readonly=True, lock=False, max_dbs=6)
+            _vf = _env3.open_db(VFACETS_DB, create=False)
+            _rev = _env3.open_db(b'reverse', create=False)
+            _harvest: dict[str, tuple[int, int]] = {}
+            with _env3.begin() as _t:
+                for _id, _v in _t.cursor(db=_vf):
+                    _r = unpack_vfacet(_v)
+                    if _r['agency'] or _r['direction']:          # non-UNKNOWN only
+                        _s = _t.get(_id, db=_rev)
+                        if _s:
+                            _harvest[_s.decode('utf-8', 'replace')] = (
+                                _r['agency'], _r['direction'])
+            _env3.close()
+            if _harvest:
+                _res = _sub_put(_harvest)
+                print(f"  substrate write-through: {_res['stored']:,} verdicts cached "
+                      f"(survive rebuilds)")
+        except Exception as e:
+            print(f'  [warn] substrate write-through failed: {e}')
+
     # Record that enrichment ran (2026-08-10 review §5.2): flip llm_enriched in the
     # build's vfacets_stats.json, so a deterministic-only build is distinguishable
     # from one this pass touched. Both show agency=UNKNOWN on unenriched ids; only
@@ -1351,10 +1380,14 @@ def main() -> None:
         if _sp.exists():
             try:
                 _s = json.loads(_sp.read_text(encoding='utf-8'))
+                # llm_enriched = "any field traces to an LLM" (provenance);
+                # llm_pass_ran = "vfacet_llm ran against THIS build" (process).
+                # Split 2026-08-27 -- the substrate join made the two diverge.
                 _s['llm_enriched'] = True
+                _s['llm_pass_ran'] = True
                 _s['llm_enriched_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 _sp.write_text(json.dumps(_s, indent=2), encoding='utf-8')
-                print(f'  vfacets_stats.json: llm_enriched=true')
+                print(f'  vfacets_stats.json: llm_enriched=true llm_pass_ran=true')
             except Exception as e:
                 print(f'  [warn] could not update vfacets_stats.json: {e}')
 
