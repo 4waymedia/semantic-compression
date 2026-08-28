@@ -271,7 +271,10 @@ def spot_check(words: list[str], lmdb_path: Path = DEFAULT_DB) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description='Build facets + meta sub-DBs in place')
-    p.add_argument('--db', default=str(DEFAULT_DB))
+    # REQUIRED (2026-08-26 audit): defaulted to the legacy root db/dictionary.lmdb --
+    # a bare run FACETED AND FINGERPRINT-STAMPED the wrong database. No "current" build.
+    p.add_argument('--db', required=True,
+                   help='build package LMDB, e.g. db/builds/<name>/dictionary.lmdb (REQUIRED)')
     p.add_argument('--overrides', default=str(DEFAULT_OVERRIDES))
     # Stats live NEXT TO the artifact they describe (facets_stats.json beside the
     # --db), like every other builder -- the fixed DEFAULT_STATS legacy path meant

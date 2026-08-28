@@ -1180,8 +1180,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description='Patch vfacets agency + directionality fields'
     )
-    ap.add_argument('--db',       default=str(DEFAULT_DB),
-                    help='Path to dictionary.lmdb')
+    ap.add_argument('--db', required=True,
+                    help='build package LMDB, e.g. db/builds/<name>/dictionary.lmdb '
+                         '(REQUIRED -- the legacy root default enriched the wrong '
+                         'database; 2026-08-26 gotcha report)')
     ap.add_argument('--epa-db',   default=str(DEFAULT_EPA_DB),
                     help='Path to epa_substrate.lmdb')
     ap.add_argument('--dry-run',  action='store_true',

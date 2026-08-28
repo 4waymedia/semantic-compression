@@ -266,14 +266,16 @@ def main() -> int:
     import argparse
     p = argparse.ArgumentParser(
         description='Byte-exact round-trip gate over the 10 sample formats.')
-    p.add_argument('--db', default=None,
-                   help='dictionary.lmdb to test — normally a build package, e.g. '
-                        'db/builds/<name>/dictionary.lmdb. Defaults to the legacy '
-                        f'{DEFAULT_LMDB} only when omitted.')
+    # REQUIRED (2026-08-26 audit): the legacy-root fallback made a bare run GATE
+    # THE WRONG DATABASE and report green -- a false PASS is worse than a wrong
+    # write, because it licenses a ship. Every caller (build_assets stage 12,
+    # publish G5) already passes --db explicitly.
+    p.add_argument('--db', required=True,
+                   help='dictionary.lmdb to test, e.g. db/builds/<name>/dictionary.lmdb '
+                        '(REQUIRED -- a gate with a default gates the wrong thing)')
     a = p.parse_args()
-    if a.db:
-        global LMDB_PATH
-        LMDB_PATH = Path(a.db)
+    global LMDB_PATH
+    LMDB_PATH = Path(a.db)
     return run()
 
 

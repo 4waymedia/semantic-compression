@@ -622,6 +622,29 @@ def _verify_published(bundle_dir: Path) -> int:
     fp_ok = recomputed == doc["bundle_fingerprint"]
     ok &= fp_ok
     print(f"  bundle_fingerprint {'matches' if fp_ok else 'MISMATCH ' + recomputed[:16]}")
+
+    # CROSS-COPY CHECK (2026-08-27, Paul's question): internal verification alone let
+    # two artifacts both named <build> -- the frozen publication and the live browser
+    # bundle -- diverge silently (measured: v04 vfacets 0e146a62 published vs e18d52f0
+    # live, both "OK"). Staged re-derivation is PERMITTED; being invisible is not.
+    # Compare against the live bundle when present and SAY SO -- a warning, not a
+    # failure, because under status=staged the divergence is legal.
+    live = (Path(__file__).resolve().parent.parent / "ELO-Browser" / "elo-browser"
+            / "src-tauri" / "dictionary" / doc["build"])
+    if live.exists():
+        drift = []
+        for name in doc["files"]:
+            lp = live / name
+            if lp.exists() and _sha256(lp) != doc["files"][name]["sha256"]:
+                drift.append(name)
+        if drift:
+            print(f"  ⚠ STAGED DRIFT: live bundle differs from this publication in "
+                  f"{len(drift)} file(s): {', '.join(drift)}")
+            print(f"    (legal while status=staged -- derived channels advanced since "
+                  f"published_utc {doc.get('published_utc')}. Republish under a new "
+                  f"name, or record this publication as superseded.)")
+        else:
+            print("  live bundle matches this publication (no staged drift)")
     print("OK" if ok else "FAILED")
     return 0 if ok else 2
 

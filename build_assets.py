@@ -60,8 +60,38 @@ STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
 
 
 def _sig(path: Path) -> str:
-    """Cheap change-signature for a file or lmdb dir (size+mtime of data.mdb)."""
-    p = path / "data.mdb" if path.is_dir() and (path / "data.mdb").exists() else path
+    """Change-signature for the DICTIONARY, not the file.
+
+    2026-08-26 audit (class 3, SELF-INVALIDATION): this hashed size+mtime of
+    data.mdb -- but stages 1/3/10/13 WRITE INTO the LMDB (facets/epa/stamp/
+    vfacets are additive sub-dbs), so every cascade run changed the sig and the
+    next run considered ALL stages stale, GPU embed included. Measured on v04:
+    ledger sigs b3719eae vs live 0a80c9ae -> 13/13 spuriously stale.
+
+    Staleness is supposed to track the invalidation rule the docs state:
+    'every dictionary REBUILD invalidates derived assets; facets/meta are
+    additive and never alter forward/reverse.' So the signature IS the
+    dictionary_fingerprint stamped in meta (pure surface<->id content). The
+    additive stages can no longer invalidate anything; a core rebuild (new
+    forward) still invalidates everything. Falls back to size+mtime for
+    non-LMDB paths or an unstamped meta."""
+    if path.is_dir() and (path / "data.mdb").exists():
+        try:
+            import lmdb  # noqa: PLC0415
+            env = lmdb.open(str(path), readonly=True, lock=False, max_dbs=16)
+            try:
+                meta = env.open_db(b"meta", create=False)
+                with env.begin() as txn:
+                    fp = txn.get(b"dictionary_fingerprint", db=meta)
+                if fp:
+                    return fp.decode()[:16]
+            finally:
+                env.close()
+        except Exception:
+            pass
+        p = path / "data.mdb"
+    else:
+        p = path
     if not p.exists():
         return "absent"
     st = p.stat()

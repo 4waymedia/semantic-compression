@@ -70,7 +70,11 @@ def stamp(db_path: str, release: str, status: str,
 
 def main() -> None:
     p = argparse.ArgumentParser(description='Stamp dictionary release/status into meta')
-    p.add_argument('--db', default='db/dictionary.lmdb')
+    # REQUIRED (2026-08-26 audit): defaulted to the legacy root -- a bare run
+    # stamped release/status onto the wrong database. Lifecycle stamps select
+    # decode tables and lock semantics; there is no safe default target.
+    p.add_argument('--db', required=True,
+                   help='build package LMDB, e.g. db/builds/<name>/dictionary.lmdb (REQUIRED)')
     p.add_argument('--release', required=True, help='e.g. v0.4.0')
     p.add_argument('--status', default=STATUS_STAGED, choices=VALID_STATUS)
     p.add_argument('--version', type=int, default=None,

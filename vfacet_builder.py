@@ -219,6 +219,7 @@ def build_vfacets(
     lmdb_path: Path = DEFAULT_DB,
     epa_lmdb_path: Path = DEFAULT_EPA_DB,
     dry_run: bool = False,
+    epa_keys: str = 'auto',
 ) -> dict:
     lmdb_path = Path(lmdb_path)
     epa_lmdb_path = Path(epa_lmdb_path)
@@ -235,13 +236,15 @@ def build_vfacets(
     # underneath. If --epa-db points at a surface-keyed store, behaviour is
     # unchanged from before.
     epa_id_lookup: dict = {}
-    if not _epa_keys_are_surfaces(epa_lmdb_path):
+    _scheme = (epa_keys if epa_keys in ('surface', 'id')
+               else _sniff_epa_key_scheme(epa_lmdb_path, lmdb_path))
+    if _scheme == 'id':
         epa_id_lookup = _load_epa_lookup_by_id(epa_lmdb_path)
         epa_lookup = {}
-        print(f'  EPA source: ID-KEYED ({len(epa_id_lookup):,} entries) from {epa_lmdb_path}')
+        print(f'  EPA source: ID-KEYED ({len(epa_id_lookup):,} entries) from {epa_lmdb_path} [scheme={_scheme}, {"forced" if epa_keys != "auto" else "sniffed"}]')
     else:
         epa_lookup = _load_epa_lookup(epa_lmdb_path)
-        print(f'  EPA source: surface-keyed en| substrate ({len(epa_lookup):,} entries)')
+        print(f'  EPA source: surface-keyed en| substrate ({len(epa_lookup):,} entries) [scheme={_scheme}, {"forced" if epa_keys != "auto" else "sniffed"}]')
     # Blend: when reading the dictionary itself, ALSO load the external substrate
     # as surface fallback if it exists beside the repo (best of both).
     if epa_id_lookup and DEFAULT_EPA_DB.exists() and Path(str(DEFAULT_EPA_DB)) != epa_lmdb_path:
@@ -388,19 +391,51 @@ def build_vfacets(
 # same derive-don't-declare rule as every identity read this month.
 # ---------------------------------------------------------------------------
 
-def _epa_keys_are_surfaces(epa_lmdb_path: Path) -> bool:
-    """Sniff: does this EPA store use b'en|surface' keys (external substrate)?"""
+def _sniff_epa_key_scheme(epa_lmdb_path: Path, dict_lmdb_path: Path,
+                          sample: int = 1000) -> str:
+    """Return 'surface' or 'id' -- or raise if the sample is ambiguous.
+
+    MEASURED DESIGN (NLU/NLG lane fix doc sec.5 guard 1, 2026-08-28): sniff
+    membership against `reverse` (whose keys ARE ids -- 100.00%% vs 0.97%%
+    separation), never `forward` (73.85%% vs 3.46%%), and sample >=1000 keys,
+    never one -- a single key misclassifies id-keyed sources 3.46%% of the
+    time under a forward test. `b'|'` is outside the base64 id charset, so any
+    sampled key containing it is decisive for the en|surface substrate.
+    REFUSE THE MIDDLE: an ambiguous artifact gets an error naming --epa-keys,
+    not a guess -- absence degrades to UNKNOWN, never to a wrong join.
+    """
+    keys = []
     env = lmdb.open(str(epa_lmdb_path), max_dbs=24, readonly=True, lock=False)
     try:
         with env.begin() as txn:
             db = env.open_db(b'epa', txn=txn)
             cur = txn.cursor(db=db)
-            if not cur.first():
-                return False
-            k, _ = cur.item()
-            return k.startswith(b'en|')
+            for k, _ in cur.iternext():
+                keys.append(bytes(k))
+                if len(keys) >= sample:
+                    break
     finally:
         env.close()
+    if not keys:
+        return 'surface'   # empty epa db: either loader yields {}; keep old path
+    if any(b'|' in k for k in keys):
+        return 'surface'
+    denv = lmdb.open(str(dict_lmdb_path), max_dbs=24, readonly=True, lock=False)
+    try:
+        with denv.begin() as txn:
+            rev = denv.open_db(b'reverse', txn=txn)
+            hits = sum(1 for k in keys if txn.get(k, db=rev) is not None)
+    finally:
+        denv.close()
+    frac = hits / len(keys)
+    if frac >= 0.99:
+        return 'id'
+    if frac <= 0.05:
+        return 'surface'
+    raise SystemExit(
+        f"[vfacet_builder] EPA key scheme AMBIGUOUS: {hits}/{len(keys)} sampled "
+        f"keys resolve in the dictionary's reverse db ({frac:.1%}). Refusing to "
+        f"guess -- pass --epa-keys surface or --epa-keys id explicitly.")
 
 
 def _load_epa_lookup_by_id(epa_lmdb_path: Path) -> dict[bytes, tuple[float, float, float]]:
@@ -427,14 +462,23 @@ def _load_epa_lookup_by_id(epa_lmdb_path: Path) -> dict[bytes, tuple[float, floa
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--db',     default=str(DEFAULT_DB))
+    # REQUIRED (2026-08-26 gotcha report): this defaulted to the LEGACY ROOT
+    # db/dictionary.lmdb, so a bare run rebuilt the wrong database. Same lesson
+    # export_browser_assets already carries: there is no "current" build, and
+    # defaulting to one is how the wrong dictionary gets rebuilt.
+    ap.add_argument('--db', required=True,
+                    help='build package LMDB, e.g. db/builds/<name>/dictionary.lmdb '
+                         '(REQUIRED -- no default; the legacy root default rebuilt '
+                         'the wrong database)')
     ap.add_argument('--epa-db', default=str(DEFAULT_EPA_DB))
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--epa-keys', choices=['auto', 'surface', 'id'], default='auto',
+                    help='EPA key scheme; auto sniffs >=1000 keys against reverse and refuses ambiguity')
     args = ap.parse_args()
 
     tag = 'DRY RUN — ' if args.dry_run else ''
     print(f'[vfacet_builder] {tag}db={args.db}')
-    stats = build_vfacets(Path(args.db), Path(args.epa_db), dry_run=args.dry_run)
+    stats = build_vfacets(Path(args.db), Path(args.epa_db), dry_run=args.dry_run, epa_keys=args.epa_keys)
 
     print(f"  entries : {stats['total_entries']:,}")
     if not args.dry_run:
