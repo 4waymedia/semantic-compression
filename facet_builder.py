@@ -155,10 +155,32 @@ def build_facets(
         )
     tag_seconds = time.perf_counter() - t0
 
-    # Second pass: fingerprint depends on the now-written facet records.
-    fingerprint = compute_fingerprint(env)
+    # Second pass: TWO fingerprints, honestly named (2026-08-10 mislabel fix).
+    #
+    # This function used to write its facets-INCLUSIVE hash (id + surface + facet
+    # record; see facet_reader.compute_fingerprint) under b'dictionary_fingerprint'
+    # -- a dictionary-only name. Every downstream reader (exporters, channel
+    # headers, sidecar bindings, dictionary_info) inherited the mislabel; it held
+    # only because every party shared the same wrong value, and would break the
+    # first time facets were rebuilt alone. Measured: meta said 9a77e623 (facets
+    # hash) while the manifest's artifacts.dictionary said 4335d939 (true hash).
+    #
+    #   b'dictionary_fingerprint'  = hash over (surface, id) ONLY -- stable across
+    #                                facet re-derivation. SAME implementation as
+    #                                the manifest (artifact_identity.fingerprint_pairs),
+    #                                so the two agree by construction.
+    #   b'facets_fingerprint'      = the facets-inclusive content hash (unchanged
+    #                                algorithm, honest name).
+    from artifact_identity import fingerprint_pairs
+    fwd_db = env.open_db(FORWARD_DB_NAME, create=False)
+    with env.begin() as txn:
+        dict_fp = fingerprint_pairs(
+            (k.decode('utf-8', 'replace'), v.decode('utf-8', 'replace'))
+            for k, v in txn.cursor(db=fwd_db))
+    fingerprint = compute_fingerprint(env)          # facets-inclusive (renamed below)
     with env.begin(write=True) as txn:
-        txn.put(b'dictionary_fingerprint', fingerprint.encode('utf-8'), db=meta_db)
+        txn.put(b'dictionary_fingerprint', dict_fp.encode('utf-8'), db=meta_db)
+        txn.put(b'facets_fingerprint', fingerprint.encode('utf-8'), db=meta_db)
 
     with env.begin() as txn:
         facets_total = txn.stat(db=tags_db)['entries']
@@ -179,7 +201,8 @@ def build_facets(
         'dictionary_family': dictionary_family,
         'dictionary_id': dictionary_id,
         'dictionary_version': dictionary_version,
-        'dictionary_fingerprint': fingerprint,
+        'dictionary_fingerprint': dict_fp,          # pure (surface,id) -- matches manifest
+        'facets_fingerprint': fingerprint,          # facets-inclusive content hash
         'forward_count': forward_count,
         'facets_total': facets_total,
         'override_count': n_overrides,
@@ -250,7 +273,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description='Build facets + meta sub-DBs in place')
     p.add_argument('--db', default=str(DEFAULT_DB))
     p.add_argument('--overrides', default=str(DEFAULT_OVERRIDES))
-    p.add_argument('--stats', default=str(DEFAULT_STATS))
+    # Stats live NEXT TO the artifact they describe (facets_stats.json beside the
+    # --db), like every other builder -- the fixed DEFAULT_STATS legacy path meant
+    # a re-run against a build dir silently updated db/dict_stats_facets.json
+    # while the build's own facets_stats.json stayed stale (found 2026-08-10 by
+    # dictionary_info's sidecar-binding check). Explicit --stats still wins.
+    p.add_argument('--stats', default=None)
     p.add_argument('--dict-family', default='general')
     p.add_argument('--dict-id', default='general')
     p.add_argument('--dict-version', type=int, default=1)
@@ -258,7 +286,8 @@ def main() -> None:
     build_facets(
         lmdb_path=Path(args.db),
         overrides_path=Path(args.overrides),
-        stats_path=Path(args.stats),
+        stats_path=(Path(args.stats) if args.stats
+                    else Path(args.db).parent / 'facets_stats.json'),
         dictionary_family=args.dict_family,
         dictionary_id=args.dict_id,
         dictionary_version=args.dict_version,

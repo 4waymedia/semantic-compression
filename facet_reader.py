@@ -96,8 +96,15 @@ def compute_fingerprint(env) -> str:
 
 
 def verify_fingerprint(env) -> tuple[bool, str, str]:
-    """Return (matches, stored_hex, computed_hex)."""
-    stored = get_meta(env).get('dictionary_fingerprint', '')
+    """Return (matches, stored_hex, computed_hex).
+
+    compute_fingerprint() hashes id + surface + facet record -- the FACETS-inclusive
+    content hash. Since 2026-08-10 that value is stamped under b'facets_fingerprint'
+    (b'dictionary_fingerprint' now holds the pure (surface,id) hash, stable across
+    facet re-derivation). Compare against the honest key; fall back to the legacy
+    key for builds stamped before the split."""
+    meta = get_meta(env)
+    stored = meta.get('facets_fingerprint') or meta.get('dictionary_fingerprint', '')
     computed = compute_fingerprint(env)
     return (stored == computed, stored, computed)
 

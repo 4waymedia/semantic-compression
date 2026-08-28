@@ -35,7 +35,7 @@ from tqdm import tqdm
 sys.path.insert(0, ".")
 
 from semantic_compression.config import (
-    FORMAT_VERSION,
+    COUNTS_FORMAT_VERSION,
     TRANSCRIPT_DIR,
     WORD_IDS,
     DB_PATH,
@@ -192,7 +192,7 @@ def write_frequencies(counts: Counter, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(f"# word_frequencies.txt  format_version={FORMAT_VERSION}\n")
+        f.write(f"# word_frequencies.txt  format_version={COUNTS_FORMAT_VERSION}\n")
         f.write("# count\\tescaped_token\n")
 
         for token, count in counts.most_common():

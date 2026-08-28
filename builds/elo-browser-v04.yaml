@@ -1,0 +1,119 @@
+# ============================================================================
+# Dictionary build spec — elo-browser-v04   (ships as "elo-v4")
+#
+# NAMING RULE (Paul, 2026-08-13): the build number and the display number MATCH
+# (elo-browser-v04 <-> elo-v4). v01a/b/c drifted to displays v1/v2/v3; v04 jumps
+# to the display sequence's next number so the two never diverge again. The
+# earlier draft of this spec was named elo-browser-v02 -- superseded by this file.
+#
+# SAME DICTIONARY as elo-browser-v01c (identical corpus, ranking, phrases,
+# expand_tiers — the deterministic build reproduces the same forward/reverse and
+# the same dictionary_fingerprint). What is NEW is the SHIPPED OBJECT and the
+# PROCESS, which is why this is a new build name rather than a mutation of v01c
+# (published bundles are immutable; a changed bundle is a new <build>):
+#
+#   1. Browser vocab cut = REFERENCE (437,995 — the whole dictionary), not the
+#      LLM `full` embedding cut (261,872). The browser is not budget-bound;
+#      every in-dictionary surface now encodes as an id instead of OOV bytes.
+#   2. vfacets is a DECLARED suite asset (stage 13): b'vfacets' sub-DB +
+#      vfacets.bin channel, agency/direction joined from the persistent
+#      enrichment substrate (vfacet_substrate.lmdb — survives rebuilds).
+#   3. Honest identity: dictionary_fingerprint = pure (surface,id);
+#      facets_fingerprint = facets-inclusive hash (2026-08-10 mislabel fix).
+#      All stats sidecars fingerprint-bound; registry re-derived post-cascade.
+#   4. HARD RULE active: a size limit evicts non-lexical surfaces only
+#      (CSS/JS/web-structure); words are never dropped — the build fails first.
+#      (Moot at char-4 capacity; declared so the guarantee is on record.)
+#
+#   Build:   python -m semantic_compression.build_dictionary semantic_compression/builds/elo-browser-v04.yaml --device cuda
+#   Publish: python publish_dictionary.py db/builds/elo-browser-v04
+# ============================================================================
+
+meta:
+  name: elo-browser-v04
+  version: "4.0.0"
+  date: "2026-08-13"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native (ELO Browser)"
+  status: staged
+  purpose: >
+    The complete-by-construction browser dictionary: v01c's proven content
+    (same corpus, ranking, expand_tiers) shipped whole — reference-cut vocab
+    (437,995), all five channels (epa/facets/vfacets/neighbours + vocab), one
+    honest identity, built end-to-end by the standardized pipeline (stages 1-13
+    + publish gates G1-G8).
+  goals:
+    - Ship the ENTIRE dictionary to the browser; zero in-dictionary OOV.
+    - Every channel parallel to one n-range (0..437,994), gated at publish.
+    - vfacets declared, built, shipped; enrichment survives rebuilds via substrate.
+    - Reproducible identity — same corpus must reproduce the same fingerprint.
+  use_cases:
+    - ACTIVE browser dictionary (ACTIVE_BUILD -> elo-browser-v04, display elo-v4).
+    - A/B against elo-v3 (v01c) on the same captured pages — measures the
+      reference-cut encoding gain (176,123 surfaces moved from OOV bytes to ids).
+
+build:                                # === IDENTICAL CONTENT KNOBS TO v01c ===
+  size: char-4
+  select_strategy: frequency
+  min_freq: 1
+  tier1_word_reserve: 1024
+  suite: full
+  expand_tiers: true                  # the v01c capacity expansion, retained
+
+  force_include:
+    - "_"
+    - "{"
+    - "}"
+    - "|"
+    - ">"
+    - "<"
+    - "`"
+    - "~"
+    - "\r\n"
+    - "\r"
+    - "\xa0"
+
+  assets:
+    facets: true
+    meta: true
+    epa: true
+    vfacets: true                     # declared (not inherited) — stage 13
+    meta_layer2: true
+    vectors: true
+    browser: true
+
+corpus:                               # unchanged from v01b/v01c — same three sources
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure                # non-lexical: sole eviction class (HARD RULE)
+    precomputed: semantic_compression/data/web_terms_frequencies.txt
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []
+
+instructions: >
+  Build with build_dictionary (one command: core + cascade, stages 1-13; embed
+  covers the REFERENCE cut, 437,995). Verify in this order:
+    1. dictionary_fingerprint MUST equal v01c's (4335d939b93c8710...) — same
+       corpus + ranking is the claim; a different fp means the content moved
+       and this spec's "same dictionary" premise is wrong. Investigate, don't ship.
+    2. assets.meta.json: vocab_cut=reference, vocab_entries=437,995; all five
+       channel shas authored (browser_json/epa/facets/vfacets + neighbours.meta).
+    3. vfacets_stats.json: bound to the fingerprint; enriched_from_substrate
+       reported (0 until vfacet_llm runs — that is honest, not a defect).
+    4. publish_dictionary --dry-run: 8/8 gates, G1 holds ALL channels at 437,995.
+    5. Publish -> dist/dictionary/elo-browser-v04 (delete the STALE dist elo-browser-v02 retag
+       first — the old 261,872 bundle under a new name, superseded).
+    6. ACTIVE_BUILD -> dictionary=elo-browser-v04, display=elo-v4; cargo test.
+  v01c remains on disk as the historical build; do not overwrite it.

@@ -78,6 +78,18 @@
   MUST match `tokenizer.py` char-class logic** (spec-v0.4 RC4) — same implicit-ws +
   caps + byte-fallback as the codec, or ids/counts won't match the model.
 
+## HARD RULE — a size limit never drops words (2026-08-10)
+
+When capacity binds, the overflow is taken from **non-lexical surfaces first** — tokens
+present ONLY in non-lexical corpus sources (CSS names, JS classes, web-structure).
+Provenance: `build_from_spec.resolve_corpus` tags each source (`transcripts`/`books` =
+lexical; `web_structure` = not; per-source `lexical:` overrides) and emits
+`data/nonlexical_terms_<name>.txt`; the builder evicts from that set, lowest-scored
+first, ON TOP of whatever `select_strategy` ordered. **If the lexical candidates alone
+exceed capacity, the build FAILS LOUDLY** — raise `size:` or set `expand_tiers: true`;
+never ship a dictionary that silently dropped a word. Accounting: `evicted_nonlexical`
+in dict_stats; `corpus_lexical_tokens` / `corpus_nonlexical_only_tokens` in the manifest.
+
 ## Gotchas
 
 - **Overwrite builds fail if the LMDB can't be unlinked** (and refused if `locked`).

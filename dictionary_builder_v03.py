@@ -233,6 +233,7 @@ def score_by_bytes_saved(surface, freq, kind, n, pmi=0.0):
 def build(
     word_freq_file: Path = WORD_FREQ_FILE,
     phrase_file: Path = PHRASE_FILE,
+    nonlexical_surfaces: "set[str] | None" = None,
     lmdb_path: Path = LMDB_PATH,
     stats_file: Path | None = None,
     map_size_gb: int = MAP_SIZE_GB,
@@ -433,7 +434,13 @@ def build(
                     print(f'         {s!r}  ->  {[t for t in _tok(s)]}')
 
         have = {r[0] for r in tier0_records} | {r[0] for r in reserved_words} | {r[0] for r in pool}
-        missing = [s for s in forced if s not in have]
+        # sorted(): `forced` is a SET, and set iteration order varies per process
+        # (hash randomization). Unsorted, equal-frequency injected surfaces got
+        # PERMUTED ids between otherwise-identical builds -- measured 2026-08-13:
+        # v01c vs v04 differed in exactly 4 pairs ('~', '\r', '\r\n', '\xa0'
+        # swapped ids), changing the dictionary fingerprint. Determinism (G3) says
+        # same corpus + same spec => same fingerprint; iteration order must be fixed.
+        missing = [s for s in sorted(forced) if s not in have]
         for s in missing:                      # absent from the corpus entirely
             pool.append((s, word_freq.get(s, 0), 'word', 1))
         print(f'  Structural floor: {len(forced)} forced surface(s), '
@@ -464,12 +471,15 @@ def build(
     # dict_stats so any build declares which convention produced it.
     # ----------------------------------------------------------------------
     def _rank_key(e):
+        # Surface as the FINAL tiebreak: equal-frequency entries must order
+        # deterministically or ids permute between runs (G3 determinism; see the
+        # sorted(forced) note above -- same 2026-08-13 fix).
         surface, freq, kind, _n = e
         if kind == 'tier0':
-            return (0, -freq)          # grammar — always inside every cut
+            return (0, -freq, surface)  # grammar — always inside every cut
         if surface in forced:
-            return (1, -freq)          # declared structural floor
-        return (2, -freq)              # vocabulary — frequency decides
+            return (1, -freq, surface)  # declared structural floor
+        return (2, -freq, surface)      # vocabulary — frequency decides
     all_records.sort(key=_rank_key)
 
     # ----------------------------------------------------------------------
@@ -524,6 +534,48 @@ def build(
             skipped_overflow += 1
             return
         string_id_of[surface] = sid
+
+    # ----------------------------------------------------------------------
+    # HARD RULE (2026-08-10): a size limit NEVER drops words.
+    #
+    # The select strategy scores and orders every candidate; this partition sits
+    # ON TOP of it. When capacity binds, the overflow is taken from NON-LEXICAL
+    # surfaces first (tokens that appear ONLY in non-lexical corpus sources --
+    # CSS names, JS classes, web-structure tokens; provenance is computed by
+    # build_from_spec.resolve_corpus and passed as `nonlexical_surfaces`).
+    # Within each class the strategy's order still decides who goes. If the
+    # LEXICAL candidates alone exceed capacity, the build FAILS LOUDLY -- raise
+    # `size:`/`expand_tiers`, never silently drop a word.
+    # ----------------------------------------------------------------------
+    if nonlexical_surfaces:
+        _cap_left = sum(TIER_CAP[t] for t in (1, 2, 3) if max_tier >= t) - t1_counter
+        _to_place = [s for s, _f, _k, _n in pool if s not in string_id_of]
+        _to_place_n = len(set(_to_place)) + sum(
+            1 for s, _f, _k, _n in reserved_words if s not in string_id_of)
+        _overflow = _to_place_n - _cap_left
+        evicted_nonlexical = 0
+        if _overflow > 0:
+            _evict: set[str] = set()
+            for s, _f, _k, _n in reversed(pool):            # lowest-scored first
+                if len(_evict) >= _overflow:
+                    break
+                if s in nonlexical_surfaces and s not in string_id_of:
+                    _evict.add(s)
+            still_over = _overflow - len(_evict)
+            if still_over > 0:
+                raise SystemExit(
+                    f"HARD RULE: capacity short by {_overflow:,} but only "
+                    f"{len(_evict):,} non-lexical candidates are evictable -- "
+                    f"{still_over:,} WORDS would be dropped. Raise `size:` "
+                    f"(char-4) or set `expand_tiers: true`; a dictionary never "
+                    f"drops words to fit a limit.")
+            pool = [(s, f, k, n) for (s, f, k, n) in pool if s not in _evict]
+            evicted_nonlexical = len(_evict)
+            print(f'  HARD RULE: capacity short by {_overflow:,} -> evicted '
+                  f'{evicted_nonlexical:,} non-lexical surfaces (lowest-scored '
+                  f'first); 0 words dropped.')
+    else:
+        evicted_nonlexical = 0
 
     # Step A: reserved Tier 1 words first (guaranteed 2-byte IDs)
     print(f'Reserving {len(reserved_words):,} top words for Tier 1...')
@@ -704,6 +756,9 @@ def build(
         'special_token_count':      SPECIAL_TOKEN_COUNT,
         'byte_fallback_size':       BYTE_FALLBACK_SIZE,
         'overflow_skipped':         skipped_overflow,
+        # HARD RULE accounting: capacity overflow is taken from non-lexical
+        # surfaces first; words are NEVER dropped (the build fails instead).
+        'evicted_nonlexical':       evicted_nonlexical,
     }
 
     stats['stats_file_path'] = str(stats_file)
@@ -810,6 +865,7 @@ def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False
                   overrides: str = 'data/facet_overrides.tsv',
                   word_freq_file: Path | None = None,
                   phrase_file: Path | None = None,
+                  nonlexical_file: Path | None = None,
                   extra_manifest: dict | None = None) -> dict:
     """Build a self-contained dictionary deliverables package into out_dir:
     dictionary.lmdb + dict_stats.json + token-ids.csv.gz + special-tokens.json
@@ -846,7 +902,15 @@ def build_package(out_dir: Path, *, overwrite: bool = False, force: bool = False
                   force_include=force_include,             # structural floor (slots spec §3)
                   tier_first_chars=tier_first_chars,       # tier capacity (HANDOFF-tier-first-char-capacity)
                   word_freq_file=word_freq_file or WORD_FREQ_FILE,
-                  phrase_file=phrase_file or PHRASE_FILE)
+                  phrase_file=phrase_file or PHRASE_FILE,
+                  # HARD RULE: surfaces present ONLY in non-lexical corpus sources
+                  # (CSS/JS/web-structure) -- evicted first under a size limit;
+                  # words are never dropped (build fails instead).
+                  nonlexical_surfaces=(
+                      {ln.split('\t')[-1].strip() for ln in
+                       Path(nonlexical_file).read_text(encoding='utf-8').splitlines()
+                       if ln.strip() and not ln.startswith('#')}
+                      if nonlexical_file and Path(nonlexical_file).exists() else None))
 
     facets_done = False
     if with_facets:

@@ -195,10 +195,27 @@ ELO_DELIMITER  = '|'                                  # PIPE_BYTE = 0x7C
 DEFAULT_LMDB   = Path('semantic_compression/db/dictionary.lmdb')
 ELO_EXTENSION  = '.elo'
 
+# .elo TEXT header version == config.FORMAT_VERSION (the canonical counter). The
+# ngram/phrase/word counters + legacy v0.2 builder stats were decoupled onto
+# config.COUNTS_FORMAT_VERSION (2026-08-06), so FORMAT_VERSION now governs the .elo
+# text stream ONLY. v1 = legacy (magic|ver|ext|stream); v2 = dictionary-bound
+# (magic|ver|build_id|dict_fp|ext|stream). Spec: docs/format/spec-elo-dictionary-binding.md
+ELO_TEXT_VERSION  = FORMAT_VERSION   # alias for readability
+ELO_TEXT_LEGACY   = 1
+
 # -- Binary stream constants (Option 1 experiment) ---------------------------
 ELO_MAGIC_BIN     = b'ELO'
-ELO_BIN_VERSION   = 2
+ELO_BIN_VERSION   = 3     # v2 = legacy (no dict binding); v3 = build_id + fingerprint
+ELO_BIN_LEGACY    = 2
 ELO_BIN_EXTENSION = '.eloB'
+
+
+class DictionaryMismatch(ValueError):
+    """The .elo's stamped dictionary fingerprint does not match the loaded dictionary."""
+
+
+class DictionaryUnavailable(ValueError):
+    """No loaded/registered dictionary matches the .elo's stamped fingerprint."""
 
 # Bytes view of BASE64_CHARS — lets the binary decoder build LMDB-key bytes
 # without going through Python str. BASE64_CHARS_BYTES[idx:idx+1] gives the
@@ -287,6 +304,10 @@ class Compressor:
         self._env: Optional[lmdb.Environment] = None
         self._fwd_db = None
         self._rev_db = None
+        # Dictionary binding (spec-elo-dictionary-binding). Resolved at open() from the
+        # build's manifest.json sibling; '' means unstamped (no manifest -> legacy behavior).
+        self._build_id: str = ''
+        self._dict_fp: str = ''
         # Cache configuration
         self._preload_rev_cache = preload_rev_cache
         self._preload_fwd_cache = preload_fwd_cache
@@ -325,7 +346,45 @@ class Compressor:
             self._fwd_db = self._env.open_db(b'forward')
             self._rev_db = self._env.open_db(b'reverse')
             self._build_caches()
+            self._resolve_identity()
         return self
+
+    def _resolve_identity(self) -> None:
+        """Read this dictionary's build_id + fingerprint from its manifest.json sibling.
+        Leaves both '' (unstamped) when no manifest is present."""
+        import json
+        self._build_id = ''
+        self._dict_fp = ''
+        mpath = self.lmdb_path.parent / 'manifest.json'
+        if not mpath.is_file():
+            return
+        try:
+            m = json.loads(mpath.read_text(encoding='utf-8'))
+            self._build_id = ((m.get('spec_meta') or {}).get('name')
+                              or self.lmdb_path.parent.name or '')
+            self._dict_fp = (((m.get('artifacts') or {}).get('dictionary') or {})
+                             .get('fingerprint') or '')
+        except Exception:
+            pass
+
+    def _verify_identity(self, file_build_id: str, file_dict_fp: str) -> None:
+        """Gate a decode: compare the .elo's stamped dictionary against the loaded one.
+        Raises DictionaryMismatch on a fingerprint conflict; warns when either side is
+        unstamped (legacy files / no-manifest reader) but does not block."""
+        import warnings
+        if not file_dict_fp:
+            warnings.warn("decoding an unstamped/legacy .elo -- its dictionary binding "
+                          "cannot be verified", RuntimeWarning, stacklevel=3)
+            return
+        if self._dict_fp and file_dict_fp != self._dict_fp:
+            raise DictionaryMismatch(
+                f".elo was encoded with dictionary {file_build_id!r} "
+                f"(fp {file_dict_fp[:12]}...), but the loaded dictionary is "
+                f"{self._build_id!r} (fp {self._dict_fp[:12]}...). Decode with the "
+                f"matching dictionary.")
+        if not self._dict_fp:
+            warnings.warn("reader dictionary is unstamped (no manifest) -- cannot verify "
+                          "the .elo's dictionary binding", RuntimeWarning, stacklevel=3)
 
     def close(self) -> None:
         """Close LMDB. Safe to call multiple times."""
@@ -514,7 +573,12 @@ class Compressor:
                 f"a structural surface; rebuild with it in `force_include`.")
 
         stream = ELO_DELIMITER.join(parts)
-        return f"{ELO_MAGIC}{ELO_DELIMITER}{FORMAT_VERSION}{ELO_DELIMITER}{ext}{ELO_DELIMITER}{stream}"
+        # v2 header: bind the dictionary. build_id must not contain the frame delimiter.
+        bid = self._build_id
+        if ELO_DELIMITER in bid:
+            raise ValueError(f"build_id contains the stream delimiter {ELO_DELIMITER!r}: {bid!r}")
+        return (f"{ELO_MAGIC}{ELO_DELIMITER}{ELO_TEXT_VERSION}{ELO_DELIMITER}{bid}"
+                f"{ELO_DELIMITER}{self._dict_fp}{ELO_DELIMITER}{ext}{ELO_DELIMITER}{stream}")
 
     def decode_text(self, elo_text: str) -> tuple[str, str]:
         """
@@ -526,7 +590,7 @@ class Compressor:
               text: byte-exact source text
         """
         self.open()
-        magic, version_str, ext, stream = _parse_header(elo_text)
+        magic, version_str, file_build_id, file_dict_fp, ext, stream = _parse_header(elo_text)
 
         if magic != ELO_MAGIC:
             raise ValueError(f"Not an .elo stream: missing {ELO_MAGIC!r} magic")
@@ -534,12 +598,15 @@ class Compressor:
         try:
             version = int(version_str)
         except ValueError as e:
-            raise ValueError(f"Invalid FORMAT_VERSION in header: {version_str!r}") from e
+            raise ValueError(f"Invalid .elo header version: {version_str!r}") from e
 
-        if version != FORMAT_VERSION:
+        if version not in (ELO_TEXT_LEGACY, ELO_TEXT_VERSION):
             raise ValueError(
-                f"Unsupported .elo FORMAT_VERSION: file={version} reader={FORMAT_VERSION}"
+                f"Unsupported .elo text version: file={version} reader={ELO_TEXT_VERSION}"
             )
+
+        # Verify the file's dictionary binding against the loaded dictionary (v1 -> warn).
+        self._verify_identity(file_build_id, file_dict_fp)
 
         out: list[str] = []
         with self._env.begin() as txn:
@@ -551,6 +618,109 @@ class Compressor:
         out = _restore_implicit_spaces(out)            # Option 2
 
         return _denormalize_ext(ext), ''.join(out)
+
+    # ------------------------------------------------------------------
+    # ID-stream API (SDM contract, 2026-08-21)
+    #
+    # The SDM document model stores the id stream itself ("the spine") -- ids
+    # without a file wrapper. These three functions are that public surface
+    # (requested in PROPOSAL-TO-DICTIONARY-SDM-2026-08-21 §2.1; the shape was
+    # agreed in the same-day exchange):
+    #
+    #     encode_ids(text) -> list[str]   base64 stream tokens, NO header
+    #     decode_ids(ids)  -> str         lossless inverse
+    #     ids_to_n(ids)    -> list[int|None]  channel index; None = no channel
+    #
+    # DESIGN NOTES (normative):
+    #  * The list elements are exactly the .elo stream tokens -- dictionary ids
+    #    plus caps/OOV marker tokens. decode_ids(encode_ids(t)) == t is the
+    #    round-trip certificate, same guarantee as encode_text/decode_text.
+    #  * NO header means NO dictionary binding travels with the ids. The caller
+    #    MUST store (build_name, dictionary_fingerprint) alongside every id
+    #    record (ELO_SDM_SPEC §2.3 "fingerprint on every record") -- this API
+    #    deliberately does not protect a bare list the way decode_text protects
+    #    a stamped stream.
+    #  * Reserved structural atoms (leading '-', structure-ids-v1.json) are
+    #    NEVER emitted by encode_ids -- by construction: encoding is a forward
+    #    lookup and reserved atoms have no surfaces. decode_ids PRESERVES them
+    #    losslessly if present in the input (they decode to '' -- they are
+    #    markup, not text; render_text-style export is the SDM's, not ours).
+    #  * ids_to_n returns None for marker tokens (':' forms), structural atoms
+    #    (leading '-'), and anything absent from the build's token-ids table --
+    #    the caller must handle the semantic blank, never receive a plausible
+    #    index.
+    # ------------------------------------------------------------------
+
+    def encode_ids(self, text: str, fmt: str = '.txt',
+                   *, stats: 'EncodeStats | None' = None) -> list[str]:
+        """Encode text -> list of base64 stream tokens (the SDM spine). No header."""
+        self.open()
+        if stats is None:
+            stats = EncodeStats()
+        tokens = tokenize(text)
+        tokens = _strip_implicit_spaces(tokens)
+        parts: list[str] = []
+        with self._env.begin() as txn:
+            scanned = _longest_match_scan(tokens, txn, self._fwd_db)
+            for tok in scanned:
+                parts.append(self._encode_token(tok, txn, stats))
+        bad = [p for p in parts if ELO_DELIMITER in p]
+        if bad:
+            raise ValueError(
+                f"frame integrity: encoded part contains {ELO_DELIMITER!r}: {bad[0]!r}")
+        return parts
+
+    def decode_ids(self, ids: 'list[str]') -> str:
+        """Decode a list of stream tokens -> byte-exact text. Structural atoms
+        (leading '-') are markup, not text: they contribute '' and are otherwise
+        preserved by the caller's own copy of the list (lossless certificate:
+        decode_ids(encode_ids(t)) == t; structural atoms never come from encode_ids)."""
+        self.open()
+        out: list[str] = []
+        with self._env.begin() as txn:
+            for st in ids:
+                # Reserved structural atom (structure-ids-v1): leading '-' AND no
+                # ':'. The colon guard is LOAD-BEARING: the caps codec's all-caps
+                # marker is '-:<id>' (e.g. 'ERROR' -> '-:FoS'), a legitimate text
+                # token that also leads with '-'. Found 2026-08-21 when the naive
+                # startswith('-') test silently dropped every all-caps word.
+                if st.startswith('-') and ':' not in st:
+                    continue                    # markup, not text
+                out.append(self._decode_token(st, txn))
+        out = _restore_implicit_spaces(out)
+        return ''.join(out)
+
+    def ids_to_n(self, ids: 'list[str]') -> 'list[int | None]':
+        """base64 id -> integer channel index n (token-ids table), None where no
+        channel row exists (markers, OOV forms, structural atoms, unknowns)."""
+        table = self._n_table()
+        out: 'list[int | None]' = []
+        for st in ids:
+            if not st or ':' in st or st.startswith('-'):
+                out.append(None)
+            else:
+                out.append(table.get(st))
+        return out
+
+    def _n_table(self) -> dict:
+        """Lazy base64_id -> n map from the build package's token-ids.csv.gz
+        (sibling of the LMDB). Read from the artifact, cached per Compressor."""
+        cached = getattr(self, '_n_table_cache', None)
+        if cached is not None:
+            return cached
+        import csv as _csv
+        import gzip as _gzip
+        table: dict = {}
+        tid = Path(self.lmdb_path).parent / 'token-ids.csv.gz'
+        if tid.exists():
+            with _gzip.open(tid, 'rt', encoding='utf-8') as fh:
+                for row in _csv.DictReader(fh):
+                    try:
+                        table[row['base64_id']] = int(row['id'])
+                    except (KeyError, ValueError):
+                        continue
+        self._n_table_cache = table
+        return table
 
     # ------------------------------------------------------------------
     # Byte-level API
@@ -584,10 +754,19 @@ class Compressor:
         if len(ext_bytes) > 255:
             raise ValueError(f"format extension too long: {ext!r}")
 
-        # Header
+        # Header (v3: dictionary-bound). build_id + full fingerprint, each length-prefixed.
         out = bytearray()
         out += ELO_MAGIC_BIN
         out.append(ELO_BIN_VERSION)
+        bid_bytes = self._build_id.encode(STREAM_ENCODING)[:255]
+        out.append(len(bid_bytes))
+        out += bid_bytes
+        try:
+            fp_bytes = bytes.fromhex(self._dict_fp) if self._dict_fp else b''
+        except ValueError:
+            fp_bytes = b''
+        out.append(len(fp_bytes))
+        out += fp_bytes
         out.append(len(ext_bytes))
         out += ext_bytes
 
@@ -611,13 +790,23 @@ class Compressor:
         if len(elo_bytes) < 5 or elo_bytes[:3] != ELO_MAGIC_BIN:
             raise ValueError("Not an .eloB stream (missing magic)")
         version = elo_bytes[3]
-        if version != ELO_BIN_VERSION:
+        if version not in (ELO_BIN_LEGACY, ELO_BIN_VERSION):
             raise ValueError(
                 f"Unsupported .eloB version: file={version} reader={ELO_BIN_VERSION}"
             )
-        ext_len = elo_bytes[4]
-        ext = elo_bytes[5:5 + ext_len].decode(STREAM_ENCODING)
-        stream = elo_bytes[5 + ext_len:]
+        pos = 4
+        if version >= ELO_BIN_VERSION:
+            # v3: build_id + fingerprint, each length-prefixed
+            bid_len = elo_bytes[pos]; pos += 1
+            file_build_id = elo_bytes[pos:pos + bid_len].decode(STREAM_ENCODING); pos += bid_len
+            fp_len = elo_bytes[pos]; pos += 1
+            file_dict_fp = elo_bytes[pos:pos + fp_len].hex() if fp_len else ''; pos += fp_len
+            self._verify_identity(file_build_id, file_dict_fp)
+        else:
+            self._verify_identity('', '')      # legacy .eloB -> warn, no binding to check
+        ext_len = elo_bytes[pos]; pos += 1
+        ext = elo_bytes[pos:pos + ext_len].decode(STREAM_ENCODING); pos += ext_len
+        stream = elo_bytes[pos:]
 
         # Accumulate token bytes in a list — concatenated at the end. Tokens
         # already arrive as bytes from the cache / LMDB; no str round-trip.
@@ -748,7 +937,19 @@ def _encode_id_to_binary(out: bytearray, token_id: str) -> None:
         out.append(indices[1])
         out.append(indices[2])
     elif n == 4:
-        out.append(TAG_T3 | indices[0])     # 0xC0-0xFD
+        # GUARD (2026-08-26, integration-lane ruling): the T3 tag range is
+        # 0xC0-0xFD ONLY. First chars '-' (62) and '_' (63) would pack to 0xFE
+        # (TAG_CAP) / 0xFF (TAG_OOV) -- a reader then consumes the byte as a
+        # marker and the stream silently desynchronizes. The comment above
+        # always said 0xFD; the code never enforced it. 4-char '-'/'_' ids are
+        # UNENCODABLE on this wire until a TAG_RESERVED escape exists (which is
+        # also why structure-ids-v2 moved the reserved band to 3-char '-S?').
+        if indices[0] >= 62:
+            raise ValueError(
+                f"unencodable 4-char id {token_id!r}: first char index "
+                f"{indices[0]} packs into the TAG_CAP/TAG_OOV byte range -- "
+                f"see structure-ids-v2 / ruling 2026-08-26")
+        out.append(TAG_T3 | indices[0])     # 0xC0-0xFD (enforced above)
         out.append(indices[1])
         out.append(indices[2])
         out.append(indices[3])
@@ -1129,20 +1330,30 @@ def _denormalize_ext(ext: str) -> str:
     return ext if ext.startswith('.') else '.' + ext
 
 
-def _parse_header(elo_text: str) -> tuple[str, str, str, str]:
+def _parse_header(elo_text: str) -> tuple[str, str, str, str, str, str]:
     """
     Split the .elo header from its stream body.
 
-    Returns (magic, version, source_ext, stream).
+    Returns (magic, version, build_id, dict_fp, source_ext, stream).
+      v1 (legacy):  magic | version | ext | stream            -> build_id, dict_fp = '', ''
+      v2 (bound):   magic | version | build_id | dict_fp | ext | stream
     Raises ValueError on malformed input.
     """
-    parts = elo_text.split(ELO_DELIMITER, 3)
-    if len(parts) < 4:
-        # No stream -> still expect 3 header parts
-        if len(parts) < 3:
-            raise ValueError(f"Malformed .elo header: {elo_text[:64]!r}")
-        return parts[0], parts[1], parts[2], ''
-    return parts[0], parts[1], parts[2], parts[3]
+    head = elo_text.split(ELO_DELIMITER, 2)
+    if len(head) < 2:
+        raise ValueError(f"Malformed .elo header: {elo_text[:64]!r}")
+    magic, version = head[0], head[1]
+    rest = head[2] if len(head) > 2 else ''
+    if version == str(ELO_TEXT_LEGACY):
+        p = rest.split(ELO_DELIMITER, 1)
+        ext = p[0]
+        stream = p[1] if len(p) > 1 else ''
+        return magic, version, '', '', ext, stream
+    # v2+: build_id | dict_fp | ext | stream  (stream keeps its internal delimiters)
+    p = rest.split(ELO_DELIMITER, 3)
+    while len(p) < 4:
+        p.append('')
+    return magic, version, p[0], p[1], p[2], p[3]
 
 
 # ---------------------------------------------------------------------------
@@ -1152,6 +1363,24 @@ def _parse_header(elo_text: str) -> tuple[str, str, str, str]:
 def encode_text(text: str, fmt: str = '.txt') -> str:
     with Compressor() as c:
         return c.encode_text(text, fmt=fmt)
+
+
+def encode_ids(text: str, fmt: str = '.txt') -> 'list[str]':
+    """Module-level convenience (SDM contract). See Compressor.encode_ids."""
+    with Compressor() as c:
+        return c.encode_ids(text, fmt=fmt)
+
+
+def decode_ids(ids: 'list[str]') -> str:
+    """Module-level convenience (SDM contract). See Compressor.decode_ids."""
+    with Compressor() as c:
+        return c.decode_ids(ids)
+
+
+def ids_to_n(ids: 'list[str]') -> 'list[int | None]':
+    """Module-level convenience (SDM contract). See Compressor.ids_to_n."""
+    with Compressor() as c:
+        return c.ids_to_n(ids)
 
 
 def decode_text(elo_text: str) -> tuple[str, str]:

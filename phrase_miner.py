@@ -49,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, '.')
 
 from semantic_compression.config import (
-    FORMAT_VERSION, FUNCTION_WORDS, UTILITY, UTILITY_MASK, UTILITY_SHIFT,
+    COUNTS_FORMAT_VERSION, FUNCTION_WORDS, UTILITY, UTILITY_MASK, UTILITY_SHIFT,
 )
 
 # The hygiene gates need "is this a function word?" — which is the FACETS
@@ -327,7 +327,7 @@ def score_candidates(candidates: list[dict]) -> list[dict]:
 def write_all(records: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"# phrase_candidates.txt  format_version={FORMAT_VERSION}\n")
+        f.write(f"# phrase_candidates.txt  format_version={COUNTS_FORMAT_VERSION}\n")
         f.write("# rank\tn\tfreq\tpmi\tsavings_each\tsavings_total\tscore\tphrase\n")
         for rank, r in enumerate(records, 1):
             f.write(
@@ -340,7 +340,7 @@ def write_all(records: list[dict], path: Path) -> None:
 def write_summary(records: list[dict], path: Path, top_cuts: tuple[int, ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"# phrase_top_summary.txt   format_version={FORMAT_VERSION}\n")
+        f.write(f"# phrase_top_summary.txt   format_version={COUNTS_FORMAT_VERSION}\n")
         f.write(f"# survivors: {len(records):,}\n\n")
 
         for top_n in top_cuts:

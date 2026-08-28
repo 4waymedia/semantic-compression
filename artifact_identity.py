@@ -153,7 +153,10 @@ def registry_from_package(pkg_dir: str | Path) -> dict:
         f = json.loads(fs.read_text())
         reg["facets"] = make_identity(
             "facets", version=f.get("facets_format_version", 1),
-            fingerprint=f.get("dictionary_fingerprint"), status=status,
+            # facets_fingerprint = the facets-inclusive content hash (honest key,
+            # 2026-08-10). Older stats wrote it under dictionary_fingerprint.
+            fingerprint=f.get("facets_fingerprint") or f.get("dictionary_fingerprint"),
+            status=status,
             key_scheme="base64_id", bound_refs={"dictionary": dfp})
     else:
         reg["facets"] = make_identity("facets", version=1, present=False,

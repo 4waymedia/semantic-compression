@@ -1,5 +1,11 @@
 # .elo File Format Specification
 ### EloAI Semantic Compression Format — v1.0
+
+> ⚠ **DUPLICATE COPY (2026-08-19).** The `.elo` file-format lane
+> (`elo-file-format/docs/spec/ELO_FILE_FORMAT.md`) owns this spec; four copies
+> exist across the repo and have diverged (the `Memory/` copies carried a claim
+> refuted by measurement that the others never had). Treat this copy as local
+> reference for the compression lane; reconcile any change in the owner's copy.
 > A lossless binary document format where compression and semantic intelligence are the same operation.
 
 ---

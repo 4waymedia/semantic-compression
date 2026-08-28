@@ -42,7 +42,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, '.')
 
-from semantic_compression.config import DB_PATH, FORMAT_VERSION, TRANSCRIPT_DIR
+from semantic_compression.config import DB_PATH, COUNTS_FORMAT_VERSION, TRANSCRIPT_DIR
 from semantic_compression.corpus_scanner import scan_transcripts
 from semantic_compression.tokenizer import CLASS_WORD, classify, tokenize
 
@@ -228,7 +228,7 @@ def score_candidates(
 def write_all_ngrams(records: list[dict], path: Path = OUT_ALL) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"# ngram_frequencies.txt  format_version={FORMAT_VERSION}\n")
+        f.write(f"# ngram_frequencies.txt  format_version={COUNTS_FORMAT_VERSION}\n")
         f.write("# rank<TAB>n<TAB>freq<TAB>savings_each<TAB>savings_total<TAB>phrase\n")
         for rank, r in enumerate(records, 1):
             f.write(
@@ -246,7 +246,7 @@ def write_summary(records: list[dict], path: Path = OUT_SUMMARY) -> None:
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write("# ngram_top_summary.txt\n")
-        f.write(f"# format_version={FORMAT_VERSION}\n")
+        f.write(f"# format_version={COUNTS_FORMAT_VERSION}\n")
         f.write(f"# candidates above MIN_FREQ floor: {len(records):,}\n\n")
 
         for top_n in (100, 250, 500, 1000):

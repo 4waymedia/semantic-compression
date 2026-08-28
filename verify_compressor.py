@@ -19,7 +19,7 @@ sys.path.insert(0, '.')
 from semantic_compression.compressor import (
     Compressor, EncodeStats,
     encode_text, decode_text, encode_file, decode_file,
-    ELO_MAGIC, ELO_DELIMITER, ELO_EXTENSION,
+    ELO_MAGIC, ELO_DELIMITER, ELO_EXTENSION, ELO_TEXT_VERSION,
 )
 from semantic_compression.config import FORMAT_VERSION
 from semantic_compression.format_adapters import detect_format
@@ -56,10 +56,11 @@ for text, fmt in TEST_TEXTS:
     assert rec_fmt == fmt, f"fmt mismatch: {rec_fmt!r} vs {fmt!r}"
     assert rec_text == text, f"text mismatch for {text[:40]!r}"
     # Header check
-    parts = elo.split(ELO_DELIMITER, 3)
+    parts = elo.split(ELO_DELIMITER, 5)
     assert parts[0] == ELO_MAGIC
-    assert int(parts[1]) == FORMAT_VERSION
-    assert '.' + parts[2] == fmt
+    assert int(parts[1]) == ELO_TEXT_VERSION
+    # v2: parts[2]=build_id, parts[3]=dict_fp, parts[4]=ext
+    assert '.' + parts[4] == fmt
 print(f'[OK] {len(TEST_TEXTS)} text round-trips byte-exact (including empty + single-char)')
 
 
@@ -129,9 +130,9 @@ print('[OK] encode_file/decode_file honour explicit dst paths')
 print()
 print('=== .elo header format ===')
 elo = encode_text('hello', fmt='.txt')
-assert elo.startswith(f'{ELO_MAGIC}{ELO_DELIMITER}{FORMAT_VERSION}{ELO_DELIMITER}txt{ELO_DELIMITER}'), \
+assert elo.startswith(f'{ELO_MAGIC}{ELO_DELIMITER}{ELO_TEXT_VERSION}{ELO_DELIMITER}'), \
     f"Header format wrong: {elo[:30]!r}"
-print(f'[OK] Header format: "{ELO_MAGIC}|{FORMAT_VERSION}|<ext>|<stream>"')
+print(f'[OK] Header format: "{ELO_MAGIC}|{ELO_TEXT_VERSION}|<build_id>|<dict_fp>|<ext>|<stream>"')
 
 
 # ---------------------------------------------------------------------------

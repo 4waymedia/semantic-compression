@@ -143,15 +143,48 @@ v01c `bdec07bf404aa5d7`.
 
 ---
 
-## 5. Tier 4 — the phrase namespace
+## 5. Tier 4 — the reserved namespace
 
 `detect_tier` returns 4 for any id starting with `-`. **No build emits a
-`-`-prefixed id.** The namespace is reserved and currently unused — phrases are
-minted into Tiers 1–3 alongside words, from the same ranking.
+`-`-prefixed id** — the minting alphabet excludes `-`, so nothing in this
+namespace can ever collide with a dictionary id, in any build, by construction.
+Phrases are minted into Tiers 1–3 alongside words, from the same ranking.
 
 `-` is excluded from `TIER_FIRST_CHARS_EXPANDED` for exactly this reason, which
 is why the expanded alphabet is 63 and not 64. Reclaiming it would buy 1.6%
-capacity and cost the phrase namespace. Not recommended.
+capacity and cost the namespace. Not recommended.
+
+### 5.1 The structure band (2026-08-21) — the namespace's first live carve
+
+**`-SA`…`-S_`** (64 atoms, **3-char**) is the **document-structure band**:
+spec-assigned, build-independent atoms for block markers, attribute grammar and
+typed values — the spine markup the SDM apps (Writer, Notes) store inside the id
+stream. Contract: [`data/structure-ids-v2.json`](../../data/structure-ids-v2.json)
+(41 assigned + 23 held; container CLOSE == OPEN + 1 in charset order). Freezes
+with the v05 declaration; immutable thereafter.
+
+> **Why 3-char, and the permanent sub-namespace rule (2026-08-26 ruling):** the
+> `.eloB` binary packs a 4-char id's first char into `0xC0|index` — for `-`
+> (62) and `_` (63) that collides with `TAG_CAP` (0xFE) / `TAG_OOV` (0xFF), so
+> **4-char `-`/`_`-leading ids are UNENCODABLE on the wire** and MUST NOT be
+> assigned by any band contract until a `TAG_RESERVED` escape exists (the
+> Python codec now raises on the attempt). v1 of this band (`-S0?`, 4-char) was
+> superseded before anything serialized it. The standard carve is **3-char
+> `-?A`…`-?_` bands** — 64 atoms per leading pair, 63 pairs available; a 3-char
+> `-`-lead packs to `0x80|62 = 0xBE`, a valid Tier-2 tag.
+
+Properties, all by construction (no build machinery): never mintable, identical
+in every dictionary in the library, no surface ⇒ no EPA/vfacets/neighbours/
+frequency (absent, never zero), unreachable by `encode_ids`, outside the
+vocab/`n` universe (`ids_to_n` → `None`). The NORMATIVE consumer test is
+**leading `-` ⇒ structural**; the synthetic STRUCTURAL facet records stamped at
+v05 are a convenience, never the primary test. Verify gate: no `-`-lead id in
+any `forward`/`reverse`; all 64 band atoms carry the synthetic facet record and
+no other `-`-lead id does.
+
+Future bands (annotations, app-specific) carve the same way — 3-char, one
+leading pair each — with their own versioned contract file. Never 4-char (see
+the rule above).
 
 ---
 

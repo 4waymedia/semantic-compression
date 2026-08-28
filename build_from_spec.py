@@ -43,15 +43,24 @@ def resolve_corpus(spec: dict, repo_root: Path) -> tuple[Path, dict]:
     held_out = set(spec.get("eval", {}).get("held_out_books", []))
     sources_manifest = []
     base = Counter()
+    # HARD RULE provenance (2026-08-10): a token is LEXICAL if any lexical-type
+    # source contributes it. Tokens seen ONLY in non-lexical sources (web-structure:
+    # CSS names, JS classes, markup tokens) are the ONLY candidates a size limit may
+    # evict -- words are never dropped. A source may override with `lexical: true/false`.
+    LEXICAL_TYPES = {"transcripts", "books", "text", "wordlist"}
+    lexical_tokens: set[str] = set()
 
     for src in spec.get("corpus", []):
         stype = src["type"]
         weight = float(src.get("weight", 1.0))
+        is_lexical = bool(src.get("lexical", stype in LEXICAL_TYPES))
         if "precomputed" in src:                       # e.g. transcripts counts
             pc = repo_root / src["precomputed"]
             counts = bld.load_word_frequencies(pc)
             for w, c in counts.items():
                 base[w] += int(round(c * weight))
+            if is_lexical:
+                lexical_tokens.update(counts.keys())
             sources_manifest.append({"type": stype, "file": src["precomputed"],
                                      "sha256": _sha256(pc), "weight": weight,
                                      "unique_tokens": len(counts)})
@@ -65,6 +74,8 @@ def resolve_corpus(spec: dict, repo_root: Path) -> tuple[Path, dict]:
                 toks = tokenize(t)
                 for w in toks:
                     base[w] += int(round(weight))
+                if is_lexical:
+                    lexical_tokens.update(toks)
                 sources_manifest.append({"type": stype, "file": str(f.relative_to(repo_root)),
                                          "sha256": _sha256(f), "weight": weight,
                                          "tokens": len(toks)})
@@ -83,12 +94,24 @@ def resolve_corpus(spec: dict, repo_root: Path) -> tuple[Path, dict]:
         for w, c in sorted(base.items(), key=lambda kv: -kv[1]):
             f.write(f"{c}\t{w.encode('unicode_escape').decode('ascii')}\n")
 
+    # HARD RULE: emit the non-lexical set (tokens ONLY in non-lexical sources) so
+    # the builder knows the ONLY class a size limit may evict.
+    nonlexical = set(base) - lexical_tokens
+    nl_out = Path("semantic_compression/data") / f"nonlexical_terms_{name}.txt"
+    with open(nl_out, "w", encoding="utf-8") as f:
+        f.write(f"# tokens present ONLY in non-lexical corpus sources -- the sole "
+                f"eviction class under a size limit (words are never dropped)\n")
+        for w in sorted(nonlexical):
+            f.write(w + "\n")
+
     manifest = {"corpus_fingerprint": corpus_fingerprint,
                 "corpus_sources": sources_manifest,
                 "corpus_unique_tokens": len(base),
                 "corpus_total_tokens": sum(base.values()),
+                "corpus_lexical_tokens": len(lexical_tokens & set(base)),
+                "corpus_nonlexical_only_tokens": len(nonlexical),
                 "held_out_books": sorted(held_out)}
-    return out, manifest
+    return out, manifest, nl_out
 
 
 def main() -> None:
@@ -109,7 +132,7 @@ def main() -> None:
     print(f"=== build '{name}'  ({meta.get('purpose','')[:60]}) ===")
     print(f"suite: preset={preset}  core={core}"
           + (f"  downstream(build_assets)={downstream}" if downstream else ""))
-    wf, corpus_manifest = resolve_corpus(spec, repo_root)
+    wf, corpus_manifest, nonlexical_file = resolve_corpus(spec, repo_root)
     print(f"corpus: {corpus_manifest['corpus_unique_tokens']:,} unique / "
           f"{corpus_manifest['corpus_total_tokens']:,} tokens / "
           f"{len(corpus_manifest['corpus_sources'])} sources / "
@@ -155,6 +178,8 @@ def main() -> None:
         # ever controlled the WORD half of the competition.
         phrase_file=(repo_root / build["phrase_file"]) if build.get("phrase_file")
                     else (repo_root / 'semantic_compression/data/phrase_candidates.txt'),
+        # HARD RULE: the only class a size limit may evict; words never drop.
+        nonlexical_file=nonlexical_file,
         extra_manifest=extra)
     # Meta layer (System-1 deterministic) -> meta.db  — only if the suite declares it
     if "meta" in enabled:

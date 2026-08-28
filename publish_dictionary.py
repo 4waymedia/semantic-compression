@@ -54,8 +54,10 @@ EPA_REC = struct.Struct("<fff")          # 12 B  affect triple
 FCT_REC = struct.Struct("<BHB")          # 4 B   bucket, cue_mask, flags
 NBR_OFF = struct.Struct("<I")            # CSR offset u32
 NBR_REC = struct.Struct("<IB")           # neighbour_n u32 + sim u8 = 5 B
+VFT_REC = struct.Struct("<BB")           # 2 B  vfacet record; b"\xff\xff" = absent
+VFT_ABSENT = b"\xff\xff"
 MAGIC = {"epa": b"ELOEPA\x01\x00", "facets": b"ELOFCT\x01\x00",
-         "neighbours": b"ELONBR\x01\x00"}
+         "neighbours": b"ELONBR\x01\x00", "vfacets": b"ELOVFT\x01\x00"}
 BUCKET_ABSENT = 0xFF
 HDR_LEN = HEADER.size + 64               # 80
 
@@ -63,6 +65,10 @@ SCHEMA = "elo-dictionary-bundle/1"
 
 # Files that make up a bundle. (role, filename-suffix, required)
 BUNDLE_CHANNELS = ("facets", "epa", "neighbours")
+# vfacets is CONDITIONAL: required in the bundle iff the source build's LMDB
+# carries b'vfacets' (a build that has the channel must ship it -- "complete by
+# construction"); a build without it publishes a 3-channel bundle, honestly.
+OPTIONAL_CHANNELS = ("vfacets",)
 # Anything matching these must NOT be in a bundle dir (spec sec 2 deny-list).
 DENY = ("dictionary.lmdb", "meta.db", "token-ids.csv.gz",
         "dictionary.denotative.index", "dictionary.denotative.vecs.f32",
@@ -100,6 +106,24 @@ def _build_lmdb_fingerprint(build_dir: Path) -> str | None:
         return v.decode() if v else None
     except Exception:
         return None
+    finally:
+        env.close()
+
+
+def _has_subdb_publish(lmdb_path: Path, name: bytes) -> bool:
+    """Does the build LMDB carry this sub-db? (drives conditional channels)."""
+    try:
+        import lmdb  # noqa: PLC0415
+    except Exception:
+        return False
+    if not lmdb_path.exists():
+        return False
+    env = lmdb.open(str(lmdb_path), readonly=True, lock=False, max_dbs=16)
+    try:
+        env.open_db(name, create=False)
+        return True
+    except Exception:
+        return False
     finally:
         env.close()
 
@@ -184,8 +208,9 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
     counts = bundle["_counts"]              # role -> header count
     fps = bundle["_fps"]                    # role -> header fp
 
+    chans = bundle.get("_channels", list(BUNDLE_CHANNELS))
     # G1 one vocabulary, one n
-    bad = [f"{r}={counts[r]}" for r in BUNDLE_CHANNELS if counts[r] != vocab_entries]
+    bad = [f"{r}={counts[r]}" for r in chans if counts[r] != vocab_entries]
     gates.append(Gate("G1", "one vocabulary, one n", not bad,
                       f"all channels count == vocab_entries={vocab_entries}" if not bad
                       else f"count mismatch: {', '.join(bad)} (vocab={vocab_entries})"))
@@ -195,7 +220,7 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
     #     (elo-browser-v01c: every channel carries bdec07bf, but the build LMDB now
     #     self-declares f4c8879e -- the bundle cannot be reproduced from its build dir).
     build_fp = bundle.get("_build_lmdb_fp")
-    disagree = {r: fps[r] for r in BUNDLE_CHANNELS if fps[r] != src_fp}
+    disagree = {r: fps[r] for r in chans if fps[r] != src_fp}
     lmdb_ok = (build_fp is None) or (build_fp == src_fp)
     g2ok = (not disagree) and lmdb_ok
     if disagree:
@@ -237,10 +262,18 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
         "epa": {"entries": epa_present, "coverage": round(epa_present / vocab_entries, 4)},
         "neighbours": {"entries": nbr_present, "coverage": round(nbr_present / vocab_entries, 4)},
     }
+    g7_extra = ""
+    if "vfacets" in chans:
+        raw = bundle["vfacets"].read_bytes()
+        vft_present = sum(1 for n in range(vocab_entries)
+                          if raw[HDR_LEN + n * 2:HDR_LEN + n * 2 + 2] != VFT_ABSENT)
+        bundle["_coverage"]["vfacets"] = {
+            "entries": vft_present, "coverage": round(vft_present / vocab_entries, 4)}
+        g7_extra = f", vfacets {vft_present} ({100*vft_present/vocab_entries:.1f}%)"
     gates.append(Gate("G7", "coverage recorded", True,
                       f"facets {fct_present}/{vocab_entries} ({100*fct_present/vocab_entries:.1f}%), "
                       f"epa {epa_present} ({100*epa_present/vocab_entries:.1f}%), "
-                      f"neighbours {nbr_present} ({100*nbr_present/vocab_entries:.1f}%)"))
+                      f"neighbours {nbr_present} ({100*nbr_present/vocab_entries:.1f}%)" + g7_extra))
 
     # G8 spot read -- resolve a real surface through all three channels at one n
     #     Pick an n that has all three (so the proof is end-to-end), else fail loudly.
@@ -275,7 +308,14 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
                 ("G6", "facets (verify_facets)", "verify_facets.py", SC_DIR)):
             r = subprocess.run([sys.executable, str(SC_DIR / script), "--db", str(lmdb_path)],
                                capture_output=True, text=True, cwd=str(cwd), env=env)
-            tail = (r.stdout or r.stderr).strip().splitlines()
+            # On failure, the ERROR is the detail -- prefer stderr, then the last
+            # stdout line. (A failing verify_facets printed "[OK] T4 ..." as its
+            # last stdout line while the assertion sat in stderr; the gate showed
+            # an OK line next to FAIL, which helped nobody.)
+            if r.returncode == 0:
+                tail = (r.stdout or r.stderr).strip().splitlines()
+            else:
+                tail = (r.stderr or r.stdout).strip().splitlines()
             gates.append(Gate(gid, name, r.returncode == 0,
                               (tail[-1] if tail else f"exit {r.returncode}")))
     else:
@@ -292,6 +332,15 @@ def load_bundle(bundle_dir: Path, build_dir: Path, build_name: str) -> dict:
     for p in (vocab_path, *files.values(), bundle_dir / "facets.names.json"):
         if not p.exists():
             raise SystemExit(f"bundle incomplete: missing {p}")
+    # vfacets: required iff the source build carries the channel.
+    vft_path = bundle_dir / "vfacets.bin"
+    build_has_vft = _has_subdb_publish(build_dir / "dictionary.lmdb", b"vfacets")
+    if build_has_vft and not vft_path.exists():
+        raise SystemExit(f"bundle incomplete: the build carries b'vfacets' but {vft_path} "
+                         f"is missing -- re-run the exporter (stage 7)")
+    channels = list(BUNDLE_CHANNELS) + (["vfacets"] if vft_path.exists() else [])
+    if vft_path.exists():
+        files["vfacets"] = vft_path
     vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
     counts, fps = {}, {}
     for role, p in files.items():
@@ -302,6 +351,7 @@ def load_bundle(bundle_dir: Path, build_dir: Path, build_name: str) -> dict:
         **files, "vocab": vocab_path, "_dir": bundle_dir, "_vocab": vocab,
         "_vocab_entries": int(vocab["content_size"]),
         "_counts": counts, "_fps": fps,
+        "_channels": channels,                 # 3 required + vfacets when present
         "_source_fp": fps["facets"],           # canonical; G2 checks the others match
         "_build_lmdb_fp": _build_lmdb_fingerprint(build_dir),
         "_manifest": manifest,
@@ -316,6 +366,8 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
     shipped = {bundle["vocab"].name: bundle["vocab"], "facets.bin": bundle["facets"],
                "epa.bin": bundle["epa"], "neighbours.bin": bundle["neighbours"],
                "facets.names.json": bundle["_dir"] / "facets.names.json"}
+    if "vfacets" in bundle.get("_channels", []):
+        shipped["vfacets.bin"] = bundle["vfacets"]
     shas = {name: _sha256(p) for name, p in sorted(shipped.items())}
     fp_material = "".join(f"{name}\t{sha}\n" for name, sha in sorted(shas.items()))
     bundle_fp = hashlib.sha256(fp_material.encode("utf-8")).hexdigest()
@@ -343,6 +395,12 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
                            "entries": cov["neighbours"]["entries"],
                            "coverage": cov["neighbours"]["coverage"],
                            "format": "CSR: 80B header + (count+1) u32 offsets + records(u32 n,u8 sim)"},
+            **({"vfacets": {"file": "vfacets.bin", "sha256": shas["vfacets.bin"],
+                            "entries": cov["vfacets"]["entries"],
+                            "coverage": cov["vfacets"]["coverage"],
+                            "format": "80B header + count * 2B '<BB' (0xFFFF = absent); "
+                                      "agency/direction from vfacet_substrate join"}}
+               if "vfacets" in cov else {}),
         },
         "provenance": {
             "corpus_fingerprint": man.get("corpus_fingerprint"),
@@ -456,8 +514,11 @@ def main() -> int:
                          f"a rebuild is a NEW build name (spec sec 4.2).")
     dest.mkdir(parents=True)
     import shutil
-    for src in (bundle["vocab"], bundle["facets"], bundle["epa"], bundle["neighbours"],
-                bundle_src / "facets.names.json"):
+    to_copy = [bundle["vocab"], bundle["facets"], bundle["epa"], bundle["neighbours"],
+               bundle_src / "facets.names.json"]
+    if "vfacets" in bundle.get("_channels", []):
+        to_copy.append(bundle["vfacets"])
+    for src in to_copy:
         shutil.copyfile(src, dest / src.name)
     (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\npublished -> {dest}\n  {len(doc['files'])+1} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
@@ -495,7 +556,10 @@ def retag_bundle(src_dir: Path, new_name: str, out_root: Path, dry: bool) -> int
 
     dest.mkdir(parents=True)
     # channels are fingerprint-keyed and name-agnostic -> copy verbatim.
-    for fn in ("epa.bin", "facets.bin", "neighbours.bin", "facets.names.json"):
+    retag_files = ["epa.bin", "facets.bin", "neighbours.bin", "facets.names.json"]
+    if (src_dir / "vfacets.bin").exists():
+        retag_files.append("vfacets.bin")
+    for fn in retag_files:
         shutil.copyfile(src_dir / fn, dest / fn)
     # vocab carries the label -> rename the file and re-stamp vocab_version.
     vocab = json.loads(src_vocab.read_text(encoding="utf-8"))
@@ -504,9 +568,7 @@ def retag_bundle(src_dir: Path, new_name: str, out_root: Path, dry: bool) -> int
         json.dumps(vocab, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
     shipped = {f"{new_name}.browser.json": dest / f"{new_name}.browser.json",
-               "facets.bin": dest / "facets.bin", "epa.bin": dest / "epa.bin",
-               "neighbours.bin": dest / "neighbours.bin",
-               "facets.names.json": dest / "facets.names.json"}
+               **{fn: dest / fn for fn in retag_files}}
     shas = {n: _sha256(p) for n, p in sorted(shipped.items())}
     bundle_fp = hashlib.sha256(
         "".join(f"{n}\t{s}\n" for n, s in sorted(shas.items())).encode("utf-8")).hexdigest()

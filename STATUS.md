@@ -1,0 +1,124 @@
+# semantic_compression — Status
+
+| | |
+|---|---|
+| **Status** | `develop` (dev source; graduates two packages) |
+| **Liveness** | `active` — codec + dictionary build exercised 2026-08-07 |
+| **Updated** | 2026-08-07 |
+| **Owner lane** | semantic_compression / dictionary lane |
+| **Spec** | `SYSTEM1.md` · `docs/compression/*` · `docs/format/ELO_FILE_FORMAT.md` + `docs/format/spec-elo-dictionary-binding.md` |
+| **Package** | graduates **two**: `packages/elo-dictionary/` 0.3.1 (block, publishable) · `packages/elo-compression/` 0.3.1 (system, private) |
+
+> This is a **git submodule** — changes here need a submodule commit **plus** a parent
+> gitlink bump. Import names are frozen (`compression_dictionary`, `eloai_semantic_compression`);
+> only the distribution names moved to `elo-*` (2026-08-07 naming change).
+
+## 1. What this is
+
+The ELO dictionary + compression substrate (System-1 Perception): builds a Base64 canonical
+dictionary from a corpus, mines phrases, derives per-surface facets/EPA/meta, and encodes/decodes
+text to the `.elo`/`.eloB` container losslessly. It is the root object the rest of the stack
+is built around. It does **not** do runtime reasoning, memory, or LLM inference — it produces
+the ID space and the coupled asset family that downstream systems consume.
+
+## 2. Current build
+
+| component | file | state |
+|---|---|---|
+| Base64 dictionary + tiers | `dictionary_builder_v03.py`, `library_builder.py` | built |
+| Phrase mining + hygiene | `phrase_miner.py`, `ngram_counter.py` | built |
+| Facets (bucket · cue · utility) | `facets.py`, `facet_builder.py`, `facet_reader.py` | built |
+| EPA join (from mneme substrate) | `epa_match.py` | built — ⚠ `sys.path` reach-in (§8) |
+| meta.db (POS / complement / layer-2) | `meta_builder.py`, `meta_layer2.py` | built |
+| Codec `.elo`/`.eloB` | `compressor.py` | built — **now dictionary-bound (§ below)** |
+| Build family driver + asset cascade | `build_dictionary.py`, `build_from_spec.py`, `build_assets.py`, `build_suite.py` | built |
+| Artifact identity / manifest | `artifact_identity.py` | built |
+| Publish (stage 12) | `publish_dictionary.py` + `docs/compression/spec-publish-dictionary.md` | **spec only / in progress — not this lane's completed work yet** |
+
+**New 2026-08-07 — the `.elo` container names its own dictionary.** `FORMAT_VERSION` → **2**
+(text) / `ELO_BIN_VERSION` → **3** (binary): the header now carries `build_id` + the dictionary
+**fingerprint**. Decode verifies and raises `DictionaryMismatch` on a wrong dictionary; legacy
+v1/v2 files still decode with a warning. Spec: `docs/format/spec-elo-dictionary-binding.md`.
+`FORMAT_VERSION` was also decoupled from the corpus counters (new `COUNTS_FORMAT_VERSION`).
+
+## 3. Current output
+
+| artifact | shape | consumed by |
+|---|---|---|
+| dictionary build family | `db/builds/<name>/` — `dictionary.lmdb`, `facets.bin`, `epa.bin`, `neighbours.bin`, `meta.db`, `manifest.json` (fingerprint-bound) | ELO Browser, 06/`elo-recall`, verbalizer, llm-training |
+| `.elo` / `.eloB` streams | dictionary-bound container (`build_id` + fingerprint header) | ELO Browser, any reader with the matching dictionary |
+| `elo-dictionary` package | base block (config, codec primitives, facets, tokenizer) | `elo-compression`, `elo-verbalizer`, 06 |
+| `elo-compression` package | codec/facet-reader surface (consumes `elo-dictionary`) | products (private layer) |
+
+Active shipped build: **`elo-browser-v01c`** (status `staged`). Identity is read from each
+build's own `manifest.json` / `assets.meta.json`; never restated by consumers.
+
+## 4. Usage
+
+```powershell
+cd F:\Script-Projects\elo-dev\elo_dev\R-D-concepts
+# build a dictionary family (one YAML -> core + asset cascade)
+$env:PYTHONPATH="."; python -m semantic_compression.build_dictionary semantic_compression\builds\<name>.yaml --device cuda
+# encode / decode
+python -m semantic_compression.compressor encode <input> <output.elo>
+python -m semantic_compression.compressor decode <input.elo> <output>
+```
+
+## 5. Tests
+
+```powershell
+cd F:\Script-Projects\elo-dev\elo_dev\R-D-concepts
+$env:PYTHONPATH=".;semantic_compression"; python semantic_compression\verify_compressor.py   # expect: 10/10 byte-exact
+python packages\elo-dictionary\export-package.py --check      # expect: CHECK: clean
+python packages\elo-compression\export-package.py --check     # expect: CHECK: clean
+```
+
+| suite | count | last run | result |
+|---|---|---|---|
+| `verify_compressor.py` (round-trip) | 10 formats | 2026-08-07 | ✅ 10/10 byte-exact |
+| `elo-dictionary` drift gate | `--check` | 2026-08-07 | ✅ clean |
+| `elo-compression` drift gate | `--check` | 2026-08-07 | ✅ clean |
+| `verify_lossless.py` (byte-exact) | corpus samples | see file | run per build |
+
+## 6. Dependencies
+
+| depends on | mechanism | note |
+|---|---|---|
+| `mneme` (Warriner EPA substrate) | ⚠ **`sys.path` reach-in** (`epa_match.py:27-36`) | should consume the `elo-memory`/`mneme` package; cleanup pending (§8) |
+
+**Depended on by:** ELO Browser (dictionary bundle), 06 / `elo-recall`, verbalizer
+(`elo-verbalizer` optional `discourse` extra → `elo-dictionary`), llm-training (vocab contract),
+`elo-compression`.
+
+## 7. Package + export
+
+| | |
+|---|---|
+| Packages | `elo-dictionary` 0.3.1 (block, `publish=true`) · `elo-compression` 0.3.1 (system, `publish=false`) |
+| `export-package.py` | **present on both** (elo-dictionary = curated subset; elo-compression = curated subset, dual-namespace transform) |
+| `--check` (drift) | **green on both** (2026-08-07) |
+| In `[tool.uv.sources]` | yes — `elo-dictionary`, `elo-compression` |
+| Published to elo-dev | not yet (stage-12 publish pending) |
+
+> Development happens **here**. `packages/*` is generated output — never edit it directly
+> (Standard §2, §13). `[tool.eloai]` has been renamed `[tool.elo]` on both packages.
+
+## 8. Known debt
+
+| item | impact | pointer |
+|---|---|---|
+| `epa_match.py` reaches into mneme via `sys.path` | invisible coupling; breaks if mneme moves | `epa_match.py:27-36` · `handoffs/HANDOFF-mneme-base-block-and-epa-consumer.md` |
+| **`dictionary_fingerprint` key mislabelled** | `tools/systems.toml [systems.dictionary_build]` and 5 downstream files store the **facets hash** (`9a77e623…`), not the dict hash (`4335d939…`). Harmless until facets are rebuilt independently without a full dict rebuild — then the fingerprint check passes a stale pairing | `tools/systems.toml` `[systems.dictionary_build]`; correct when keys are next touched |
+| Stage-12 publish (R-D) not built | no publish step → every build is `staged`; five fingerprints disagree on `elo-browser-v01c` | `docs/compression/spec-publish-dictionary.md` §6 (needs two owner calls: raw vs `.tar.zst`; one bundle vs per-cut) |
+| `ELO_FILE_FORMAT.md` diverged from the codec | paper spec describes a 64-byte header / `dict_version` / `0x1F` delimiter the code never used | `docs/format/spec-elo-dictionary-binding.md` §6 |
+| `eloai_semantic_compression.data` reserved-noun | conformance warn (generic segment) | naming doc §4.2 — rename when convenient |
+| Stale ELO-Browser loose `.bin`/`.json` copies | identity that can disagree with the bundle | ELO-Browser lane (repoint `bindings.toml` then delete) |
+
+## 9. Changelog
+
+| date | change |
+|---|---|
+| 2026-08-10 | **`vfacets` promoted to build stage** — previously run by hand; now a proper declared stage in the build pipeline. See `handoffs/2026-08-10-*.md`. |
+| 2026-08-07 | `.elo`/`.eloB` header dictionary-binding (`FORMAT_VERSION` 2 / `ELO_BIN` 3); `COUNTS_FORMAT_VERSION` split off; `facet_builder` data path made module-relative |
+| 2026-08-07 | packages renamed `compression-dictionary`→`elo-dictionary`, `eloai-semantic-compression`→`elo-compression` (dist names; import names frozen); `elo-compression` gained its `export-package.py` drift gate |
+| 2026-08-05 | verbalizer graduated out to base `verbalizer` package; ops/response/conformance folded; packageability report authored |

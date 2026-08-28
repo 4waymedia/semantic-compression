@@ -1,7 +1,14 @@
 # ---------------------------------------------------------------------------
 # Format versioning — increment if stream format changes (C reader checks this)
 # ---------------------------------------------------------------------------
-FORMAT_VERSION  = 1        # embedded in every .elo file header
+FORMAT_VERSION  = 2        # .elo TEXT stream header. v2 = dictionary-bound header
+                           # (build_id + fingerprint); see docs/format/
+                           # spec-elo-dictionary-binding.md. Readers hard-error on
+                           # mismatch. NOT for internal artifacts -> use
+                           # COUNTS_FORMAT_VERSION below.
+COUNTS_FORMAT_VERSION = 1  # internal corpus text artifacts (ngram/phrase/word
+                           # frequency dumps + legacy v0.2 builder stats). Decoupled
+                           # from the .elo stream so a stream bump never rev's these.
 STREAM_ENCODING = 'utf-8'  # all text in streams and LMDB keys/values
 PIPE_BYTE       = 0x7C     # b'|' — stream token delimiter, never changes
 OOV_SEP_BYTE    = 0x3A     # b':' — OOV internal field delimiter

@@ -55,7 +55,7 @@ from tqdm import tqdm
 sys.path.insert(0, '.')
 
 from semantic_compression.config import (
-    BASE64_CHARS, FORMAT_VERSION, STREAM_ENCODING,
+    BASE64_CHARS, COUNTS_FORMAT_VERSION, STREAM_ENCODING,
     TIER_WORD_FIRST_CHARS, WORD_IDS, STRUCTURAL_IDS,
 )
 
@@ -255,7 +255,7 @@ def build(
     coverage_pct    = 100 * assigned_tokens / total_corpus_tokens if total_corpus_tokens else 0
 
     stats = {
-        'format_version':        FORMAT_VERSION,
+        'format_version':        COUNTS_FORMAT_VERSION,
         'source_freq_file':      str(freq_file),
         'lmdb_path':             str(lmdb_path),
         'total_corpus_tokens':   total_corpus_tokens,

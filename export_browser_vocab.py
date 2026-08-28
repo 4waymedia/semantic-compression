@@ -29,7 +29,7 @@ import json
 import os
 from pathlib import Path
 
-CUTS = ("tiny", "compact", "standard", "full")
+CUTS = ("tiny", "compact", "standard", "full", "reference")
 
 
 def project_entries(rows, cut: str):
@@ -37,10 +37,16 @@ def project_entries(rows, cut: str):
 
     A row is in the cut if its `<cut>` column == 'Y'. `n` = int(id) (the LLM integer
     id); for a prefix cut these are contiguous 0..N-1. We assert contiguity so a
-    silently reordered token-ids can't produce a misaligned vocab."""
+    silently reordered token-ids can't produce a misaligned vocab.
+
+    `reference` is the WHOLE dictionary -- every row, no column check (token-ids has
+    no reference column because membership is definitional). Added 2026-08-10 so the
+    browser can ship the full 437,995-entry dictionary instead of the LLM `full`
+    embedding cut (261,872): the browser is not bound by an embedding budget, and
+    every in-dictionary surface it can't resolve falls back to OOV bytes on the wire."""
     entries = []
     for r in rows:
-        if r.get(cut) != "Y":
+        if cut != "reference" and r.get(cut) != "Y":
             continue
         entries.append({"surface": r["surface"], "id": r["base64_id"], "n": int(r["id"])})
     entries.sort(key=lambda e: e["n"])

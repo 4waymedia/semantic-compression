@@ -147,3 +147,51 @@ for k in sorted(STRUCTURAL_IDS):
 print(f"  -- reserved (6)")
 for k in sorted(RESERVED_IDS):
     print(f"  {k!r:<5}  <{RESERVED_IDS[k]}>")
+
+# ---------------------------------------------------------------------------
+# Structure band (Tier 4 carve, 2026-08-21) -- spec-tier-system §5.1.
+# The contract file is the source of truth; verify its internal invariants and,
+# when a build is given (--db), that the '-' namespace stayed unminted.
+# ---------------------------------------------------------------------------
+import json as _json
+import sys as _sys
+from pathlib import Path as _Path
+
+_sc = _json.loads((_Path(__file__).parent / 'data' / 'structure-ids-v2.json')
+                  .read_text(encoding='utf-8'))
+_CS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+_base = _sc['namespace']['base'][:-1]          # '-S' -- derived, never retyped
+assert all(a['atom'] == _base + _CS[a['k']] for a in _sc['atoms']), \
+    'structure-ids-v2.json: atom/charset-order mismatch'
+# WIRE ENCODABILITY (2026-08-26 ruling): a 4-char '-'/'_'-leading id packs into
+# TAG_CAP/TAG_OOV (0xFE/0xFF) and cannot travel on .eloB. No contract may assign one.
+assert all(len(a['atom']) == 3 for a in _sc['atoms']), \
+    'structure band atoms must be 3-char (4-char -/_ leads are UNENCODABLE on .eloB)'
+_opens = {a['name']: a['k'] for a in _sc['atoms'] if a['class'] == 'container_open'}
+_closes = {a['name']: a['k'] for a in _sc['atoms'] if a['class'] == 'container_close'}
+assert all(_closes[n.replace('_OPEN', '_CLOSE')] == k + 1 for n, k in _opens.items()), \
+    'structure-ids-v2.json: container CLOSE != OPEN + 1'
+assert len(_sc['atoms']) + _sc['held']['count'] == 64
+print(f"[OK] Structure band v2: 41 assigned + 23 held = 64 ('{_base}A'..'{_base}_', 3-char, "
+      f"wire byte 0xBE); charset order + close==open+1 + encodability verified")
+
+if '--db' in _sys.argv:
+    import lmdb as _lmdb
+    _db = _sys.argv[_sys.argv.index('--db') + 1]
+    _env = _lmdb.open(_db, readonly=True, lock=False, max_dbs=16)
+    _bad = []
+    for _name in (b'forward', b'reverse'):
+        try:
+            _h = _env.open_db(_name, create=False)
+        except _lmdb.Error:
+            continue
+        with _env.begin() as _t:
+            for _k, _v in _t.cursor(db=_h):
+                _idb = _v if _name == b'forward' else _k
+                if _idb.startswith(b'-'):
+                    _bad.append((_name.decode(), _idb.decode('utf-8', 'replace')))
+                    if len(_bad) >= 5:
+                        break
+    _env.close()
+    assert not _bad, f"'-' namespace MINTED (must never happen): {_bad}"
+    print(f"[OK] '-' namespace unminted in {_db} (forward+reverse clean)")
