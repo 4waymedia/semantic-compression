@@ -49,7 +49,12 @@ KNOWN_SUBDBS: dict[bytes, str] = {
     b"epa":      "base64_id",       # 12-byte record: <fff E,P,A
     b"vfacets":  "base64_id",       # 2-byte record: agency/dir/temporal | domain/polarity
     b"meta":     "identity keys",   # the dictionary's own identity store
-    b"role":     "base64_id",       # reserved -- planned role channel (1 byte)
+    # 2026-08-28: renamed from b'role' (collided with the reasoning lane's semantic
+    # roles agent/patient) and scoped for BOTH consumers per the grammatical-sentence
+    # gap analysis: byte 0 = class/confidence/ambivalent, byte 1 = the lexical features
+    # generation needs (countability, inherent number, proper, requires_determiner).
+    # Contract + rationale: handoffs/2026-08-28-dictionary-lane-wordclass-accepted.md
+    b"wordclass": "base64_id",      # reserved -- planned, ships with v05 (2 bytes)
 }
 
 # Sidecar files that may sit next to the LMDB in a build package, and the JSON
@@ -65,6 +70,8 @@ SIDECARS: dict[str, str | None] = {
     "profile-cuts.json": None,
     "manifest.json": None,                          # build record; identity lives in artifacts
     "assets_pipeline.json": None,
+    # stage 14; fingerprint-bound so a census from another build is visible
+    "coverage_census.json": "dictionary_fingerprint",
 }
 
 _INT_META = {b"dictionary_version", b"dictionary_format_version",

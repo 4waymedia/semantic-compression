@@ -82,6 +82,12 @@ MIN_SHARE = 0.15
 # mask for licensing anyway. An unstated dominance is ABSENT, and absence widens; a
 # default that names one class is the thing to avoid.
 DOMINANCE_MARGIN = 1.5
+# The attested degree form must clear this corpus frequency. Measured 2026-08-29: real
+# evidence is `fastest` 993, `strongest` 989, `nearer` 41; the noise that produced false
+# positives is `proter` 1, `protr` 3, `moder` 3. A 437,995-entry ASR-derived vocabulary
+# contains enough garbage surfaces that mere PRESENCE is not evidence -- the same floor
+# argument as MIN_CUES.
+DEGREE_MIN_FREQ = 10
 
 CLASS = {'UNKNOWN': 0, 'NOUN': 1, 'VERB': 2, 'MOD': 3, 'FUNCTION': 4,
          'NAME': 5, 'NUMERAL': 6, 'OTHER': 7}
@@ -194,9 +200,99 @@ def stems_of(w: str) -> set:
     return {s for s in out if len(s) > 2}
 
 
-def morph_class(w: str) -> str | None:
+def _degree_stems(w: str) -> set:
+    """Candidate adjective stems for a comparative/superlative surface.
+
+    Covers the three orthographic changes English makes: bare (`fast`+er), doubled
+    consonant (`big`+g+er), and dropped final -e (`nice`+r / `nice`+st)."""
+    out: set = set()
+    for suf in ('er', 'est'):
+        if not w.endswith(suf) or len(w) <= len(suf) + 2:
+            continue
+        base = w[: -len(suf)]
+        out.add(base)
+        out.add(base + 'e')                                    # nicer  -> nice
+        if len(base) > 2 and base[-1] == base[-2]:
+            out.add(base[:-1])                                 # bigger -> big
+        if base.endswith('i'):
+            out.add(base[:-1] + 'y')                           # happier -> happy
+    return {s for s in out if len(s) > 1}
+
+
+def degree_form(w: str, vocab: set | None, freq: dict | None = None) -> str | None:
+    """MOD when `w` is a comparative/superlative, else None.
+
+    THE `-er` PROBLEM, and why a suffix rule cannot solve it (2026-08-29):
+
+        baker  = bake + er   agentive     -> NOUN
+        faster = fast + er   comparative  -> MOD
+
+    Identical shape, opposite classes. The old rule listed `-er` under N_SUF and so
+    returned NOUN for `faster` -- a WRONG answer, not a missing one, and the reason
+    B5 was scheduled first.
+
+    The discriminator is the COMPARATIVE PAIR, which is already in the vocabulary: a
+    gradable adjective admits BOTH `-er` and `-est` on one stem (fast/faster/fastest),
+    while an agentive noun admits no superlative (`*bakest`). So the test is whether
+    the stem's OTHER degree form exists -- exactly the shape of the verb-paradigm test,
+    and for the same reason.
+
+    This is the temporality lesson again: `stones`/`thinks` could not be told apart by
+    spelling, and neither can `baker`/`faster`. Both need a second co-occurring form.
+    Without a vocabulary to consult there is no evidence, so this returns None rather
+    than guessing."""
+    if not vocab:
+        return None
+    freq = freq or {}
+    for stem in _degree_stems(w):
+        if stem not in vocab:
+            # The stem must be a real word. Without this, `interest` decomposes to the
+            # non-word `inter` and any coincidence downstream counts as evidence.
+            continue
+        # A VERB-STEM EXCLUSION WAS TRIED HERE AND REMOVED. The idea -- comparison is a
+        # property of adjectives, so a verb stem taking -er is agentive -- is sound in
+        # linguistics and wrong on this data, in both directions:
+        #
+        #   * `fast`, `near`, `strong` are legitimately BOTH verb and adjective, so the
+        #     exclusion vetoed `faster`, `nearest`, `stronger` -- real comparatives with
+        #     evidence forms at frequency 993, 41 and 989.
+        #   * the veto also fired on pure ASR noise: `stronged`, `stronging`, `fastes`
+        #     are in the vocabulary and made `strong` look like a verb.
+        #
+        # Frequency separates the real cases cleanly and the part-of-speech test does
+        # not, so the floor below does the work instead.
+        cmp_forms = {stem + 'er', stem + 'r'}
+        sup_forms = {stem + 'est', stem + 'st'}
+        if len(stem) > 2 and stem[-1] not in 'aeiou':
+            cmp_forms.add(stem + stem[-1] + 'er')              # big -> bigger
+            sup_forms.add(stem + stem[-1] + 'est')
+        if stem.endswith('y'):
+            cmp_forms.add(stem[:-1] + 'ier')
+            sup_forms.add(stem[:-1] + 'iest')
+        # `w` ITSELF IS NOT EVIDENCE. The first version tested `sup_forms & vocab` for a
+        # word ending in -est -- but that set contains `w`, which is in the vocabulary by
+        # definition, so the test could not fail. `interest` -> stem `inter` -> "interest
+        # is in vocab" -> MOD. Same for forest, protest, earnest, modest.
+        #
+        # A degree form supplies ONE half of the pair; the evidence is the OTHER half.
+        cmp_forms.discard(w)
+        sup_forms.discard(w)
+        need = cmp_forms if w.endswith('est') else sup_forms
+        if any(freq.get(f, 0) >= DEGREE_MIN_FREQ for f in (need & vocab)):
+            return 'MOD'
+    return None
+
+
+def morph_class(w: str, vocab: set | None = None, freq: dict | None = None) -> str | None:
+    """Derivational class from shape. `vocab` enables the degree test (see degree_form).
+
+    ORDER MATTERS: the degree test runs BEFORE the suffix families, because `-er` is
+    listed under N_SUF and would otherwise claim every comparative as a noun."""
     if w.endswith('ly') and len(w) > 4:
         return 'MOD'
+    deg = degree_form(w, vocab, freq)
+    if deg:
+        return deg
     for suf in N_SUF:
         if w.endswith(suf) and len(w) > len(suf) + 2:
             return 'NOUN'
@@ -280,6 +376,28 @@ def load_context(corpus_text: Path | None) -> dict:
     return ev
 
 
+
+def _singulars_of(low: str) -> set:
+    """Candidate singular forms for a plural surface."""
+    out: set = set()
+    if low.endswith('ies') and len(low) > 4:
+        out.add(low[:-3] + 'y')
+    if low.endswith('es') and len(low) > 3:
+        out.add(low[:-2]); out.add(low[:-1])
+    if low.endswith('s') and not low.endswith('ss') and len(low) > 2:
+        out.add(low[:-1])
+    return out
+
+
+def _singular_is_ambivalent(surface: str, resolved: dict) -> bool:
+    """True when this surface's singular resolved to more than one class."""
+    for sg in _singulars_of(surface.lower()):
+        src = resolved.get(sg)
+        if src and bin(src[1]).count('1') > 1:
+            return True
+    return False
+
+
 def build(lmdb_path: Path, corpus_freq: Path | None = None,
           dry_run: bool = False, corpus_text: Path | None = None) -> dict:
     t0 = time.perf_counter()
@@ -294,6 +412,8 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
     stats['total_entries'] = len(pairs)
 
     out: list[tuple[bytes, bytes]] = []
+    resolved: dict = {}      # surface -> (dominant, mask, conf, b2) from pass 1
+    idx_of: dict = {}        # surface -> position in `out`, for the pass-2 rewrite
     for surface, idb in pairs:
         low = surface.lower()
         classes: set[str] = set()          # THE SET -- every layer contributes
@@ -338,7 +458,7 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
                             conf = 'HEURISTIC'
                         break
             # layer 3 -- derivational morphology (independent evidence, so it ADDS)
-            m = morph_class(low)
+            m = morph_class(low, vocab, freq)
             if m:
                 classes.add(m)
                 if conf == 'UNKNOWN':
@@ -437,10 +557,87 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         amb = bin(mask).count('1') > 1
         b0 = (CLASS[dominant] << 5) | (CONF[conf] << 3) | (AMBIVALENT if amb else 0)
         out.append((idb, REC.pack(b0, mask, b2)))
+        resolved[surface] = (dominant, mask, conf, b2)
+        idx_of[surface] = len(out) - 1
         stats[f'class_{dominant}'] += 1
         stats[f'conf_{conf}'] += 1
         if amb:
             stats['ambivalent'] += 1
+
+    # ------------------------------------------------------------------ PASS 2
+    # PLURAL INHERITANCE (B3, 2026-08-29). A plural takes the class its SINGULAR
+    # resolved to -- it does not read its own suffix.
+    #
+    # The suffix version of this rule was tried and retired: `stones` and `thinks`
+    # are the same shape, so `w[:-1] in vocab -> NOUN` made every regular verb a
+    # noun. Morphology does not carry the singular/3sg distinction and no amount of
+    # tuning gives it one.
+    #
+    # Inheritance sidesteps that entirely by reading the singular's ALREADY-RESOLVED
+    # class, which pass 1 derived from distributional evidence:
+    #
+    #     stove is NOUN      -> stoves inherits NOUN
+    #     think is VERB only -> thinks inherits nothing        (the trap avoided)
+    #     run   is NOUN|VERB -> runs   inherits both           (honest)
+    #
+    # This needs a second pass: a singular must be resolved before anything can
+    # inherit from it, and pass 1's iteration order is the LMDB key order, not any
+    # order that would guarantee it.
+    #
+    # Only surfaces with NO class of their own are touched -- inheritance fills a
+    # gap, it never overrides evidence the surface earned itself.
+    for surface, idb in pairs:
+        cur = resolved.get(surface)
+        if not cur:
+            continue
+        # A surface that already earned a class is normally left alone -- inheritance
+        # fills gaps, it does not override evidence. The ONE exception is a plural of an
+        # AMBIVALENT singular: `fights` earns VERB from its own paradigm, but `fight` is
+        # NOUN|VERB, and that nominal reading is independent evidence about this surface
+        # too ("the fights were brutal"). Suppressing it would report a confident VERB
+        # for a word that is plainly both. Layer 3 already works this way -- independent
+        # evidence ADDS -- so this is the existing rule, not a new one.
+        if cur[1] and not _singular_is_ambivalent(surface, resolved):
+            continue
+        low = surface.lower()
+        sings = set()
+        if low.endswith('ies') and len(low) > 4:
+            sings.add(low[:-3] + 'y')
+        if low.endswith('es') and len(low) > 3:
+            sings.add(low[:-2]); sings.add(low[:-1])
+        if low.endswith('s') and not low.endswith('ss') and len(low) > 2:
+            sings.add(low[:-1])
+        for sg in sings:
+            src = resolved.get(sg)
+            if not src or not src[1]:
+                continue
+            _dom, _mask, _conf, _b2 = src
+            # Inherit ONLY the nominal reading. A plural is a noun-number form; the
+            # singular's VERB reading says nothing about this surface being a verb
+            # (`stoves` is not a verb because `stove` can be one). The exception is
+            # an AMBIVALENT singular, where both readings are genuinely live and
+            # suppressing one would overclaim.
+            inherit = _mask & MASK_BIT['NOUN']
+            if bin(_mask).count('1') > 1:
+                inherit = _mask
+            if not inherit:
+                continue
+            inherit |= cur[1]          # UNION -- never discard what the surface earned
+            dom2 = 'NOUN' if inherit & MASK_BIT['NOUN'] else _dom
+            amb2 = bin(inherit).count('1') > 1
+            if amb2:
+                dom2 = 'UNKNOWN'               # inherited ambivalence is not a claim
+            # Keep the surface's own confidence when it had one: it earned that from
+            # evidence, and inheritance adding a reading does not weaken it.
+            conf2 = cur[2] if cur[1] else 'HEURISTIC'
+            b0_2 = ((CLASS[dom2] << 5) | (CONF[conf2] << 3)
+                    | (AMBIVALENT if amb2 else 0))
+            out[idx_of[surface]] = (idb, REC.pack(b0_2, inherit, _b2 & 0b00111100))
+            resolved[surface] = (dom2, inherit, conf2, _b2)
+            stats['plural_inherited'] += 1
+            stats[f'class_{dom2}'] += 1
+            stats['class_UNKNOWN'] -= 1
+            break
 
     if not dry_run:
         with env.begin(write=True) as txn:

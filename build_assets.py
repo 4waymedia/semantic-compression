@@ -56,7 +56,8 @@ STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                # epa REQUIREMENT lives in build_suite.DEPS["vfacets"] = ["epa"],
                # which fails fast at resolve time instead of writing 437,995 rows
                # of NEUTRAL/UNKNOWN that look like data.
-               13: "vfacets"}
+               13: "vfacets",
+               14: "census"}
 
 
 def _sig(path: Path) -> str:
@@ -263,6 +264,20 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
              multi=[["--db", str(lmdb)]], out=[], gate=True),
         dict(n=12, name="verify-lossless", script=SC / "verify_lossless.py", cwd=ROOT,
              dep=None, argv=["--db", str(lmdb)], out=[], gate=True),
+        # STAGE 14 -- COVERAGE CENSUS. gate=True, so it ALWAYS runs.
+        #
+        # A census is a claim about THIS fingerprint. Every channel above is
+        # re-derived per build, so a census that is merely "up to date" by ledger
+        # is a census describing a dictionary that no longer exists -- the same
+        # defect class as a restated fingerprint, which is the mistake this repo
+        # keeps catching. Cheap (~3.5s) and always current beats cached and wrong.
+        #
+        # It is deliberately LAST: it measures the finished package, including the
+        # channels stages 1/3/13 wrote. Running it earlier would census a half-built
+        # artifact and report the gaps as findings.
+        dict(n=14, name="census", script=SC / "coverage_census.py", cwd=SC,
+             dep="lmdb", argv=["--db", str(lmdb)],
+             out=[pkg / "coverage_census.json"], gate=True),
     ]
 
 

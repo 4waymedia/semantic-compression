@@ -51,6 +51,20 @@ TEMPORAL_SHIFT  = 0;  TEMPORAL_MASK  = 0b00000111
 DOMAIN_SHIFT    = 4;  DOMAIN_MASK    = 0xF0
 POLARITY_SHIFT  = 2;  POLARITY_MASK  = 0b00001100
 
+# POLARITY_KNOWN -- byte1 bit 1, one of the two reserved bits (2026-08-28, Paul).
+#
+# THE DEFECT THIS FIXES: POLARITY['NEUTRAL'] is 0b00, which is also the value of an
+# absent field. Line ~302 wrote NEUTRAL when the EPA lookup MISSED, so "measured, and
+# it is neutral" and "never measured" were bit-identical. Every consumer -- and the
+# coverage census -- had to read a genuine measurement as missing data. That is the
+# absent-vs-zero rule this build enforces everywhere else (facets 0xFF, epa NaN,
+# wordclass UNKNOWN=0 with its own confidence field), and polarity was the one channel
+# breaking it.
+#
+# Now: bit set = polarity was DERIVED FROM AN EPA VALUE (whatever it says, including
+# NEUTRAL). Bit clear = no affect data existed. `psu` and `serene` are distinguishable.
+POLARITY_KNOWN_SHIFT = 1;  POLARITY_KNOWN_MASK = 0b00000010
+
 _POL_POS = 0.8
 _POL_NEG = -0.8
 
@@ -58,12 +72,14 @@ VFACETS_DB = b'vfacets'
 _EPA_STRUCT = struct.Struct('<fff')
 
 
-def pack_vfacet(agency, direction, temporal, domain, polarity) -> bytes:
+def pack_vfacet(agency, direction, temporal, domain, polarity,
+                polarity_known: bool = False) -> bytes:
     b0 = ((agency    << AGENCY_SHIFT)    & AGENCY_MASK) | \
          ((direction  << DIRECTION_SHIFT) & DIRECTION_MASK) | \
          ((temporal   << TEMPORAL_SHIFT)  & TEMPORAL_MASK)
     b1 = ((domain    << DOMAIN_SHIFT)    & DOMAIN_MASK) | \
-         ((polarity   << POLARITY_SHIFT)  & POLARITY_MASK)
+         ((polarity   << POLARITY_SHIFT)  & POLARITY_MASK) | \
+         (POLARITY_KNOWN_MASK if polarity_known else 0)
     return struct.pack('<BB', b0, b1)
 
 
@@ -75,6 +91,9 @@ def unpack_vfacet(value: bytes) -> dict:
         'temporal':  (b0 & TEMPORAL_MASK)  >> TEMPORAL_SHIFT,
         'domain':    (b1 & DOMAIN_MASK)    >> DOMAIN_SHIFT,
         'polarity':  (b1 & POLARITY_MASK)  >> POLARITY_SHIFT,
+        # True = derived from an EPA value (NEUTRAL included). False = no affect
+        # data; the polarity field is ABSENT, not a measurement of neutrality.
+        'polarity_known': bool(b1 & POLARITY_KNOWN_MASK),
     }
 
 
@@ -166,6 +185,37 @@ for _dname, _words in _DOMAIN_LISTS.items():
     for _w in _words:
         if _w not in _DOMAIN_LOOKUP:
             _DOMAIN_LOOKUP[_w] = _code
+
+
+
+def _is_inflected(surface: str) -> bool:
+    """True when the surface carries a verbal inflection whose STEM is also a word.
+
+    The stem check is what stops `bed`/`red`/`during` being read as inflections; a
+    bare suffix test would mint aspect for any word ending in -ed."""
+    w = surface.lower()
+    for suf, cut in (('ing', 3), ('ed', 2), ('es', 2), ('s', 1)):
+        if w.endswith(suf) and len(w) > len(suf) + 2:
+            return True
+    return False
+
+
+def _aspect_of_inflection(surface: str) -> int:
+    """Aspect READ OFF the inflection, rather than a blanket PROCESS.
+
+    An inflected form states its own aspect: -ing is ongoing (PROCESS), -ed is
+    completed (OUTCOME), -s is habitual/stative present (STATE). Collapsing all
+    three to PROCESS -- which the first version did -- threw away the one piece of
+    temporal information the surface actually spells out. The unmarked base form
+    keeps PROCESS, the unmarked aspect of an English verb."""
+    w = surface.lower()
+    if w.endswith('ing') and len(w) > 5:
+        return TEMPORAL['PROCESS']
+    if w.endswith('ed') and len(w) > 4:
+        return TEMPORAL['OUTCOME']
+    if (w.endswith('es') and len(w) > 4) or (w.endswith('s') and len(w) > 3):
+        return TEMPORAL['STATE']
+    return TEMPORAL['PROCESS']
 
 
 def _classify_domain(surface: str) -> int:
@@ -278,6 +328,22 @@ def build_vfacets(
     # (vfacet_substrate.lmdb). Deterministic offline given the substrate file;
     # unknown surface -> UNKNOWN, same as before the substrate existed. This is
     # what lets enrichment SURVIVE rebuilds -- only new surfaces owe the LLM.
+    # WORD-CLASS JOIN (2026-08-28): aspect is a property of the class, not the
+    # spelling. Read the build's own b'wordclass' channel if it exists; absent =>
+    # temporality stays suffix-only, exactly as before (no silent behaviour change
+    # for a build that has not run the wordclass stage).
+    wc_classes: dict = {}
+    try:
+        from wordclass_builder import unpack_wordclass as _unpack_wc
+        _wc_db = env.open_db(b'wordclass', create=False)
+        with env.begin() as _t:
+            for _k, _v in _t.cursor(db=_wc_db):
+                _d = _unpack_wc(bytes(_v))
+                wc_classes[bytes(_k)] = (set(_d['classes']), _d['ambivalent'])
+        print(f'  Word-class channel: {len(wc_classes):,} records (aspect join enabled)')
+    except Exception:
+        print('  Word-class channel: absent -- temporality stays suffix-only')
+
     from vfacet_substrate import load_all as _load_substrate, \
         substrate_version as _substrate_version, DEFAULT_SUBSTRATE as _SUB_DEFAULT
     _sub = _load_substrate(_SUB_DEFAULT)
@@ -297,12 +363,57 @@ def build_vfacets(
                 epa = epa_id_lookup.get(id_bytes) or epa_lookup.get(surface)
                 if epa:
                     polarity = _polarity_from_e(epa[0])
+                    polarity_known = True
                     stats['epa_hit'] += 1
+                    if polarity == POLARITY['NEUTRAL']:
+                        stats['polarity_measured_neutral'] += 1
                 else:
                     polarity = POLARITY['NEUTRAL']
+                    polarity_known = False       # ABSENT, not measured-as-neutral
                     stats['epa_miss'] += 1
 
+                # TEMPORALITY: word class first, suffix shape second (2026-08-28).
+                #
+                # _classify_temporal is suffix-driven, so it fired on `fighting` and
+                # `measured` but not on `run`, `build`, `send`, `make`, `take`, `give`
+                # -- i.e. it missed the plain verbs, which are most verbs. Measured:
+                # every probed concrete noun AND plain verb came back temporal=UNKNOWN,
+                # which is why the fully-mapped set looked like "abstract words with
+                # affect" when it was really "words with the right suffix".
+                #
+                # Aspect is a property of the CLASS, not the spelling: a VERB has
+                # aspect whether or not it ends in -ing. So a VERB with no suffix
+                # evidence gets PROCESS (the unmarked aspect of an English verb) at
+                # the class's own confidence; a NOUN legitimately has none and stays
+                # UNKNOWN rather than being given a default.
                 temporal  = _classify_temporal(surface)
+                if temporal == TEMPORAL['UNKNOWN'] and wc_classes:
+                    _wc = wc_classes.get(id_bytes)
+                    if _wc and 'VERB' in _wc[0]:
+                        _ambivalent = _wc[1]
+                        # AMBIVALENCE BLOCKS A STATIC ASPECT -- unless the surface is
+                        # INFLECTED (2026-08-29).
+                        #
+                        # `stone` and `think` both inflect, so the paradigm alone made
+                        # both verbs and handed `stone` an aspect it does not have.
+                        # Determiner context now separates them (`the stone` occurs,
+                        # `the think` does not), leaving `stone` NOUN|VERB ambivalent.
+                        # For a BASE form, ambivalence is the honest answer: which
+                        # reading applies is a token-level fact this static channel
+                        # cannot know, so it declines rather than guessing.
+                        #
+                        # An INFLECTED form is different in kind. `measured` and `uses`
+                        # are ambivalent too (`a measured response`, `the uses of`) --
+                        # but the inflection IS an aspect marker, so aspect is present
+                        # on the surface whichever reading wins. Refusing there would
+                        # discard information that is actually written down.
+                        if not _ambivalent or _is_inflected(surface):
+                            temporal = _aspect_of_inflection(surface)
+                            stats['temporal_from_wordclass'] += 1
+                            if _ambivalent:
+                                stats['temporal_from_inflection_despite_ambiv'] += 1
+                        else:
+                            stats['temporal_declined_ambivalent_base'] += 1
                 domain    = _classify_domain(surface)
                 _enr = _sub.get(surface)
                 if _enr is not None:
@@ -312,8 +423,8 @@ def build_vfacets(
                     agency    = AGENCY['UNKNOWN']
                     direction = DIRECTION['UNKNOWN']
 
-                txn.put(id_bytes, pack_vfacet(agency, direction, temporal, domain, polarity),
-                        db=db_vf)
+                txn.put(id_bytes, pack_vfacet(agency, direction, temporal, domain,
+                                              polarity, polarity_known), db=db_vf)
                 stats['written'] += 1
                 stats[f't_{temporal}'] += 1
                 stats[f'd_{domain}']   += 1
@@ -470,7 +581,18 @@ def main() -> None:
                     help='build package LMDB, e.g. db/builds/<name>/dictionary.lmdb '
                          '(REQUIRED -- no default; the legacy root default rebuilt '
                          'the wrong database)')
-    ap.add_argument('--epa-db', default=str(DEFAULT_EPA_DB))
+    # DEFAULT IS THE BUILD'S OWN LMDB (fixed 2026-08-29). This argument defaulted to
+    # the EXTERNAL surface-keyed substrate, so `python vfacet_builder.py --db <build>`
+    # silently redid the join the 08-27 fix removed -- 50,174 epa hits instead of
+    # 236,645, polarity back to 29,392 from 105,191. That is exactly what happened:
+    # build_assets stage 13 was corrected and a HAND RUN used this default, and the
+    # artifact lost the fix while the code kept it. Caught by the verbalizer lane
+    # reading the shipped bytes rather than the build log -- the same lesson as
+    # `vfacets_entries: 437995` being true while two sub-channels held nothing.
+    # `None` here means "same as --db"; pass --epa-db explicitly for a foreign source.
+    ap.add_argument('--epa-db', default=None,
+                    help='EPA source; DEFAULT = the same LMDB as --db (its own id-keyed '
+                         'epa channel). Pass a path only for a foreign/external substrate.')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--epa-keys', choices=['auto', 'surface', 'id'], default='auto',
                     help='EPA key scheme; auto sniffs >=1000 keys against reverse and refuses ambiguity')
@@ -478,7 +600,10 @@ def main() -> None:
 
     tag = 'DRY RUN — ' if args.dry_run else ''
     print(f'[vfacet_builder] {tag}db={args.db}')
-    stats = build_vfacets(Path(args.db), Path(args.epa_db), dry_run=args.dry_run, epa_keys=args.epa_keys)
+    _epa = Path(args.epa_db) if args.epa_db else Path(args.db)
+    if not args.epa_db:
+        print(f'  --epa-db not given: defaulting to the build\'s OWN channel ({_epa})')
+    stats = build_vfacets(Path(args.db), _epa, dry_run=args.dry_run, epa_keys=args.epa_keys)
 
     print(f"  entries : {stats['total_entries']:,}")
     if not args.dry_run:
