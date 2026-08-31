@@ -5,7 +5,7 @@ EloAI — Verbalizer Facet Pass
 Adds b'vfacets' sub-database to an existing dictionary.lmdb.
 Reads EPA values from a separate epa_substrate.lmdb (key: b'en|surface').
 
-Record format: 2 bytes, struct '<BB'
+Record format: 2 bytes, struct '<BB' (see REC -- record_width is derived from it)
   Byte 0:  [7:6] agency  [5:3] directionality  [2:0] temporality
   Byte 1:  [7:4] domain  [3:2] polarity         [1:0] reserved
 
@@ -70,6 +70,11 @@ _POL_NEG = -0.8
 
 VFACETS_DB = b'vfacets'
 _EPA_STRUCT = struct.Struct('<fff')
+# The record, as a Struct rather than an inline format string, so `record_width` can be
+# DERIVED from it (NLG/NLU ask 1). Three sites used the literal '<BB' independently --
+# pack, unpack, and a hand-typed `record_width: 2`. That is the shape that let the
+# wordclass copy declare 2 for a 3-byte record: nothing tied the number to the format.
+REC = struct.Struct('<BB')
 
 
 def pack_vfacet(agency, direction, temporal, domain, polarity,
@@ -80,11 +85,11 @@ def pack_vfacet(agency, direction, temporal, domain, polarity,
     b1 = ((domain    << DOMAIN_SHIFT)    & DOMAIN_MASK) | \
          ((polarity   << POLARITY_SHIFT)  & POLARITY_MASK) | \
          (POLARITY_KNOWN_MASK if polarity_known else 0)
-    return struct.pack('<BB', b0, b1)
+    return REC.pack(b0, b1)
 
 
 def unpack_vfacet(value: bytes) -> dict:
-    b0, b1 = struct.unpack('<BB', value)
+    b0, b1 = REC.unpack(value)
     return {
         'agency':    (b0 & AGENCY_MASK)    >> AGENCY_SHIFT,
         'direction': (b0 & DIRECTION_MASK) >> DIRECTION_SHIFT,
@@ -466,7 +471,10 @@ def build_vfacets(
         out = {
             'dictionary_fingerprint': _fp.decode() if _fp else None,
             'vfacets_format_version': 1,
-            'record_width': 2,
+            # DERIVED, not typed (NLG/NLU ask 1). Correct today at 2 bytes, but the
+            # wordclass copy of this same line said 2 for a 3-byte record after the
+            # mask byte landed. Same derivation, so the same drift cannot happen here.
+            'record_width': REC.size,
             'key_scheme': 'base64_id',           # id-keyed, NOT vocab index n
             'llm_enriched': _n_sub > 0,          # any field traces to an LLM
             'llm_pass_ran': False,               # flipped by vfacet_llm.py when it runs

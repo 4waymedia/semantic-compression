@@ -377,6 +377,80 @@ def load_context(corpus_text: Path | None) -> dict:
 
 
 
+
+def _corpus_provenance(corpus_freq, corpus_text) -> dict:
+    """Corpus inputs as REPO-RELATIVE paths plus a content hash (NLG/NLU ask 2).
+
+    Absolute paths were recorded, which are useless to anyone on another machine and
+    actively misleading in this repo -- a previous agent session committed
+    `/sessions/gifted-sweet-darwin/...` into a source file, dead everywhere. Relative
+    to the repo root, a path means the same thing to every reader.
+
+    The HASH is the load-bearing half. `corpus_text` is now a DIRECTORY (Resources/
+    books, 19 MB), and the class assignments depend on what is in it -- layer 4's
+    determiner counts are the deciding evidence for noun/verb. Two builds naming the
+    same directory are not thereby the same build. The hash is over the sorted
+    (relative name, size, mtime_ns) triples rather than file contents: cheap on 19 MB,
+    and it changes whenever the corpus does. It detects change; it does not prove
+    identity across machines, and is labelled `_manifest_hash` to say so."""
+    import hashlib
+    root = Path(__file__).resolve().parent.parent
+
+    def rel(p):
+        if p is None:
+            return None
+        p = Path(p)
+        try:
+            return str(p.resolve().relative_to(root)).replace('\\', '/')
+        except ValueError:
+            # Outside the repo root. Reported as given AND flagged, rather than
+            # silently absolute: an absolute path in a stats file is only meaningful
+            # on the machine that wrote it, and a reader must be able to tell
+            # "relative, portable" from "absolute, local" without guessing.
+            return str(p)
+
+    def manifest_hash(p):
+        if p is None:
+            return None
+        p = Path(p)
+        if not p.exists():
+            return None
+        h = hashlib.sha256()
+        files = sorted(p.rglob('*.txt')) if p.is_dir() else [p]
+        for f in files:
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            h.update(f.name.encode())
+            h.update(str(st.st_size).encode())
+            h.update(str(st.st_mtime_ns).encode())
+        return h.hexdigest()[:16]
+
+    def outside(p):
+        if p is None:
+            return None
+        try:
+            Path(p).resolve().relative_to(root); return False
+        except ValueError:
+            return True
+
+    return {
+        'corpus_freq_file': rel(corpus_freq),
+        'corpus_text_file': rel(corpus_text),
+        # True => the path above is ABSOLUTE and machine-local, because the corpus sits
+        # outside the repo root on this machine (a separate mount). Not an error; the
+        # hash below is what makes the build identifiable either way.
+        'corpus_text_outside_repo': outside(corpus_text),
+        'corpus_freq_outside_repo': outside(corpus_freq),
+        'corpus_text_is_dir': bool(corpus_text and Path(corpus_text).is_dir()),
+        'corpus_text_file_count': (len(list(Path(corpus_text).rglob('*.txt')))
+                                   if corpus_text and Path(corpus_text).is_dir() else None),
+        'corpus_freq_manifest_hash': manifest_hash(corpus_freq),
+        'corpus_text_manifest_hash': manifest_hash(corpus_text),
+    }
+
+
 def _singulars_of(low: str) -> set:
     """Candidate singular forms for a plural surface."""
     out: set = set()
@@ -650,11 +724,29 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         payload = {
             'dictionary_fingerprint': fp.decode() if fp else None,
             'wordclass_format_version': 1,
-            'record_width': 2,
+            # DERIVED from the struct, never typed (NLG/NLU ask 1, 2026-08-29). This
+            # read `2` while REC is '<BBB' = 3 bytes: the record was widened when the
+            # class MASK byte landed and the stat was not. A consumer sizing a buffer
+            # from it would have been one byte short per record across 437,995 records.
+            # A width that can disagree with its own struct is a restated identity.
+            'record_width': REC.size,
             'key_scheme': 'base64_id',
-            'corpus_freq_file': str(corpus_freq) if corpus_freq else None,
-            'corpus_text_file': str(corpus_text) if corpus_text else None,
-            'adjudicated': False,
+            **_corpus_provenance(corpus_freq, corpus_text),
+            # ADJUDICATION -- split into PROCESS and DATA (ask 3), per the vfacets
+            # precedent (`llm_pass_ran` vs `llm_enriched`). The single `adjudicated:
+            # False` was both wrong and ambiguous: 305 records carry CONF=ADJUDICATED,
+            # so "false" contradicted the artifact, while the name could equally mean
+            # "an adjudication pass ran" or "any value here is adjudicated".
+            #
+            # They are different questions with different answers, and only the split
+            # makes the honest one sayable: NO adjudication pass has ever run on this
+            # channel, AND some records nevertheless hold adjudicated-grade values --
+            # because closed-class membership is a curated lexical FACT, not the output
+            # of a review process.
+            'adjudication_pass_ran': False,
+            'adjudicated_entries': int(stats.get('conf_ADJUDICATED', 0)),
+            'adjudicated_source': 'closed-class list (CLOSED) -- curated lexical fact, '
+                                  'not a review pass',
             'elapsed_s': round(time.perf_counter() - t0, 2),
             **{k: v for k, v in stats.items()},
         }
