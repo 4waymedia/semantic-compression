@@ -102,8 +102,12 @@ class FingerprintMismatch(RuntimeError):
     """Persisted ids were built against a different dictionary."""
 
 
-def _find_root(start: Path | None = None) -> Path | None:
-    here = (start or Path(__file__)).resolve()
+def _find_root(start: "Path | str | None" = None) -> Path | None:
+    # D2 (2026-08-29). Was `(start or Path(__file__)).resolve()`, which raises
+    # AttributeError on a STRING root -- `resolve_dictionary(root="...")` was dead, and
+    # rev 2 removed the other escape hatch, so this sat on ten lanes' critical path
+    # rather than being a convenience. Coerce, don't assume the caller typed a Path.
+    here = (Path(start) if start else Path(__file__)).resolve()
     chain = [here, *here.parents]
     for m in _ROOT_MARKERS_STRONG:          # strong markers win across the WHOLE chain
         for p in chain:
@@ -236,7 +240,7 @@ def _from_path(p: Path, source: str, standard: Path | None = None) -> ResolvedDi
         channels=ident["channels"], source=source, standard_path=standard)
 
 
-def resolve_dictionary(root: Path | None = None, *,
+def resolve_dictionary(root: "Path | str | None" = None, *,
                        require: tuple = ()) -> ResolvedDictionary:
     """Resolve the dictionary. See module docstring for precedence.
 

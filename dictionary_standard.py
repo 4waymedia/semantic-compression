@@ -60,7 +60,7 @@ INDEX_PATH = DIST / "INDEX.json"
 STANDARD_PATH = DIST / "STANDARD.json"
 
 SCHEMA_INDEX = "elo-dictionary-index/1"
-SCHEMA_STANDARD = "elo-dictionary-standard/1"
+SCHEMA_STANDARD = "elo-dictionary-standard/2"   # /2 adds the derived block (§3)
 
 # Stages whose presence in assets_pipeline.json means the package is complete.
 # Presence == ran AND succeeded (the ledger records a stage only on success), so a
@@ -100,6 +100,58 @@ def _identity(lmdb_path: Path) -> dict:
                 out["entries"] = t.stat(db=fdb)["entries"]
     finally:
         env.close()
+    return out
+
+
+
+def _derived(lmdb_path: Path, build_dir: Path) -> dict:
+    """Fields DERIVED from the artifact, computed once at PROMOTION time (§3).
+
+    A consumer should not have to open a 20 MB LMDB to learn how many entries a channel
+    has, or which sidecars a package carries. Everything here is read FROM the artifact
+    and frozen into the pointer, so `STANDARD.json` answers those questions on its own
+    -- which is what lets the derivation leave the read path entirely.
+
+    `builds_root` is recorded for the same reason: resolving a bare build NAME
+    (`ELO_DICT=elo-browser-v04`) otherwise needs a hardcoded
+    `semantic_compression/db/builds` inside the resolver -- a derived location baked
+    into code instead of stated in data.
+
+    Every value is measured. Nothing here is typed by hand."""
+    import hashlib
+    out: dict = {"channel_entries": {}, "sidecars": {}}
+    try:
+        env = lmdb.open(str(lmdb_path), readonly=True, lock=False, max_dbs=24)
+    except lmdb.Error as e:
+        out["derived_error"] = str(e)[:120]
+        return out
+    try:
+        main = env.open_db()
+        with env.begin() as t:
+            names = sorted(bytes(k).decode("utf-8", "replace") for k, _ in t.cursor(db=main))
+        handles = {n: env.open_db(n.encode(), create=False) for n in names}
+        with env.begin() as t:
+            for n in names:
+                out["channel_entries"][n] = t.stat(db=handles[n])["entries"]
+    except Exception as e:
+        out["derived_error"] = str(e)[:120]
+    finally:
+        env.close()
+
+    for f in sorted(build_dir.glob("*")):
+        if f.is_file() and f.suffix in (".json", ".db", ".gz", ".csv"):
+            try:
+                out["sidecars"][f.name] = {
+                    "bytes": f.stat().st_size,
+                    "sha256_16": hashlib.sha256(f.read_bytes()).hexdigest()[:16],
+                }
+            except OSError:
+                continue
+    try:
+        out["lmdb_bytes"] = sum(x.stat().st_size for x in lmdb_path.glob("*") if x.is_file())
+    except OSError:
+        pass
+    out["builds_root"] = str(BUILDS.relative_to(ROOT)).replace("\\", "/")
     return out
 
 
@@ -213,6 +265,8 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         "supersedes": (prev or {}).get("build"),
         "supersedes_fingerprint": (prev or {}).get("dictionary_fingerprint"),
         "ledger_green": led["green"],
+        # §3 -- derived at promotion, not at read time. See _derived().
+        **_derived(lm, d),
         "notes": notes or ("ids are build-specific; bind by surface, verify by "
                            "fingerprint. Persisted ids MUST carry this fingerprint "
                            "beside them and verify tri-state on read."),
