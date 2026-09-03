@@ -65,7 +65,42 @@ VALUES: dict[str, object] = {
     'direction': lambda r: (REC2.unpack(r)[0] >> 3) & 0b111,
     'wordclass': lambda r: (REC3.unpack(r)[0] >> 5) & 0b111,
 }
-SATURATION_WARN = 0.60   # one value holding >60% of a channel is a default, not data
+# VALUE NAMES, imported from the WRITERS rather than restated here (2026-08-29).
+#
+# The census used to print raw ints, so every reader had to supply their own mapping --
+# and on 2026-08-29 I supplied a wrong one, reading DIRECTION 3/4/5 as MUTUAL/INWARD/
+# OUTWARD when the writer's enum says STABLE/REVERSAL/NEUTRAL. I then reported
+# "direction is 46.9% OUTWARD" as a finding. It was a decode error: `direction` is
+# 68.2% NEUTRAL, which is a legitimate verdict rather than a mysterious default.
+#
+# Every table in the tree (vfacet_builder, the verbalizer reader, 08-MCP's probe) was
+# already correct and consistent. The only wrong copy was the one I typed. So the fix
+# is not to correct a table -- it is to stop requiring one: a report that prints
+# integers is a report that outsources decoding to whoever reads it.
+def _value_names() -> dict:
+    """channel -> {int: NAME}, taken from the modules that WRITE the records."""
+    out: dict = {}
+    try:
+        import vfacet_builder as _vf
+        out['agency'] = {v: k for k, v in _vf.AGENCY.items()}
+        out['direction'] = {v: k for k, v in _vf.DIRECTION.items()}
+        out['temporal'] = {v: k for k, v in _vf.TEMPORAL.items()}
+        out['polarity'] = {v: k for k, v in _vf.POLARITY.items()}
+    except Exception:
+        pass
+    try:
+        import wordclass_builder as _wc
+        out['wordclass'] = {v: k for k, v in _wc.CLASS.items()}
+    except Exception:
+        pass
+    return out
+
+
+# A single value dominating is a PROMPT TO INVESTIGATE, not a verdict. The earlier
+# wording ("a default, not data") asserted the conclusion, and I repeated that assertion
+# about `agency` without checking -- concentration and defaulting look identical from
+# outside, and telling them apart needs ground truth this census does not have.
+SATURATION_WARN = 0.60
 
 CHANNELS: dict[str, tuple] = {
     'facets':    (b'facets',    lambda r: r is not None and len(r) == 4),
@@ -314,7 +349,10 @@ def census(lmdb_path: Path) -> dict:
             tot_v = sum(vd.values())
             mode_v, mode_n = vd.most_common(1)[0]
             share = mode_n / tot_v
-            report['channels'][ch]['value_distribution'] = dict(vd.most_common())
+            _names = _value_names().get(ch, {})
+            report['channels'][ch]['value_distribution'] = {
+                _names.get(k, str(k)): n for k, n in vd.most_common()}
+            report['channels'][ch]['mode_value'] = _names.get(mode_v, str(mode_v))
             report['channels'][ch]['mode_share'] = round(share, 3)
             # 100% coverage carried by one value is a DEFAULT wearing coverage's clothes
             report['channels'][ch]['saturated'] = bool(share >= SATURATION_WARN)
@@ -356,10 +394,12 @@ def main() -> int:
             print(f"  {ch}: scored only over {'/'.join(d['qualifying_classes'])}{amb}")
     sat = [(c, d) for c, d in rep['channels'].items() if d.get('saturated')]
     if sat:
-        print('\n  SATURATION WARNING -- high coverage carried by a single value:')
+        print('\n  CONCENTRATION NOTICE -- one value dominates; worth a look, NOT a verdict:')
         for c, d in sat:
-            print(f"    {c}: mode holds {100*d['mode_share']:.0f}% of all values "
-                  f"-- treat this channel's coverage as UNCONFIRMED, not measured")
+            print(f"    {c}: {100*d['mode_share']:.0f}% of values are "
+                  f"{d.get('mode_value', '?')}")
+        print("    (a real distribution can be this skewed; distinguishing that from a")
+        print("     default needs ground truth, which this census does not have)")
     print('\n  n/a = channel not meaningful for that segment (absence is CORRECT, not a gap)')
     print('  WHERE EXP = coverage counted only over segments where the channel applies')
     return 0

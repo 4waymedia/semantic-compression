@@ -98,10 +98,39 @@ only from the 26-book cased corpus, so the ceiling is low until a larger cased s
 lands. Known limits recorded in `tests/test_wordclass_features.py`: `music` reads BOTH
 because noun-noun compounds ("a music teacher") contaminate the COUNT cue.
 
+### 2026-08-29 — CORRECTION: `agency`/`direction` were not defaulted, I misread them
+
+I reported `agency` as *"a default wearing coverage's clothes"* and `direction` as
+*"46.9% OUTWARD"*. **Both statements were wrong, and the error was mine.**
+
+`OUTWARD` is not in the direction vocabulary. The writer's enum is
+`UNKNOWN·TOWARD·AWAY·STABLE·REVERSAL·NEUTRAL`, so value 5 is **NEUTRAL** and value 3 is
+**STABLE**. `direction` is 68.2% NEUTRAL — a legitimate "no directional force" verdict,
+not an unexplained default. Every decode table actually in the tree
+(`vfacet_builder`, `verbalizer/reader.py`, `08-MCP/_probe_assent.py`) was already
+correct and consistent; **the only wrong copy was the one I typed into an analysis
+script**, and I reported its output as a finding.
+
+`agency` is 92% OTHER among the 20% of qualifying surfaces that have a value. That
+concentration is real, but *concentration is not evidence of defaulting* — the two look
+identical from outside, and separating them needs ground truth this build has none of.
+Calling it a default was an unsupported claim, not a measurement.
+
+**Fix, addressing the class rather than the instance:** the census printed raw integers,
+which required every reader to supply a mapping — so it invited exactly this. It now
+imports value names from the modules that WRITE the records, and the saturation banner
+reads `CONCENTRATION NOTICE … worth a look, NOT a verdict` instead of asserting
+"a default, not data".
+
+```
+direction  {NEUTRAL: 40,987, STABLE: 20,899, AWAY: 4,830, TOWARD: 2,121, REVERSAL: 62}
+agency     {OTHER: 12,684, SELF: 946, SYSTEM: 133}
+```
+
 > **Not done:** `wordclass` is not a cascade stage; no gold set with a pre-registered bar;
-> `agency` is 92% one value (defaulted, not measured); `inherent_number` still has zero SG,
-> so the pronoun path stays dormant; generation morphology (step 2) is **blocked** on
-> coverage, not on dominance.
+> `inherent_number` still has zero SG, so the pronoun path stays dormant; whether
+> `agency`'s skew is real remains **UNVERIFIED**; generation morphology (step 2) is
+> **blocked** on coverage, not on dominance.
 
 **New 2026-08-07 — the `.elo` container names its own dictionary.** `FORMAT_VERSION` → **2**
 (text) / `ELO_BIN_VERSION` → **3** (binary): the header now carries `build_id` + the dictionary
