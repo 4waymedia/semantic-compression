@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | `develop` (dev source; graduates two packages) |
-| **Liveness** | `active` — codec + dictionary build exercised 2026-08-07 |
-| **Updated** | 2026-08-07 |
+| **Liveness** | `active` — codec + dictionary build exercised 2026-08-29 |
+| **Updated** | 2026-08-29 |
 | **Owner lane** | semantic_compression / dictionary lane |
 | **Spec** | `SYSTEM1.md` · `docs/compression/*` · `docs/format/ELO_FILE_FORMAT.md` + `docs/format/spec-elo-dictionary-binding.md` |
 | **Package** | graduates **two**: `packages/elo-dictionary/` 0.3.1 (block, publishable) · `packages/elo-compression/` 0.3.1 (system, private) |
@@ -33,7 +33,75 @@ the ID space and the coupled asset family that downstream systems consume.
 | Codec `.elo`/`.eloB` | `compressor.py` | built — **now dictionary-bound (§ below)** |
 | Build family driver + asset cascade | `build_dictionary.py`, `build_from_spec.py`, `build_assets.py`, `build_suite.py` | built |
 | Artifact identity / manifest | `artifact_identity.py` | built |
-| Publish (stage 12) | `publish_dictionary.py` + `docs/compression/spec-publish-dictionary.md` | **spec only / in progress — not this lane's completed work yet** |
+| Publish (stage 12) | `publish_dictionary.py` + `docs/compression/spec-publish-dictionary.md` | built — gates G1–G8, refuses on failure |
+| **Standard pointer + index** | `dictionary_standard.py` → `dist/dictionary/{STANDARD,INDEX}.json` | **built 2026-08-29** |
+| **Resolver (the one door)** | `resolve.py` → `compression_dictionary.resolve_dictionary()` | **built 2026-08-29** |
+| **Resolution gate** | `check_dict_resolution.py` + `tests/test_dict_resolution_gate.py` | **built 2026-08-29 — 0 violations, `--strict` passes** |
+| Word class channel | `wordclass_builder.py` (`b'wordclass'`, 3 B) | built — run by hand, **not yet a cascade stage** |
+| Coverage census (stage 14) | `coverage_census.py` | built — always-run, fingerprint-bound |
+
+### 2026-08-29 — the dictionary standard, and the drift it exposed
+
+**Promoted standard: `elo-browser-v04`** (`b0164e50816af845`, v4.0.0, staged) via
+`dist/dictionary/STANDARD.json`. Consumers resolve through
+`compression_dictionary.resolve_dictionary()`; precedence is `ELO_DICT` → the pointer →
+a named `DictionaryUnavailable`. **There is no default** — a fallback is how eight lanes
+ran on `9a77e623`/v1.2.0, an orphan matching no build package, with identical row counts
+(437,995) hiding it.
+
+- Resolution gate: **37 → 0** violations across 8 lanes; `--strict` exits 0.
+- Export drift repaired: `elo-dictionary` and `elo-compression` now `CHECK: clean`.
+  `resolve.py` + `dictionary_info.py` added to the export include list — they existed in
+  **both** trees and **neither** include list, so nothing kept them equal (and
+  `dictionary_info.py` had already diverged).
+- **The gate had a false clean.** It did not scan the dev source, so it reported 0
+  violations while `compressor.py`'s source still hardcoded the orphan path — the repoint
+  had landed only in the *exported* copy, and the next `--apply` would have reinstated the
+  bug. The dev source is now scanned by default, with V1 scoped to module-level defaults
+  so build tooling composing a path from a parameter is not flagged.
+- Three further dev-source defaults repointed: `epa_phrase_composer.py`,
+  `vfacet_context_classifier.py`, `vfacet_llm.py`.
+
+**Word class corrections (same day):** `dominant` is now argmax over per-class evidence,
+not a fixed priority — `dog`/`stone`/`water`/`run`/`house` were byte-identical `54 03 40`
+(VERB at CORPUS confidence). Comparatives/superlatives fixed (`morph_class('faster')`
+returned NOUN); plurals inherit the singular's resolved class (10,074). Coverage: all-zero
+lowercase-alphabetic 127,713 → 121,133; frequent unclassified 481 → 393.
+
+### 2026-08-29 (later) — byte 2 repaired, `wordclass_format_version` → **2**
+
+**BREAKING for readers.** `proper` and `requires_determiner` were single bits and are now
+2 bits each, paid for from the two reserved bits. A v1 reader against a v2 record takes
+`proper` from the wrong bits and reports a boolean for a tri-state, so **check the
+version**. `04-Verbalizer/reader.py` and its package mirror are updated.
+
+```
+byte 2  [7:6] countability  [5:4] inherent_number  [3:2] proper  [1:0] requires_determiner
+                                                   0 UNKNOWN · 1 NO · 2 YES
+```
+
+The bugs, all measured, all mine:
+
+| | was | now |
+|---|---|---|
+| `requires_determiner` | defined, read, **never assigned** — 437,995 confident falses | YES 5,267 · NO 4,663 · rest UNKNOWN |
+| `proper` | capitalisation **shape**: flagged `Abate`/`Able`, missed `israel`/`washington` | YES 9,837 · NO 31,141, from mid-sentence capitals |
+| `countability` | 32,781 COUNT, **0 MASS** — `water` read COUNT (*"a water") | COUNT 8,373 · MASS 190 · BOTH 412 |
+
+A single-bit boolean cannot express UNKNOWN, so both fields violated the record spec's
+own property #1 from the day they were written. That is the root cause, not the symptom.
+
+**Coverage went DOWN and that is the fix**: COUNT fell 32,781 → 8,373 because the blanket
+"every noun is COUNT" assertion is gone. Countability is now known for 2% of entries and
+honestly absent for the rest, instead of confidently wrong for all of them. Evidence comes
+only from the 26-book cased corpus, so the ceiling is low until a larger cased source
+lands. Known limits recorded in `tests/test_wordclass_features.py`: `music` reads BOTH
+because noun-noun compounds ("a music teacher") contaminate the COUNT cue.
+
+> **Not done:** `wordclass` is not a cascade stage; no gold set with a pre-registered bar;
+> `agency` is 92% one value (defaulted, not measured); `inherent_number` still has zero SG,
+> so the pronoun path stays dormant; generation morphology (step 2) is **blocked** on
+> coverage, not on dominance.
 
 **New 2026-08-07 — the `.elo` container names its own dictionary.** `FORMAT_VERSION` → **2**
 (text) / `ELO_BIN_VERSION` → **3** (binary): the header now carries `build_id` + the dictionary

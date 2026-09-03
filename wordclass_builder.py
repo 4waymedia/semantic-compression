@@ -10,7 +10,7 @@ AXIS at all -- not a missing value, a missing dimension. Composition therefore c
 choose a predicate, inflect it, or tell `requires` from `psu` when building a clause.
 Contract + rationale: handoffs/2026-08-28-dictionary-lane-wordclass-accepted.md
 
-RECORD (3 bytes, id-keyed, sub-db b'wordclass'):
+RECORD (3 bytes, id-keyed, sub-db b'wordclass') -- format v2:
     byte 0  [7:5] DOMINANT class  0 UNKNOWN 1 NOUN 2 VERB 3 MOD 4 FUNCTION 5 NAME
                                   6 NUMERAL 7 OTHER
             [4:3] confidence 0 UNKNOWN 1 HEURISTIC 2 CORPUS 3 ADJUDICATED
@@ -102,8 +102,14 @@ MASK_BIT = {'NOUN': 1 << 0, 'VERB': 1 << 1, 'MOD': 1 << 2, 'FUNCTION': 1 << 3,
 
 COUNTABILITY = {'UNKNOWN': 0, 'COUNT': 1, 'MASS': 2, 'BOTH': 3}
 NUMBER = {'UNKNOWN': 0, 'SG': 1, 'PL': 2, 'INVARIANT': 3}
-PROPER_BIT = 0b1000
-REQ_DET_BIT = 0b0100
+# TRI-STATE, 2 bits each (format v2, 2026-08-29). Both were single bits, which cannot
+# express UNKNOWN -- so `requires_determiner` reported 437,995 confident falses while
+# never being assigned at all, and `proper` reported 410,277 while being derived from
+# capitalisation shape. The record spec's property #1 is "UNKNOWN is 0 everywhere"; a
+# boolean bit cannot honour it. The two reserved bits in byte 2 pay for this exactly.
+TRI = {'UNKNOWN': 0, 'NO': 1, 'YES': 2}
+PROPER_SHIFT = 2;  PROPER_MASK = 0b00001100
+REQDET_SHIFT = 0;  REQDET_MASK = 0b00000011
 
 
 def unpack_wordclass(rec: bytes) -> dict:
@@ -116,8 +122,10 @@ def unpack_wordclass(rec: bytes) -> dict:
         'classes': {n for n, bit in MASK_BIT.items() if mask & bit},
         'countability': (b2 >> 6) & 0b11,
         'inherent_number': (b2 >> 4) & 0b11,
-        'proper': bool(b2 & PROPER_BIT),
-        'requires_determiner': bool(b2 & REQ_DET_BIT),
+        # tri-state ints, NOT bools: 0 UNKNOWN / 1 NO / 2 YES. A consumer that wants a
+        # boolean must decide what to do with UNKNOWN rather than have it decided here.
+        'proper': (b2 & PROPER_MASK) >> PROPER_SHIFT,
+        'requires_determiner': (b2 & REQDET_MASK) >> REQDET_SHIFT,
     }
 
 # ---------------------------------------------------------------------------
@@ -361,14 +369,37 @@ def load_context(corpus_text: Path | None) -> dict:
         return ev
     for f in files:
         try:
-            txt = f.read_text(encoding='utf-8', errors='replace').lower()
+            txt_raw = f.read_text(encoding='utf-8', errors='replace')
+            txt = txt_raw.lower()
         except Exception:
             continue
+        # A SECOND tokenisation that PRESERVES CASE. `_WORD` lowercases, which is why
+        # proper-noun evidence was unavailable and a shape rule got used instead.
+        for m in _WORD_CASED.finditer(txt_raw):
+            w_raw = m.group(0)
+            if w_raw[:1].isupper() and not _sentence_initial(txt_raw, m.start()):
+                ev[w_raw.lower()]['_proper'] += 1
+            elif w_raw.islower():
+                ev[w_raw]['_lower'] += 1
         toks = _WORD.findall(txt)
         for i in range(1, len(toks)):
             prev, w = toks[i - 1], toks[i]
             if prev in DETERMINERS:
                 ev[w]['NOUN'] += 1
+                # C1/C2 evidence, 2026-08-29. WHICH determiner appeared is the signal:
+                #   'much'/'some'/'less' + X   -> X is MASS   ("much water")
+                #   'a'/'an'/'every'/'each'    -> X is COUNT and takes a determiner
+                # English marks the count/mass distinction in the determiner system, so
+                # this is a measurement rather than a heuristic -- and the counts were
+                # already being gathered and thrown away.
+                if prev in _MASS_DET:
+                    ev[w]['_mass'] += 1
+                elif prev in _COUNT_DET:
+                    ev[w]['_count'] += 1
+            # C4 evidence: capitalised in NON-INITIAL position is the only reliable
+            # written signal of a proper noun, and it is corpus evidence rather than
+            # shape. `i > 1` skips sentence-initial capitals, which is exactly what the
+            # old shape rule could not do.
             if prev in TO_MODAL:
                 ev[w]['VERB'] += 1
             if prev in DEGREE or prev in COPULA:
@@ -376,6 +407,26 @@ def load_context(corpus_text: Path | None) -> dict:
     return ev
 
 
+
+
+
+# Determiners that select for MASS vs COUNT. English encodes the distinction here, which
+# is why it is measurable at all: *"much dog" and *"a water" are both ungrammatical.
+_MASS_DET = {'much', 'less', 'some'}
+_COUNT_DET = {'a', 'an', 'every', 'each', 'another', 'many'}
+_WORD_CASED = re.compile(r"[A-Za-z][A-Za-z']+")
+
+
+def _sentence_initial(text: str, pos: int) -> bool:
+    """True when the token at `pos` opens a sentence.
+
+    The whole point of the C4 fix: a capital at the start of a sentence carries NO
+    information about proper-noun status, and counting it is what made `Abate`, `Abhor`
+    and `Able` proper nouns. Only a capital in mid-sentence position is evidence."""
+    j = pos - 1
+    while j >= 0 and text[j] in ' \t\r\n"\'(':
+        j -= 1
+    return j < 0 or text[j] in '.!?:;'
 
 
 def _corpus_provenance(corpus_freq, corpus_text) -> dict:
@@ -540,13 +591,20 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             # layer 4 -- corpus context cues (adds classes; may confirm or widen)
             ctx = context.get(low)
             if ctx:
-                top = ctx.most_common(1)[0]
-                for name, n in ctx.items():
-                    # floored: absolute count AND share of the dominant cue
-                    if n >= MIN_CUES and n >= MIN_SHARE * top[1]:
-                        classes.add(name)
-                if conf in ('UNKNOWN', 'HEURISTIC') and top[1] >= MIN_CUES:
-                    conf = 'CORPUS'
+                # CLASS cues only. The same Counter also carries byte-2 FEATURE evidence
+                # under underscore-prefixed keys (`_proper`, `_mass`, `_count`, `_lower`),
+                # and without this filter they were added as CLASSES -- `classes.add
+                # ('_proper')` then `CLASS['_proper']` -> KeyError, crashing the build.
+                # Two kinds of evidence in one bag needs the bag to say which is which.
+                cls_cues = {k: v for k, v in ctx.items() if not k.startswith('_')}
+                if cls_cues:
+                    top = max(cls_cues.items(), key=lambda kv: kv[1])
+                    for name, n in cls_cues.items():
+                        # floored: absolute count AND share of the dominant cue
+                        if n >= MIN_CUES and n >= MIN_SHARE * top[1]:
+                            classes.add(name)
+                    if conf in ('UNKNOWN', 'HEURISTIC') and top[1] >= MIN_CUES:
+                        conf = 'CORPUS'
             # NOMINAL EVIDENCE -- 2026-08-29. This was a plural-shape test
             # (`low+'s' in vocab` => NOUN). RETIRED, because it is not a weak rule,
             # it is an IMPOSSIBLE one: `stones` and `thinks` are the same shape, so
@@ -563,15 +621,61 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
                 if conf == 'UNKNOWN':
                     conf = 'HEURISTIC'
 
-        if surface[:1].isupper() and surface[1:].islower():
-            b2 |= PROPER_BIT
+        # ---- byte 2: LEXICAL FEATURES, derived from evidence (format v2) --------
+        _ctx2 = context.get(low) or {}
+        _n_proper = _ctx2.get('_proper', 0)      # capitalised mid-sentence
+        _n_lower = _ctx2.get('_lower', 0)        # seen lowercase
+        _n_mass = _ctx2.get('_mass', 0)          # much/less/some + X
+        _n_count = _ctx2.get('_count', 0)        # a/an/every/each + X
+        _n_det = _ctx2.get('NOUN', 0)            # any determiner + X
+
+        # C4 PROPER. Was `surface[:1].isupper() and surface[1:].islower()` -- shape, not
+        # evidence, and wrong in BOTH directions: it flagged book sentence-initials
+        # (`Abate`, `Able`) and could never see `israel`/`washington`, since the
+        # transcript corpus is uncapitalised. Now: capitalised in NON-INITIAL position
+        # is the signal, and a surface seen lowercase far more often is NOT proper.
+        if _n_proper >= MIN_CUES and _n_proper >= 2 * _n_lower:
+            b2 |= TRI['YES'] << PROPER_SHIFT
             classes.add('NAME')
             if conf == 'UNKNOWN':
                 conf = 'HEURISTIC'
+        elif _n_lower >= MIN_CUES:
+            b2 |= TRI['NO'] << PROPER_SHIFT      # measured NOT proper -- not merely absent
+        # else: leave UNKNOWN. No evidence is a state, not a False.
+
         if 'NOUN' in classes:
-            b2 |= COUNTABILITY['COUNT'] << 6
+            # C2 COUNTABILITY. Was a blanket COUNT for every noun, so `water` read
+            # COUNT and a generator would emit *"a water". English marks the
+            # distinction in the DETERMINER system -- *"much dog", *"a water" -- so
+            # `much/less/some` vs `a/an/every/each` is a measurement, not a guess.
+            if _n_mass >= MIN_CUES and _n_count >= MIN_CUES:
+                b2 |= COUNTABILITY['BOTH'] << 6      # 'some water' AND 'a water[fall]'
+            elif _n_mass >= MIN_CUES:
+                b2 |= COUNTABILITY['MASS'] << 6
+            elif _n_count >= MIN_CUES:
+                b2 |= COUNTABILITY['COUNT'] << 6
+            # NO FALLBACK ON A BARE DETERMINER. A first version added
+            # `elif _n_det >= MIN_CUES: COUNT`, which is the same unevidenced assertion
+            # this fix removed one line up: "the furniture" and "the dog" are equally
+            # grammatical, so a plain determiner does not distinguish count from mass.
+            # It made `furniture` and `advice` read COUNT on no diagnostic evidence at
+            # all. They are UNKNOWN now, which is the true answer for this corpus.
+            # else: UNKNOWN.
+
             if low.endswith('s') and low[:-1] in vocab:
                 b2 |= NUMBER['PL'] << 4
+
+            # C1 REQUIRES_DETERMINER -- the field that was DEFINED, READ, and NEVER SET,
+            # reporting 437,995 confident falses. A singular COUNT noun needs one
+            # ("*dog barked"); a mass noun or a plural does not. Both answers now come
+            # from the countability evidence above rather than from silence.
+            _cnt = (b2 >> 6) & 0b11
+            _num = (b2 >> 4) & 0b11
+            if _cnt == COUNTABILITY['COUNT'] and _num != NUMBER['PL']:
+                b2 |= TRI['YES'] << REQDET_SHIFT
+            elif _cnt in (COUNTABILITY['MASS'], COUNTABILITY['BOTH']) or _num == NUMBER['PL']:
+                b2 |= TRI['NO'] << REQDET_SHIFT
+            # else UNKNOWN: countability unknown => determiner requirement unknowable
 
         # DOMINANT -- argmax over per-class EVIDENCE. Priority is a tie-break only.
         #
@@ -603,7 +707,7 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         _ctx = context.get(low)
         if _ctx:
             for _name, _n in _ctx.items():
-                if _name in classes:
+                if _name in classes and not _name.startswith('_'):
                     ev[_name] = _n
         if len(classes) == 1:
             dominant = next(iter(classes))          # nothing to choose between
@@ -706,7 +810,25 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             conf2 = cur[2] if cur[1] else 'HEURISTIC'
             b0_2 = ((CLASS[dom2] << 5) | (CONF[conf2] << 3)
                     | (AMBIVALENT if amb2 else 0))
-            out[idx_of[surface]] = (idb, REC.pack(b0_2, inherit, _b2 & 0b00111100))
+            # BYTE 2 for an inherited plural. Two bugs met here:
+            #   * the carried mask was `_b2 & 0b00111100`, written for the v1 layout.
+            #     Under v2 those bits are inherent_number + proper, so countability and
+            #     requires_determiner were being silently dropped.
+            #   * more basic: byte 2 is computed in PASS 1, but a plural only becomes a
+            #     NOUN in PASS 2 -- so `dogs` never entered the noun branch at all and
+            #     came out with countability and requires_determiner UNKNOWN.
+            # A plural is a count noun that does NOT require a determiner ("dogs bark"),
+            # and its number is PL by construction, so all three are known here.
+            _b2n = _b2 & 0b00001100                       # keep the singular's `proper`
+            _b2n |= NUMBER['PL'] << 4
+            _sg_cnt = (_b2 >> 6) & 0b11
+            if _sg_cnt in (COUNTABILITY['COUNT'], COUNTABILITY['BOTH']):
+                _b2n |= COUNTABILITY['COUNT'] << 6
+                _b2n |= TRI['NO'] << REQDET_SHIFT         # bare plurals are grammatical
+            elif _sg_cnt == COUNTABILITY['MASS']:
+                _b2n |= COUNTABILITY['MASS'] << 6
+                _b2n |= TRI['NO'] << REQDET_SHIFT
+            out[idx_of[surface]] = (idb, REC.pack(b0_2, inherit, _b2n))
             resolved[surface] = (dom2, inherit, conf2, _b2)
             stats['plural_inherited'] += 1
             stats[f'class_{dom2}'] += 1
@@ -723,7 +845,10 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             fp = txn.get(b'dictionary_fingerprint', db=meta)
         payload = {
             'dictionary_fingerprint': fp.decode() if fp else None,
-            'wordclass_format_version': 1,
+            # v2 (2026-08-29): byte 2's `proper` and `requires_determiner` widened from 1 bit to
+            # 2, so both can say UNKNOWN. A v1 reader against a v2 record takes `proper`
+            # from the wrong bits -- readers MUST check this.
+            'wordclass_format_version': 2,
             # DERIVED from the struct, never typed (NLG/NLU ask 1, 2026-08-29). This
             # read `2` while REC is '<BBB' = 3 bytes: the record was widened when the
             # class MASK byte landed and the stat was not. A consumer sizing a buffer
