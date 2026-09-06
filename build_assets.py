@@ -38,6 +38,10 @@ ROOT = SC.parent                                     # R-D-concepts/
 BROWSER_TOOLS = ROOT / "ELO-Browser" / "tools"
 # O3: browser assets land in a PER-DICTIONARY subdir so shipped products never
 # collide. The runtime selects a product dir; the default is keyed by build name.
+# Layer-4 evidence for the wordclass stage. Repo-relative so it resolves identically
+# on every machine; the stage refuses rather than silently using the 427k sample.
+CORPUS_TEXT = ROOT / "Resources" / "books"
+
 BROWSER_DICT_ROOT = ROOT / "ELO-Browser" / "elo-browser" / "src-tauri" / "dictionary"
 PY = sys.executable
 
@@ -57,7 +61,8 @@ STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                # which fails fast at resolve time instead of writing 437,995 rows
                # of NEUTRAL/UNKNOWN that look like data.
                13: "vfacets",
-               14: "census"}
+               14: "census",
+               15: "wordclass"}
 
 
 def _sig(path: Path) -> str:
@@ -275,6 +280,27 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         # It is deliberately LAST: it measures the finished package, including the
         # channels stages 1/3/13 wrote. Running it earlier would census a half-built
         # artifact and report the gaps as findings.
+        # STAGE 15 -- WORDCLASS. Always declared, never inherited.
+        #
+        # This channel was built BY HAND for its whole life, which is two hazards at
+        # once: a rebuild that forgets it leaves the channel stale while the LMDB still
+        # reports it PRESENT (so `dictionary_info` says yes and the data is a
+        # generation behind), and a run that omits `--corpus-text` silently falls back
+        # to a 427k-token sample. That sample is not a smaller version of the same
+        # thing -- layer 4's determiner counts are the DECIDING evidence for noun vs
+        # verb, so without the books corpus `dog`, `stone` and `water` go back to
+        # reading VERB. A stage that can be run wrong by omission belongs in the
+        # cascade with its arguments fixed.
+        #
+        # CORPUS_TEXT is resolved repo-relative so it means the same thing on every
+        # machine, and the stage FAILS rather than degrading if it is missing -- see
+        # the guard below.
+        dict(n=15, name="wordclass", script=SC / "wordclass_builder.py", cwd=SC,
+             dep="lmdb",
+             argv=["--db", str(lmdb),
+                   "--corpus", str(SC / "data" / "word_frequencies.txt"),
+                   "--corpus-text", str(CORPUS_TEXT)],
+             out=[pkg / "wordclass_stats.json"]),
         dict(n=14, name="census", script=SC / "coverage_census.py", cwd=SC,
              dep="lmdb", argv=["--db", str(lmdb)],
              out=[pkg / "coverage_census.json"], gate=True),

@@ -44,7 +44,23 @@ import lmdb
 # Paths
 # ---------------------------------------------------------------------------
 _HERE = Path(__file__).parent
-DEFAULT_DB      = _HERE / 'db' / 'dictionary.lmdb'
+def _resolve_dictionary():
+    """Resolve through the package, never a fixed default.
+
+    Was `_HERE / 'db' / 'dictionary.lmdb'` -- fingerprint 9a77e623 / release v1.2.0,
+    an orphan matching no build package in the index. The path exists, so this never
+    errored while pointing two generations back."""
+    try:
+        from compression_dictionary import resolve_dictionary, DictionaryUnavailable
+    except Exception:
+        return None
+    try:
+        return resolve_dictionary().path
+    except DictionaryUnavailable:
+        return None
+
+
+DEFAULT_DB = _resolve_dictionary()
 DEFAULT_CORPUS  = _HERE / '..' / 'Resources' / 'transcripts'
 VFACETS_DB      = b'vfacets'
 

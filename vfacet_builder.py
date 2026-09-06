@@ -75,6 +75,7 @@ _EPA_STRUCT = struct.Struct('<fff')
 # pack, unpack, and a hand-typed `record_width: 2`. That is the shape that let the
 # wordclass copy declare 2 for a 3-byte record: nothing tied the number to the format.
 REC = struct.Struct('<BB')
+VFACETS_FORMAT_VERSION = 1
 
 
 def pack_vfacet(agency, direction, temporal, domain, polarity,
@@ -452,6 +453,11 @@ def build_vfacets(
     # (b) `llm_enriched: false` distinguishes "deterministic pass only" from "also
     # got vfacet_llm.py". The fingerprint is READ from the build's meta, never typed.
     if not dry_run:
+        # Same ask as wordclass: a declared version that is not stamped cannot be read.
+        _mdb = env.open_db(b'meta', create=True)
+        with env.begin(write=True) as _tx:
+            _tx.put(b'vfacets_format_version',
+                    struct.pack('<I', VFACETS_FORMAT_VERSION), db=_mdb)
         try:
             meta_db = env.open_db(b'meta', create=False)
             with env.begin() as txn:
@@ -470,7 +476,7 @@ def build_vfacets(
         _n_sub = int(stats.get('enriched_from_substrate', 0))
         out = {
             'dictionary_fingerprint': _fp.decode() if _fp else None,
-            'vfacets_format_version': 1,
+            'vfacets_format_version': VFACETS_FORMAT_VERSION,
             # DERIVED, not typed (NLG/NLU ask 1). Correct today at 2 bytes, but the
             # wordclass copy of this same line said 2 for a 3-byte record after the
             # mask byte landed. Same derivation, so the same drift cannot happen here.

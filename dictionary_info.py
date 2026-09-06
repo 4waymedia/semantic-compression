@@ -74,8 +74,14 @@ SIDECARS: dict[str, str | None] = {
     "coverage_census.json": "dictionary_fingerprint",
 }
 
+# Int-encoded meta keys (4-byte LE). `wordclass_format_version` and
+# `vfacets_format_version` added 2026-08-30 on 04-Verbalizer's ask: both channels
+# DECLARED a format version in their stats JSON and stamped it nowhere, so every
+# consumer had to restate the constant -- and one restated `2` while the geometry was
+# `3`. A version that cannot be read from the artifact is not a version, it is a rumour.
 _INT_META = {b"dictionary_version", b"dictionary_format_version",
-             b"facets_format_version", b"normalization_version", b"record_width"}
+             b"facets_format_version", b"wordclass_format_version",
+             b"vfacets_format_version", b"normalization_version", b"record_width"}
 
 
 def _decode_meta(k: bytes, v: bytes):

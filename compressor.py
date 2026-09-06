@@ -192,7 +192,26 @@ def _longest_match_scan(
 
 ELO_MAGIC      = 'ELO'
 ELO_DELIMITER  = '|'                                  # PIPE_BYTE = 0x7C
-DEFAULT_LMDB   = Path('semantic_compression/db/dictionary.lmdb')
+def _default_lmdb():
+    """The codec's dictionary. A codec bound to the WRONG dictionary is the worst
+    case in the whole resolution sweep: ids are build-specific, so encoding against a
+    stale dictionary produces a stream that decodes to different surfaces -- silently,
+    and the .eloB header would then attest a fingerprint that was never actually used.
+
+    This constant used to be a hardcoded path to `db/dictionary.lmdb`, which is
+    fingerprint 9a77e623 / release v1.2.0 and matches NO build package in the index.
+    Resolve, never assume."""
+    try:
+        from compression_dictionary import resolve_dictionary, DictionaryUnavailable
+    except Exception:
+        return None
+    try:
+        return resolve_dictionary().path
+    except DictionaryUnavailable:
+        return None
+
+
+DEFAULT_LMDB   = _default_lmdb()
 ELO_EXTENSION  = '.elo'
 
 # .elo TEXT header version == config.FORMAT_VERSION (the canonical counter). The

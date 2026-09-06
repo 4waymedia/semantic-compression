@@ -46,7 +46,23 @@ import lmdb
 # ---------------------------------------------------------------------------
 
 _HERE    = Path(__file__).parent
-DICT_DB  = _HERE / 'db' / 'dictionary.lmdb'
+def _resolve_dictionary():
+    """Resolve through the package, never a fixed default.
+
+    Was `_HERE / 'db' / 'dictionary.lmdb'` -- fingerprint 9a77e623 / release v1.2.0,
+    an orphan matching no build package in the index. The path exists, so this never
+    errored while pointing two generations back."""
+    try:
+        from compression_dictionary import resolve_dictionary, DictionaryUnavailable
+    except Exception:
+        return None
+    try:
+        return resolve_dictionary().path
+    except DictionaryUnavailable:
+        return None
+
+
+DICT_DB = _resolve_dictionary()
 EPA_DB   = _HERE / '..' / 'Memory' / 'data' / 'epa_substrate.lmdb'
 STATS_OUT = _HERE / 'db' / 'epa_compose_stats.json'
 

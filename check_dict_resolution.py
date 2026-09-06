@@ -126,6 +126,32 @@ def _string_literal_lines(text: str) -> set:
     return lines
 
 
+def _module_level_assign_lines(text: str) -> set:
+    """Lines of MODULE-LEVEL assignments — where a default is declared.
+
+    The distinction that makes this gate usable on the dictionary lane's own source:
+
+        DEFAULT_DB = _HERE / \'db\' / \'dictionary.lmdb\'   # a DEFAULT -> violation
+        lmdb_path  = build_dir / "dictionary.lmdb"         # a parameter -> fine
+
+    Build tooling must address build packages by path; that is its entire job. What it
+    must not do is bind a fixed fallback at import time, because that is the construct
+    that silently answers "which dictionary?" without anyone asking. Module scope is
+    exactly that construct, so scope is the test rather than a filename allow-list."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    lines: set = set()
+    for node in tree.body:                      # module scope ONLY -- not ast.walk
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            start = getattr(node, "lineno", None)
+            end = getattr(node, "end_lineno", start)
+            if start:
+                lines.update(range(start, (end or start) + 1))
+    return lines
+
+
 def scan(roots: list[Path]) -> list[dict]:
     out: list[dict] = []
     for r in roots:
@@ -139,13 +165,15 @@ def scan(roots: list[Path]) -> list[dict]:
             except Exception:
                 continue
             skip = _string_literal_lines(text) if f.suffix == ".py" else set()
+            # V1 applies only at module scope for .py -- see _module_level_assign_lines
+            mod_lines = _module_level_assign_lines(text) if f.suffix == ".py" else None
             for i, line in enumerate(text.splitlines(), 1):
                 s = line.strip()
                 if s.startswith("#") or s.startswith("//") or s.startswith("*"):
                     continue          # a comment naming a path is documentation
                 if i in skip:
                     continue          # inside a string literal -- prose, not code
-                if V1.search(line):
+                if V1.search(line) and (mod_lines is None or i in mod_lines):
                     out.append({"kind": "V1", "file": f, "line": i, "text": s[:100]})
                 if V2.search(line):
                     out.append({"kind": "V2", "file": f, "line": i, "text": s[:100]})
@@ -157,12 +185,20 @@ def main() -> int:
     ap.add_argument("--strict", action="store_true",
                     help="exit 1 on any violation (blocking mode)")
     ap.add_argument("--all", action="store_true",
-                    help="also scan semantic_compression (build tooling; noisy)")
+                    help="(retained for compatibility; the dev source is always scanned)")
     a = ap.parse_args()
 
-    roots = [ROOT / c for c in CONSUMERS] + [ROOT / "packages"]
-    if a.all:
-        roots.append(SC)
+    # The DEV SOURCE is scanned by DEFAULT (2026-08-29). It used to be opt-in behind
+    # --all, described as "noisy" -- and that hole produced a FALSE CLEAN: this gate
+    # reported 0 violations across every lane while `semantic_compression/compressor.py`
+    # (the codec's own dev source) still read
+    #     DEFAULT_LMDB = Path('semantic_compression/db/dictionary.lmdb')
+    # i.e. the orphan build the whole standard exists to route around. The repoint had
+    # been applied to the EXPORTED copy in packages/ and not to the source it is
+    # generated from, so the next `export-package.py --apply` would have silently
+    # reinstated the bug. A gate that cannot see the source of the thing it checks is
+    # checking a shadow.
+    roots = [ROOT / c for c in CONSUMERS] + [ROOT / "packages", SC]
     hits = scan(roots)
 
     print(f"dictionary-resolution gate  --  {len(hits)} violation(s)"

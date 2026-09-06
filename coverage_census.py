@@ -52,6 +52,23 @@ import lmdb
 REC2 = struct.Struct('<BB')          # vfacets
 REC3 = struct.Struct('<BBB')         # wordclass
 
+
+def _wc_class(rec: bytes) -> int:
+    """Dominant class from a wordclass record, using the WRITER's bit geometry.
+
+    This was hardcoded as `(b0 >> 5) & 0b111` -- the format-v2 layout. When the class
+    field widened to 4 bits for INTERJ (v3), the census kept reading v2 offsets and
+    reported '78% of values are MOD' for a channel whose actual mode is OTHER. A census
+    that duplicates a layout is a census that silently lies the moment the layout moves,
+    which is the same lesson as the value names: import from the writer, do not restate.
+    """
+    b0 = REC3.unpack(rec)[0]
+    try:
+        import wordclass_builder as _wc
+        return (b0 & _wc.CLASS_MASK) >> _wc.CLASS_SHIFT
+    except Exception:
+        return (b0 >> 4) & 0b1111        # v3 fallback if the module is unavailable
+
 # Channels examined. name -> (sub-db, predicate on the raw record)
 # Value EXTRACTORS, parallel to CHANNELS. Coverage alone cannot tell a measurement
 # from a blanket assignment: `direction` reads 100% over its qualifying classes, which
@@ -63,7 +80,7 @@ VALUES: dict[str, object] = {
     'temporal':  lambda r: REC2.unpack(r)[0] & 0b111,
     'agency':    lambda r: (REC2.unpack(r)[0] >> 6) & 0b11,
     'direction': lambda r: (REC2.unpack(r)[0] >> 3) & 0b111,
-    'wordclass': lambda r: (REC3.unpack(r)[0] >> 5) & 0b111,
+    'wordclass': lambda r: _wc_class(r),
 }
 # VALUE NAMES, imported from the WRITERS rather than restated here (2026-08-29).
 #
@@ -113,7 +130,7 @@ CHANNELS: dict[str, tuple] = {
     'temporal':  (b'vfacets',   lambda r: r is not None and (REC2.unpack(r)[0] & 0b111) != 0),
     'agency':    (b'vfacets',   lambda r: r is not None and ((REC2.unpack(r)[0] >> 6) & 0b11) != 0),
     'direction': (b'vfacets',   lambda r: r is not None and ((REC2.unpack(r)[0] >> 3) & 0b111) != 0),
-    'wordclass': (b'wordclass', lambda r: r is not None and ((REC3.unpack(r)[0] >> 5) & 0b111) != 0),
+    'wordclass': (b'wordclass', lambda r: r is not None and _wc_class(r) != 0),
 }
 
 # Where each channel is MEANINGFUL. False = absence is correct, not a gap; a value
@@ -241,11 +258,17 @@ def census(lmdb_path: Path) -> dict:
         wc_db = env.open_db(b'wordclass', create=False)
         with env.begin() as _t:
             for _k, _v in _t.cursor(db=wc_db):
-                b0 = REC3.unpack(bytes(_v))[0]
-                cls = ['UNKNOWN', 'NOUN', 'VERB', 'MOD', 'FUNCTION',
-                       'NAME', 'NUMERAL', 'OTHER'][(b0 >> 5) & 0b111]
-                mask = ((b0 >> 5) & 0b111,)
-                wc[bytes(_k)] = (cls, bool((b0 >> 2) & 1))
+                _raw = bytes(_v)
+                b0 = REC3.unpack(_raw)[0]
+                # names AND the ambivalent bit from the writer -- the bit moved in v3
+                # (0b100 -> 0b10) along with the class widening.
+                try:
+                    import wordclass_builder as _wcm
+                    cls = _wcm.CLASS_NAME.get(_wc_class(_raw), 'UNKNOWN')
+                    amb = bool(b0 & _wcm.AMBIVALENT)
+                except Exception:
+                    cls, amb = 'UNKNOWN', False
+                wc[bytes(_k)] = (cls, amb)
     except lmdb.Error:
         pass
 

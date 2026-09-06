@@ -69,6 +69,9 @@ import lmdb
 
 WORDCLASS_DB = b'wordclass'
 REC = struct.Struct('<BBB')
+# ONE constant. The stats JSON and the meta stamp both read it, so they
+# cannot disagree with each other or with the bit geometry below.
+WORDCLASS_FORMAT_VERSION = 3
 
 # Layer-4 evidence floors (2026-08-29). Layer 4 now DECIDES nominal class, so a
 # single occurrence must not count: `the think` appears in 19 MB of books, and a
@@ -89,15 +92,35 @@ DOMINANCE_MARGIN = 1.5
 # argument as MIN_CUES.
 DEGREE_MIN_FREQ = 10
 
+# FORMAT v3 (2026-08-29): class widened 3 -> 4 bits to admit INTERJ. The 3-bit field
+# held 8 values and was FULL, so there was no slot -- `yeah` (393,619 occurrences, the
+# most frequent unclassified surface in the dictionary) had nowhere to go. The 4th bit
+# comes from byte 0's reserved pair:
+#
+#   v2  [7:5] class(3)  [4:3] conf(2)  [2] ambivalent  [1:0] reserved
+#   v3  [7:4] class(4)  [3:2] conf(2)  [1] ambivalent  [0]   reserved
+#
+# INTERJ is a FORM class -- "functions as a standalone utterance or discourse marker
+# rather than filling an argument slot". It deliberately does NOT record WHICH
+# discourse job the token does: the Tier-0 filler primitives (Q cognitive · R discourse
+# · S validation · T hedge · U emphasis · V emotional) already own that distinction, and
+# encoding it twice would create a second source of truth for one fact.
 CLASS = {'UNKNOWN': 0, 'NOUN': 1, 'VERB': 2, 'MOD': 3, 'FUNCTION': 4,
-         'NAME': 5, 'NUMERAL': 6, 'OTHER': 7}
+         'NAME': 5, 'NUMERAL': 6, 'OTHER': 7, 'INTERJ': 8}
 CLASS_NAME = {v: k for k, v in CLASS.items()}
 CONF = {'UNKNOWN': 0, 'HEURISTIC': 1, 'CORPUS': 2, 'ADJUDICATED': 3}
 CONF_NAME = {v: k for k, v in CONF.items()}
-AMBIVALENT = 0b100
+# byte 0 v3 bit geometry, NAMED so no call site hand-shifts. v2 used
+# class<<5 | conf<<3 | 0b100; the 4-bit class moves everything down one.
+CLASS_SHIFT = 4;  CLASS_MASK = 0b11110000
+CONF_SHIFT  = 2;  CONF_MASK  = 0b00001100
+AMBIVALENT  = 0b00000010
 # byte 1: one bit per class -- the SET of classes a surface can take.
 MASK_BIT = {'NOUN': 1 << 0, 'VERB': 1 << 1, 'MOD': 1 << 2, 'FUNCTION': 1 << 3,
-            'NAME': 1 << 4, 'NUMERAL': 1 << 5, 'OTHER': 1 << 6}
+            'NAME': 1 << 4, 'NUMERAL': 1 << 5, 'OTHER': 1 << 6,
+            # bit 7 was the mask's ONE free bit. INTERJ takes it, so the mask needed
+            # no widening even though the dominant-class field did.
+            'INTERJ': 1 << 7}
 
 
 COUNTABILITY = {'UNKNOWN': 0, 'COUNT': 1, 'MASS': 2, 'BOTH': 3}
@@ -116,8 +139,8 @@ def unpack_wordclass(rec: bytes) -> dict:
     """The reader every consumer should use -- never hand-decode the bits."""
     b0, mask, b2 = REC.unpack(rec)
     return {
-        'dominant': CLASS_NAME[(b0 >> 5) & 0b111],
-        'confidence': CONF_NAME[(b0 >> 3) & 0b11],
+        'dominant': CLASS_NAME[(b0 & CLASS_MASK) >> CLASS_SHIFT],
+        'confidence': CONF_NAME[(b0 & CONF_MASK) >> CONF_SHIFT],
         'ambivalent': bool(b0 & AMBIVALENT),
         'classes': {n for n, bit in MASK_BIT.items() if mask & bit},
         'countability': (b2 >> 6) & 0b11,
@@ -131,6 +154,47 @@ def unpack_wordclass(rec: bytes) -> dict:
 # ---------------------------------------------------------------------------
 # Layer 1 -- closed class. Exact membership, highest certainty available offline.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------- INTERJ (B1)
+# A CLOSED inventory, and worth saying why a list is right here when it was wrong for
+# nouns. Interjections are a closed class: the set is enumerable, it barely changes, and
+# it is small. That is the same argument that justified a table for irregular pasts and
+# rejected one for open-class vocabulary -- 200 nouns against 437,995 entries can never
+# catch up, whereas ~60 interjections is most of the category.
+#
+# Grouped by the Tier-0 filler primitive each belongs to, so the two taxonomies stay
+# reconcilable. INTERJ records the FORM class; the filler primitive records the
+# discourse job. Neither restates the other.
+INTERJECTIONS = {
+    # Q -- cognitive load / processing
+    'um', 'uh', 'er', 'hmm', 'uhh', 'umm', 'uhm', 'mm', 'mmm', 'hm',
+    # R -- discourse management / turn-holding
+    'okay', 'ok', 'alright', 'well', 'anyway', 'anyhow', 'so',
+    # affirmation / negation particles
+    'yeah', 'yep', 'yup', 'yes', 'yah', 'ya', 'aye', 'mhm', 'mmhm', 'uhhuh',
+    'nope', 'nah', 'naw', 'no', 'nuh',
+    # reactive / expressive
+    'oh', 'ah', 'aha', 'ooh', 'wow', 'whoa', 'woah', 'ugh', 'eh', 'huh',
+    'oops', 'ouch', 'yay', 'phew', 'geez', 'jeez', 'gosh', 'damn', 'wtf',
+    'hooray', 'bravo', 'yikes', 'aw', 'aww', 'hah', 'haha', 'lol',
+    # summons / greeting particles
+    'hey', 'hi', 'hello', 'yo', 'bye', 'goodbye', 'please', 'thanks', 'sorry',
+}
+
+# Surfaces that LOOK informal but are NOT interjections. Named explicitly because
+# "colloquial" is not a word class and a shape/vibe rule would sweep these in:
+#   gonna/wanna/gotta  reduced VERB forms  ("going to", "want to", "got to")
+#   cuz/coz/cause      reduced CONJUNCTION ("because")
+#   kinda/sorta        reduced MOD         ("kind of", "sort of")
+# They are excluded here and left to the ordinary layers, which classify them by what
+# they reduce FROM rather than by how casual they look.
+NOT_INTERJECTIONS = {
+    'gonna': 'VERB', 'wanna': 'VERB', 'gotta': 'VERB', 'gimme': 'VERB',
+    'lemme': 'VERB', 'dunno': 'VERB',
+    'cuz': 'FUNCTION', 'coz': 'FUNCTION', 'cus': 'FUNCTION',
+    'kinda': 'MOD', 'sorta': 'MOD', 'outta': 'FUNCTION',
+}
+
+
 DETERMINERS = {'the', 'a', 'an', 'this', 'that', 'these', 'those', 'my', 'your', 'his',
                'her', 'its', 'our', 'their', 'some', 'any', 'no', 'every', 'each',
                'either', 'neither', 'both', 'all', 'another', 'much', 'many'}
@@ -429,6 +493,54 @@ def _sentence_initial(text: str, pos: int) -> bool:
     return j < 0 or text[j] in '.!?:;'
 
 
+
+# ---- TRI-STATE PREDICATES -------------------------------------------------
+# 04-Verbalizer, 2026-08-30: v3 turned `proper` and `requires_determiner` from bools
+# into 3-value enums, and a caller kept `if wc["proper"]`. **`proper == 1` means
+# "definitely NOT a name", and 1 is truthy** -- so their aggregation gate inverted and
+# refused relative clauses for exactly the confidently-common nouns most eligible for
+# them ("the dog. The dog requires food." rather than "the dog, which requires food"),
+# and ONLY when a reader was supplied, so no prop-level test saw it.
+#
+# A version check cannot catch this: the version is consulted only if someone reads it,
+# and the bug is a truthiness assumption one layer ABOVE the reader. The structural
+# answer is to ship the predicate so no consumer has to hand-roll it.
+#
+#     if is_proper(wc):              # not: if wc["proper"]
+#     if requires_determiner(wc):    # not: if wc["requires_determiner"]
+
+def is_proper(wc: "dict | None") -> bool:
+    """True only when the record says YES. UNKNOWN and NO are both False."""
+    return bool(wc) and wc.get('proper') == TRI['YES']
+
+
+def requires_determiner(wc: "dict | None") -> bool:
+    """True only when the record says YES. UNKNOWN and NO are both False."""
+    return bool(wc) and wc.get('requires_determiner') == TRI['YES']
+
+
+def is_stated(wc: "dict | None", field: str) -> bool:
+    """True when `field` carries ANY measured value -- i.e. it is not UNKNOWN.
+
+    "Did we measure this?" is a different question from "is it true?", and a caller that
+    must widen on absence wants this one."""
+    return bool(wc) and wc.get(field, 0) != TRI['UNKNOWN']
+
+
+def _stamp_meta_int(env, key: bytes, value: int) -> None:
+    """Write an int meta key, 4-byte LE, matching `facets_format_version`.
+
+    04-Verbalizer, 2026-08-30: this channel DECLARED a format version in its stats JSON
+    and stamped it nowhere, so a consumer had no place to read it and had to restate the
+    constant. Theirs said 2 while the geometry was 3 -- the decode was right, the
+    self-report was wrong, and NOTHING could catch it from the artifact, because the
+    artifact did not carry the field. Declaring a version load-bearing and then not
+    shipping it is the identity-drift class this repo has now paid for three times."""
+    db = env.open_db(b'meta', create=True)
+    with env.begin(write=True) as txn:
+        txn.put(key, struct.pack('<I', int(value)), db=db)
+
+
 def _corpus_provenance(corpus_freq, corpus_text) -> dict:
     """Corpus inputs as REPO-RELATIVE paths plus a content hash (NLG/NLU ask 2).
 
@@ -524,8 +636,31 @@ def _singular_is_ambivalent(surface: str, resolved: dict) -> bool:
 
 
 def build(lmdb_path: Path, corpus_freq: Path | None = None,
-          dry_run: bool = False, corpus_text: Path | None = None) -> dict:
+          dry_run: bool = False, corpus_text: Path | None = None,
+          require_corpus_text: bool = True) -> dict:
+    """Build the wordclass channel.
+
+    `require_corpus_text` REFUSES rather than degrading (2026-08-29). Layer 4's
+    determiner counts are the deciding evidence for noun vs verb -- without the cased
+    books corpus, `dog`, `stone` and `water` read VERB again, and `proper` loses its
+    only evidence source entirely. A run that omits it does not produce a slightly
+    worse channel; it produces the channel this lane spent a day fixing. Silence is
+    not an acceptable outcome for a missing input, so this raises.
+    Pass require_corpus_text=False only for a deliberate frequency-only build."""
     t0 = time.perf_counter()
+    if require_corpus_text:
+        if corpus_text is None:
+            raise SystemExit(
+                "wordclass: --corpus-text is REQUIRED.\n"
+                "  Layer 4's determiner counts decide noun vs verb; without them\n"
+                "  dog/stone/water read VERB and `proper` has no evidence at all.\n"
+                "  Fix: --corpus-text Resources/books   (or pass "
+                "require_corpus_text=False for a deliberate frequency-only build)")
+        if not Path(corpus_text).exists():
+            raise SystemExit(
+                f"wordclass: --corpus-text {corpus_text} does not exist.\n"
+                "  Refusing to fall back to the 427k sample silently -- that fallback\n"
+                "  is what made every inflecting noun a verb.")
     freq = load_corpus_freq(corpus_freq)
     context = load_context(corpus_text)
     env = lmdb.open(str(lmdb_path), map_size=4 * 1024 ** 3, max_dbs=16)
@@ -551,6 +686,15 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             classes, conf = {'NUMERAL'}, 'HEURISTIC'
         elif not low.replace("'", '').replace('-', '').isalpha():
             classes, conf = set(), 'UNKNOWN'                # symbols/structural
+        elif low in NOT_INTERJECTIONS:
+            # Reduced forms: classified by what they reduce FROM. Checked BEFORE the
+            # interjection inventory so a casual-looking verb never lands in INTERJ.
+            classes, conf = {NOT_INTERJECTIONS[low]}, 'ADJUDICATED'
+        elif low in INTERJECTIONS:
+            # layer 1b -- closed inventory, so ADJUDICATED for the same reason the
+            # closed-class list is: membership is a curated lexical fact, not a
+            # derivation. `adjudicated_source` in the stats says so explicitly.
+            classes, conf = {'INTERJ'}, 'ADJUDICATED'
         elif low in CLOSED:
             classes, conf = {'FUNCTION'}, 'ADJUDICATED'     # layer 1
         else:
@@ -702,7 +846,18 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         # Where evidence cannot separate two readings, this records UNKNOWN rather than
         # picking. Consumers license from the mask; dominance is a claim, and a claim
         # without evidence should not be made.
-        order = ('VERB', 'NOUN', 'MOD', 'FUNCTION', 'NAME', 'NUMERAL', 'OTHER')
+        # INTERJ sits BEFORE NAME (2026-08-29). It was omitted from this tuple when the
+        # class was added, and the omission was silent in the common case because a
+        # single-class surface never consults `order` -- but `oh` and `aha` are
+        # capitalised mid-sentence often enough in the books corpus to also earn NAME,
+        # and with INTERJ absent from the order they resolved to NAME. An interjection
+        # that happens to be capitalised is still an interjection. Any class missing
+        # from this tuple silently becomes UNKNOWN in the ADJUDICATED branch, so it
+        # must list every member of CLASS.
+        order = ('INTERJ', 'VERB', 'NOUN', 'MOD', 'FUNCTION', 'NAME', 'NUMERAL', 'OTHER')
+        assert set(order) | {'UNKNOWN'} == set(CLASS), (
+            'dominance order must cover every CLASS member: '
+            f'missing {set(CLASS) - set(order) - {"UNKNOWN"}}')
         ev = Counter()
         _ctx = context.get(low)
         if _ctx:
@@ -733,7 +888,8 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         for c in classes:
             mask |= MASK_BIT.get(c, 0)
         amb = bin(mask).count('1') > 1
-        b0 = (CLASS[dominant] << 5) | (CONF[conf] << 3) | (AMBIVALENT if amb else 0)
+        b0 = ((CLASS[dominant] << CLASS_SHIFT) | (CONF[conf] << CONF_SHIFT)
+              | (AMBIVALENT if amb else 0))
         out.append((idb, REC.pack(b0, mask, b2)))
         resolved[surface] = (dominant, mask, conf, b2)
         idx_of[surface] = len(out) - 1
@@ -808,7 +964,7 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             # Keep the surface's own confidence when it had one: it earned that from
             # evidence, and inheritance adding a reading does not weaken it.
             conf2 = cur[2] if cur[1] else 'HEURISTIC'
-            b0_2 = ((CLASS[dom2] << 5) | (CONF[conf2] << 3)
+            b0_2 = ((CLASS[dom2] << CLASS_SHIFT) | (CONF[conf2] << CONF_SHIFT)
                     | (AMBIVALENT if amb2 else 0))
             # BYTE 2 for an inherited plural. Two bugs met here:
             #   * the carried mask was `_b2 & 0b00111100`, written for the v1 layout.
@@ -840,6 +996,8 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             db = env.open_db(WORDCLASS_DB, txn=txn, create=True)
             for idb, rec in out:
                 txn.put(idb, rec, db=db)
+        # STAMP THE FORMAT VERSION INTO THE ARTIFACT (04-Verbalizer ask, 2026-08-30).
+        _stamp_meta_int(env, b'wordclass_format_version', WORDCLASS_FORMAT_VERSION)
         meta = env.open_db(b'meta', create=False)
         with env.begin() as txn:
             fp = txn.get(b'dictionary_fingerprint', db=meta)
@@ -848,7 +1006,7 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             # v2 (2026-08-29): byte 2's `proper` and `requires_determiner` widened from 1 bit to
             # 2, so both can say UNKNOWN. A v1 reader against a v2 record takes `proper`
             # from the wrong bits -- readers MUST check this.
-            'wordclass_format_version': 2,
+            'wordclass_format_version': WORDCLASS_FORMAT_VERSION,
             # DERIVED from the struct, never typed (NLG/NLU ask 1, 2026-08-29). This
             # read `2` while REC is '<BBB' = 3 bytes: the record was widened when the
             # class MASK byte landed and the stat was not. A consumer sizing a buffer
@@ -870,7 +1028,9 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
             # of a review process.
             'adjudication_pass_ran': False,
             'adjudicated_entries': int(stats.get('conf_ADJUDICATED', 0)),
-            'adjudicated_source': 'closed-class list (CLOSED) -- curated lexical fact, '
+            'adjudicated_source': 'closed-class list (CLOSED) + interjection inventory '
+                                  '(INTERJECTIONS) + reduced-form table '
+                                  '(NOT_INTERJECTIONS) -- curated lexical facts, '
                                   'not a review pass',
             'elapsed_s': round(time.perf_counter() - t0, 2),
             **{k: v for k, v in stats.items()},
