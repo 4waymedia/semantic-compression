@@ -359,7 +359,13 @@ class Compressor:
             self._env = lmdb.open(
                 str(self.lmdb_path),
                 readonly=True,
-                max_dbs=2,
+                # 24, not 2 (2026-09-08). The codec itself needs only forward/reverse,
+                # but lmdb permits ONE open per path per process -- so whatever opens the
+                # file first decides how many sub-dbs ANY holder of that env can reach.
+                # With max_dbs=2 a caller that wanted both `decode_ids` and a channel
+                # read got DbsFullError, which is a composition failure disguised as a
+                # capacity setting. On a readonly env the table costs nothing.
+                max_dbs=24,
                 lock=False,
             )
             self._fwd_db = self._env.open_db(b'forward')
