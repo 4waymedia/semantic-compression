@@ -59,6 +59,30 @@ def run() -> int:
     except Exception as e:
         print(f"    SKIP: {type(e).__name__}")
 
+    # --- ELO-Browser's two defects, 2026-09-08. Permanent cases. -----------
+    print("\nwords() -- the two defects the conformance fixture found:")
+    ids_oov = d.ids_of("Nell read a verbalizer log.")
+    check("A: OOV word survives ('verbalizer' is IN the id)",
+          "verbalizer" in d.words(ids_oov), True)
+    check("A: nothing silently dropped", len(d.words(ids_oov)), 5)
+    ids_ph = d.ids_of("He said (the river) was cold.")
+    check("B: len(words) is a WORD COUNT, not a token count",
+          len(d.words(ids_ph)), 6)
+    check("B: no whitespace tokens", any(not w.strip() for w in d.words(ids_ph)), False)
+    check("surfaces() still carries the raw run", len(d.surfaces(ids_ph)), 8)
+
+    print("\nids_of() -- the encode verb (was missing entirely):")
+    for s in ("Nell read a verbalizer log.", "He said (the river) was cold.",
+              "NASA sent iPhone data"):
+        check(f"round-trip {s[:26]!r}", d.text(d.ids_of(s)), s)
+
+    print("\nassets() -- one verb per channel, no hand-decoding:")
+    a = d.assets("happy")
+    check("assets('happy') has epa", a.get("epa") is not None, True)
+    check("assets('happy') vfacets carries polarity_known",
+          "polarity_known" in (a.get("vfacets") or {}), True)
+    check("epa('london') is None, not NaN", d.epa("london"), None)
+
     # --- the truthiness trap ------------------------------------------------
     print("\nis_proper() -- `if wc['proper']` inverted a consumer's gate:")
     for surf, want in (("israel", True), ("dog", False), ("abate", False)):
@@ -73,6 +97,44 @@ def run() -> int:
         r = d.explain_field(f)
         check(f"explain_field({f!r}).discriminates", r.discriminates, expect_ok)
         for line in str(r).splitlines():
+            print(f"       {line}")
+
+    # --- 2026-09-10: the field that caused the bug could not be asked about --
+    print("\nexplain_field() -- the two fields that raised KeyError:")
+    # `utility` IS the field ELO-Browser's salience ranking needed. It lived inside
+    # `flags`, which reports the packed byte, so the one field that would have said
+    # "99.85% CONTENT, effective 1.01, do not rank by me" was unreachable.
+    r = d.explain_field("utility")
+    check("utility is askable at all", r.distinct_values > 0, True)
+    check("utility names its modal value", r.top[0][0], "CONTENT")
+    check("utility does not discriminate", r.discriminates, False)
+    for line in str(r).splitlines():
+        print(f"       {line}")
+    # polarity's ABSENCE is not polarity == 0. NEUTRAL is 0b00 and measured.
+    pk = d.explain_field("polarity_known")
+    pol = d.explain_field("polarity")
+    check("polarity_known is askable", pk.distinct_values, 2)
+    check("populated(polarity) == MEASURED share, not non-zero share",
+          round(pol.populated_pct, 1), round(pk.top[0][1], 1))
+    check("...and NEUTRAL is reported as a VALUE of polarity",
+          "NEUTRAL" in [n for n, _ in pol.top], True)
+    for line in str(pol).splitlines():
+        print(f"       {line}")
+
+    # --- 2026-09-10 §4: an unmeasured channel is no number, not a low one ----
+    print("\ncoverage() -- how much of the vocabulary each channel reaches:")
+    cov = {c.channel: c for c in d.coverage()}
+    check("epa coverage is reported, not assumed",
+          round(cov["epa"].pct_records, 2), 54.03)
+    # NaN is the DECLARED absent marker and it is never used on v04 -- absence is
+    # expressed as a missing row instead. Both read as None; only this says which.
+    check("epa: absent means NO ROW, not NaN, on this build",
+          cov["epa"].measured, cov["epa"].records)
+    check("vfacets has no channel-level measured count",
+          cov["vfacets"].measured, None)
+    check("templates is EMPTY, and says so", cov["templates"].records, 0)
+    for c in ("epa", "templates"):
+        for line in str(cov[c]).splitlines():
             print(f"       {line}")
 
     # --- absence raises ------------------------------------------------------

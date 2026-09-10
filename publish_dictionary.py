@@ -56,19 +56,25 @@ NBR_OFF = struct.Struct("<I")            # CSR offset u32
 NBR_REC = struct.Struct("<IB")           # neighbour_n u32 + sim u8 = 5 B
 VFT_REC = struct.Struct("<BB")           # 2 B  vfacet record; b"\xff\xff" = absent
 VFT_ABSENT = b"\xff\xff"
-MAGIC = {"epa": b"ELOEPA\x01\x00", "facets": b"ELOFCT\x01\x00",
-         "neighbours": b"ELONBR\x01\x00", "vfacets": b"ELOVFT\x01\x00"}
+from asset_registry import ASSETS, BY_NAME, bundle_channels, wire_magic   # noqa: E402
+
+# DERIVED, not declared. These were three hand-kept lists here; `wordclass` was in none
+# of them, which is how a locked 437,995-record channel passed every publish gate by not
+# being mentioned. See asset_registry.py.
+MAGIC = wire_magic()
 BUCKET_ABSENT = 0xFF
 HDR_LEN = HEADER.size + 64               # 80
 
 SCHEMA = "elo-dictionary-bundle/1"
 
-# Files that make up a bundle. (role, filename-suffix, required)
-BUNDLE_CHANNELS = ("facets", "epa", "neighbours")
-# vfacets is CONDITIONAL: required in the bundle iff the source build's LMDB
-# carries b'vfacets' (a build that has the channel must ship it -- "complete by
-# construction"); a build without it publishes a 3-channel bundle, honestly.
-OPTIONAL_CHANNELS = ("vfacets",)
+# Every asset the registry marks `ships`. CONDITIONAL ON THE BUILD, uniformly: an asset
+# is required in the bundle iff the source build's LMDB carries it. That rule used to be
+# a special case written for `vfacets` alone; generalising it is what makes a new asset
+# publish correctly without editing this file.
+#
+# A build that HAS a channel must ship it ("complete by construction"); a build that
+# never had one publishes a smaller bundle, honestly, and BUNDLE.json says which.
+BUNDLE_CHANNELS = bundle_channels()
 # Anything matching these must NOT be in a bundle dir (spec sec 2 deny-list).
 DENY = ("dictionary.lmdb", "meta.db", "token-ids.csv.gz",
         "dictionary.denotative.index", "dictionary.denotative.vecs.f32",
@@ -76,8 +82,50 @@ DENY = ("dictionary.lmdb", "meta.db", "token-ids.csv.gz",
         "dictionary.denotative.progress.json")
 DENY_SUFFIX = ("_stats.json",)
 
+# Files that are ABOUT the bundle rather than part of its payload. Everything else in
+# a bundle directory is payload and MUST appear in BUNDLE.json's `files` map.
+#
+# This set is the only hand-maintained list left, and it is deliberately the smallest
+# one: naming what is NOT payload fails safe, because forgetting an entry here makes a
+# file get declared, while forgetting an entry in a payload list makes a file ship
+# unbound. That is exactly how `neighbours.bin` -- 22 MB, the largest single asset --
+# and `vfacets.names.json` shipped with no sha in elo-browser-v04: three separate
+# hand-maintained "shipped files" lists (export_browser_assets.py, export_neighbours.py,
+# and this module) and none of them complete. G9 now refuses on any payload file that
+# is not declared, so the next channel cannot be forgotten.
+NOT_PAYLOAD = ("BUNDLE.json",)
+
 
 # --- small io helpers -------------------------------------------------------------
+def _contract_version(bundle_dir: Path, asset) -> "int | None":
+    """The channel's format version, READ from its own contract file.
+
+    Returns None when the channel ships no contract (`epa`, `neighbours`) -- which is
+    itself the answer to "can a consumer gate on this channel's geometry", and the answer
+    is no. Recorded as null rather than omitted, so the gap is visible in the manifest
+    instead of being absent from it."""
+    if not asset.contract_file:
+        return None
+    p = bundle_dir / asset.contract_file
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("version")
+    except Exception:                                            # noqa: BLE001
+        return None
+
+
+def payload_files(bundle_dir: Path) -> dict:
+    """Every file in the bundle directory that is PAYLOAD, by name.
+
+    Directory-driven on purpose. A manifest assembled from a list someone maintains
+    records what the author remembered; a manifest assembled from the directory records
+    what actually ships, and the difference is the 22 MB `neighbours.bin` that had no
+    sha anywhere in elo-browser-v04."""
+    return {p.name: p for p in sorted(bundle_dir.iterdir())
+            if p.is_file() and p.name not in NOT_PAYLOAD}
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -252,6 +300,39 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
     gates.append(Gate("G4", "no build-time artifact in bundle", not strays,
                       "deny-list absent" if not strays else f"present: {', '.join(strays)}"))
 
+    # G9 every payload file is declared, and every declaration is a real file.
+    #
+    # The gate that would have caught elo-browser-v04. `neighbours.bin` (22 MB) and
+    # `vfacets.names.json` shipped with no sha in any manifest, because completeness was
+    # enforced by three separate hand-written lists and enforced by none of them. This
+    # asks the directory instead: two-way, so a declared-but-missing file fails too.
+    #
+    # It also cross-checks the per-stage manifests that stages 7 and 8 leave behind.
+    # They are provenance, not the record -- but a stage manifest claiming a sha that
+    # disagrees with the file is a fact worth refusing on.
+    payload = payload_files(bundle["_dir"])
+    declared = set(bundle.get("_declared_files") or ())
+    undeclared = sorted(set(payload) - declared) if declared else []
+    phantom = sorted(declared - set(payload)) if declared else []
+    stage_bad = []
+    for man_name in ("assets.meta.json", "neighbours.meta.json"):
+        mp = bundle["_dir"] / man_name
+        if not mp.exists():
+            continue
+        try:
+            stage = json.loads(mp.read_text(encoding="utf-8"))
+        except Exception as exc:
+            stage_bad.append(f"{man_name} unreadable: {exc}")
+            continue
+        for fname, claimed in (stage.get("files") or {}).items():
+            if fname in payload and not _sha256(payload[fname]).startswith(str(claimed)):
+                stage_bad.append(f"{man_name} claims {fname}={claimed}, file disagrees")
+    g9bad = ([f"UNDECLARED payload: {', '.join(undeclared)}"] if undeclared else []) \
+        + ([f"declared but absent: {', '.join(phantom)}"] if phantom else []) + stage_bad
+    gates.append(Gate("G9", "every payload file declared", not g9bad,
+                      f"{len(payload)} payload files, all declared and sha-bound"
+                      if not g9bad else "; ".join(g9bad)))
+
     # G7 coverage recorded (computed from the files, never inherited)
     epa_present, epa_ns = _epa_coverage(bundle["epa"], vocab_entries)
     fct_present, fct_ns = _facets_coverage(bundle["facets"], vocab_entries)
@@ -262,18 +343,105 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
         "epa": {"entries": epa_present, "coverage": round(epa_present / vocab_entries, 4)},
         "neighbours": {"entries": nbr_present, "coverage": round(nbr_present / vocab_entries, 4)},
     }
-    g7_extra = ""
-    if "vfacets" in chans:
-        raw = bundle["vfacets"].read_bytes()
-        vft_present = sum(1 for n in range(vocab_entries)
-                          if raw[HDR_LEN + n * 2:HDR_LEN + n * 2 + 2] != VFT_ABSENT)
-        bundle["_coverage"]["vfacets"] = {
-            "entries": vft_present, "coverage": round(vft_present / vocab_entries, 4)}
-        g7_extra = f", vfacets {vft_present} ({100*vft_present/vocab_entries:.1f}%)"
-    gates.append(Gate("G7", "coverage recorded", True,
-                      f"facets {fct_present}/{vocab_entries} ({100*fct_present/vocab_entries:.1f}%), "
-                      f"epa {epa_present} ({100*epa_present/vocab_entries:.1f}%), "
-                      f"neighbours {nbr_present} ({100*nbr_present/vocab_entries:.1f}%)" + g7_extra))
+    # Fixed-width channels measure the same way: a record equal to the ABSENT pattern is
+    # absent, anything else is present. Written per-channel before, which is why adding
+    # one meant editing here too and forgetting to meant it silently had no coverage.
+    _ABSENT_PATTERN = {"vfacets": VFT_ABSENT, "wordclass": b"\x00\x00\x00"}
+    for name in chans:
+        if name in bundle["_coverage"] or name not in _ABSENT_PATTERN:
+            continue
+        a = BY_NAME[name]
+        raw = bundle[name].read_bytes()
+        w, pat = a.record_width, _ABSENT_PATTERN[name]
+        present = sum(1 for n in range(vocab_entries)
+                      if raw[HDR_LEN + n * w: HDR_LEN + (n + 1) * w] != pat)
+        bundle["_coverage"][name] = {
+            "entries": present, "coverage": round(present / vocab_entries, 4)}
+    gates.append(Gate("G7", "coverage recorded", True, ", ".join(
+        f"{n} {c['entries']}/{vocab_entries} ({100*c['coverage']:.1f}%)"
+        for n, c in bundle["_coverage"].items())))
+
+    # G10 -- every asset the BUILD carries is shipped, or the registry says why not.
+    #
+    # G3 compares the manifest's present-flags to the shipped channels, but only for
+    # channels in BUNDLE_CHANNELS -- so `wordclass` passed publish for two weeks by not
+    # being in that tuple. An asset is not absent when it is unmentioned; it is invisible,
+    # and the two are indistinguishable from inside a hand-kept list. This asks the
+    # LMDB instead.
+    lmdb_p = build_dir / "dictionary.lmdb"
+    g10bad = []
+    for a in ASSETS:
+        if not a.in_lmdb or a.unbuilt_reason or a.name in ("forward", "reverse"):
+            continue
+        if not _has_subdb_publish(lmdb_p, a.subdb):
+            continue
+        if a.name not in chans:
+            g10bad.append(f"{a.name}: the build carries it and the bundle does not ship it"
+                          + ("" if a.ships else " (registry says ships=False -- set it, "
+                                                "or record why this asset stays local)"))
+    gates.append(Gate("G10", "every built asset ships", not g10bad,
+                      f"{len(chans)} channels: {', '.join(chans)}"
+                      if not g10bad else "; ".join(g10bad)))
+
+    # G11 -- CONTENT MOVED => REVISION MOVED.
+    #
+    # `package_revision` started life meaning "the asset SET", which does not describe a
+    # rebuild that changes asset CONTENT -- and the facets/utility fix changes 14,394
+    # facet records without adding anything. A consumer caching facet verdicts under
+    # elo-browser-v04 would be silently wrong. So the definition is now **the assets,
+    # INCLUDING their content**.
+    #
+    # A definition alone is not enough. An integer someone must remember to bump is the
+    # same failure mode as the nine hand-kept asset lists this module spent the day
+    # replacing, so the counter is CHECKED rather than trusted: compare this bundle's
+    # per-channel shas against every already-published revision of the same build. If
+    # any channel's bytes differ and the revision did not move, refuse.
+    g11 = ""
+    try:
+        # The publication root comes from the BUNDLE, not from a module global. The
+        # first cut reached for `ROOT`, which is a local inside main() -- so G11 threw
+        # NameError and reported "could not compare", i.e. a gate that could not run
+        # looked exactly like a gate that failed. Passing the path in is what makes the
+        # check honest about which of those two it is.
+        _out = (Path(bundle["_out_root"]) if bundle.get("_out_root")
+                else Path(__file__).resolve().parent.parent / "dist" / "dictionary")
+        _base = bundle.get("_build_name", "")
+        _rev = int(bundle.get("_revision", 1))
+        prior = []
+        if _out.exists():
+            for d in sorted(_out.iterdir()):
+                if not d.is_dir() or not (d / "BUNDLE.json").exists():
+                    continue
+                pd = json.loads((d / "BUNDLE.json").read_text(encoding="utf-8"))
+                if pd.get("build") == _base:
+                    prior.append((int(pd.get("package_revision", 1)), d.name, pd))
+        clashes = []
+        for prev_rev, dname, pd in prior:
+            if prev_rev != _rev:
+                continue
+            for cname, crec in (pd.get("channels") or {}).items():
+                now = bundle["_coverage"].get(cname)
+                if now is None:
+                    continue
+                cur_sha = _sha256(bundle[cname]) if cname in bundle else None
+                if cur_sha and crec.get("sha256") and cur_sha != crec["sha256"]:
+                    clashes.append(f"{cname} differs from {dname} at the same revision "
+                                   f"{_rev}")
+        if clashes:
+            gates.append(Gate("G11", "content moved => revision moved", False,
+                              "; ".join(clashes) + ". Run build_assets.py --bump-revision"))
+        else:
+            g11 = (f"revision {_rev}; {len(prior)} prior publication(s) of {_base}"
+                   if prior else f"revision {_rev}; first publication of {_base}")
+            gates.append(Gate("G11", "content moved => revision moved", True, g11))
+    except Exception as exc:                                    # noqa: BLE001
+        # ERRORED, not FAILED -- and it still refuses. A check that could not run tells
+        # you nothing about the bundle, so publishing on it would be publishing on an
+        # unanswered question. Say which of the two it is, because "G11 FAIL" sent me
+        # looking at the bundle when the fault was a NameError in the gate.
+        gates.append(Gate("G11", "content moved => revision moved", False,
+                          f"GATE ERRORED (this is a bug in the gate, not a verdict on "
+                          f"the bundle): {type(exc).__name__}: {exc}"))
 
     # G8 spot read -- resolve a real surface through all three channels at one n
     #     Pick an n that has all three (so the proof is end-to-end), else fail loudly.
@@ -327,20 +495,40 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
 # --- assembly ---------------------------------------------------------------------
 def load_bundle(bundle_dir: Path, build_dir: Path, build_name: str) -> dict:
     vocab_path = bundle_dir / f"{build_name}.browser.json"
-    files = {"facets": bundle_dir / "facets.bin", "epa": bundle_dir / "epa.bin",
-             "neighbours": bundle_dir / "neighbours.bin"}
-    for p in (vocab_path, *files.values(), bundle_dir / "facets.names.json"):
-        if not p.exists():
-            raise SystemExit(f"bundle incomplete: missing {p}")
-    # vfacets: required iff the source build carries the channel.
-    vft_path = bundle_dir / "vfacets.bin"
-    build_has_vft = _has_subdb_publish(build_dir / "dictionary.lmdb", b"vfacets")
-    if build_has_vft and not vft_path.exists():
-        raise SystemExit(f"bundle incomplete: the build carries b'vfacets' but {vft_path} "
-                         f"is missing -- re-run the exporter (stage 7)")
-    channels = list(BUNDLE_CHANNELS) + (["vfacets"] if vft_path.exists() else [])
-    if vft_path.exists():
-        files["vfacets"] = vft_path
+    if not vocab_path.exists():
+        raise SystemExit(f"bundle incomplete: missing {vocab_path}")
+
+    # ONE RULE FOR EVERY ASSET (2026-09-10): the build carries it => the bundle ships it.
+    #
+    # This was three hardcoded paths plus a bespoke `vfacets` branch. `wordclass` was in
+    # neither, so a build carrying 437,995 wordclass records published a bundle without
+    # it and no gate objected -- the asset was not absent, it was unmentioned, and those
+    # look identical from inside a hand-kept list.
+    lmdb_path = build_dir / "dictionary.lmdb"
+    files, channels, missing = {}, [], []
+    for a in ASSETS:
+        if not (a.ships and a.bin_file):
+            continue
+        p = bundle_dir / a.bin_file
+        # An asset with no sub-db (neighbours) is judged by its file alone; one with a
+        # sub-db is REQUIRED in the bundle exactly when the build has it.
+        build_has = True if a.subdb is None else _has_subdb_publish(lmdb_path, a.subdb)
+        if build_has and not p.exists():
+            missing.append(f"  {a.name}: the build carries it, {p.name} is missing")
+            continue
+        if p.exists():
+            files[a.name] = p
+            channels.append(a.name)
+            # A channel ships WITH its geometry or it does not ship. `vfacets.bin` was
+            # published without `vfacets.names.json` for a month: the data was hashed,
+            # the contract that decodes it stayed in the browser tree.
+            if a.contract_file and not (bundle_dir / a.contract_file).exists():
+                missing.append(f"  {a.name}: {p.name} ships but its decode contract "
+                               f"{a.contract_file} is not in the bundle")
+    if missing:
+        raise SystemExit("bundle incomplete:\n" + "\n".join(missing)
+                         + "\n\nEvery asset in asset_registry.ASSETS with ships=True must "
+                           "be exported before publish. Re-run the exporter stages.")
     vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
     counts, fps = {}, {}
     for role, p in files.items():
@@ -352,6 +540,12 @@ def load_bundle(bundle_dir: Path, build_dir: Path, build_name: str) -> dict:
         "_vocab_entries": int(vocab["content_size"]),
         "_counts": counts, "_fps": fps,
         "_channels": channels,                 # 3 required + vfacets when present
+        # What BUNDLE.json will declare: the directory, not a list. G9 checks both
+        # directions against it so the assembly and the gate cannot drift apart.
+        "_declared_files": set(payload_files(bundle_dir)),
+        # For G11: which build this is a revision OF, and which revision.
+        "_build_name": build_name,
+        "_revision": int(manifest.get("package_revision", 1)),
         "_source_fp": fps["facets"],           # canonical; G2 checks the others match
         "_build_lmdb_fp": _build_lmdb_fingerprint(build_dir),
         "_manifest": manifest,
@@ -362,12 +556,11 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
     src_fp = bundle["_source_fp"]
     cov = bundle["_coverage"]
     nbr_count, _ = _read_header(bundle["neighbours"], "neighbours")
-    # per-file sha over every shipped file except BUNDLE.json itself
-    shipped = {bundle["vocab"].name: bundle["vocab"], "facets.bin": bundle["facets"],
-               "epa.bin": bundle["epa"], "neighbours.bin": bundle["neighbours"],
-               "facets.names.json": bundle["_dir"] / "facets.names.json"}
-    if "vfacets" in bundle.get("_channels", []):
-        shipped["vfacets.bin"] = bundle["vfacets"]
+    # Per-file sha over every payload file in the directory -- NOT over a list kept
+    # here. The previous list omitted `vfacets.names.json`, which is the file that
+    # declares `polarity_known`: the field contract shipped unbound while the data it
+    # describes shipped bound. G9 makes that combination impossible.
+    shipped = payload_files(bundle["_dir"])
     shas = {name: _sha256(p) for name, p in sorted(shipped.items())}
     fp_material = "".join(f"{name}\t{sha}\n" for name, sha in sorted(shas.items()))
     bundle_fp = hashlib.sha256(fp_material.encode("utf-8")).hexdigest()
@@ -384,24 +577,70 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
         "source_build_fingerprint": src_fp,
         "vocab": {"entries": bundle["_vocab_entries"], "cut": vocab.get("cut"),
                   "version": vocab.get("vocab_version")},
+        # THE ASSET-SET IDENTITY, distinct from the id space (Paul, 2026-09-10).
+        #
+        #   source_build_fingerprint  the ID SPACE. An `.elo` binds to THIS, and it does
+        #                             not move when an asset is added.
+        #   package_revision          the ASSET SET. Increments every time a build is
+        #                             widened, so two bundles both named elo-browser-v04
+        #                             are distinguishable and a consumer can require
+        #                             "v04 at revision >= 2" when it needs wordclass.
+        #
+        # Without the second, "rebuilt with the new asset" and "the original" are the
+        # same string, and the only thing separating them is a date nobody reads.
+        "package_revision": int(man.get("package_revision", 1)),
+        "revision_log": man.get("revision_log", []),
         "files": {name: {"sha256": sha, "bytes": shipped[name].stat().st_size}
                   for name, sha in sorted(shas.items())},
+        # DERIVED from the registry + measured coverage, not four hand-written blocks.
+        # Each channel carries its ABSENT rule into the bundle, so a consumer never has
+        # to guess whether a zero is a measurement -- the single most repeated bug in
+        # this system, in every channel that has one.
+        # GATE vs DIAGNOSTIC, per elo-sdm's 2026-09-10 refinement -- the sharpest thing
+        # anyone said about this bundle:
+        #
+        #   "Binding a file is the DIAGNOSTIC half. A sha tells a consumer the file is
+        #    the one that shipped; it does not tell them the channel still MEANS what
+        #    their code expects."
+        #
+        # That is precisely the facets defect: `facets.bin` was intact, sha-bound, and
+        # WRONG on 14,394 surfaces. No byte check could have caught it.
+        #
+        #   gate=       refuse on a change. Geometry -- record width, format version,
+        #               absent rule. A consumer decoding with last month's geometry gets
+        #               garbage SHAPED LIKE DATA, which is the failure that cannot be
+        #               noticed downstream.
+        #   diagnostic= explain a red, never cause one. Coverage and entry counts move
+        #               on every legitimate re-derivation; gating them would red every
+        #               consumer for a change they do not replay.
+        #
+        # `format_version` is READ FROM THE CHANNEL'S OWN CONTRACT FILE, never restated
+        # here -- a version number typed in a second place is how `wordclass` came to be
+        # documented as "reserved, ships with v05, 2 bytes" while shipping at 3 bytes.
         "channels": {
-            "facets": {"file": "facets.bin", "sha256": shas["facets.bin"],
-                       "entries": cov["facets"]["entries"], "coverage": cov["facets"]["coverage"]},
-            "epa": {"file": "epa.bin", "sha256": shas["epa.bin"],
-                    "entries": cov["epa"]["entries"], "coverage": cov["epa"]["coverage"]},
-            "neighbours": {"file": "neighbours.bin", "sha256": shas["neighbours.bin"],
-                           "entries": cov["neighbours"]["entries"],
-                           "coverage": cov["neighbours"]["coverage"],
-                           "format": "CSR: 80B header + (count+1) u32 offsets + records(u32 n,u8 sim)"},
-            **({"vfacets": {"file": "vfacets.bin", "sha256": shas["vfacets.bin"],
-                            "entries": cov["vfacets"]["entries"],
-                            "coverage": cov["vfacets"]["coverage"],
-                            "format": "80B header + count * 2B '<BB' (0xFFFF = absent); "
-                                      "agency/direction from vfacet_substrate join"}}
-               if "vfacets" in cov else {}),
+            name: {
+                "file": BY_NAME[name].bin_file,
+                "sha256": shas[BY_NAME[name].bin_file],
+                "contract": BY_NAME[name].contract_file,
+                "gate": {
+                    "record_width": BY_NAME[name].record_width,
+                    "format_version": _contract_version(bundle["_dir"], BY_NAME[name]),
+                    "absent": BY_NAME[name].absent,
+                },
+                "diagnostic": {
+                    "entries": cov[name]["entries"],
+                    "coverage": cov[name]["coverage"],
+                },
+            }
+            for name in bundle.get("_channels", ()) if name in cov
         },
+        # THE FOURTH IDENTITY. `bundle_id` says which asset set; `source_build_
+        # fingerprint` says which id space; `codec.policy_version` says which ENCODER
+        # produced, and which DECODER will correctly read, the bytes. A consumer caching
+        # encoded output or expected decode values must pin this one -- ELO-Browser's
+        # recase fixture pins build + fingerprint + a facets sha, and NONE of the three
+        # can move when the encoder's behaviour changes.
+        "codec": man.get("codec"),
         "provenance": {
             "corpus_fingerprint": man.get("corpus_fingerprint"),
             "bound_model": smeta.get("llm_model") or man.get("bound_model"),
@@ -479,12 +718,33 @@ def main() -> int:
     out_root = (a.out_root.resolve() if a.out_root else ROOT / "dist" / "dictionary")
     display = a.display or name
 
-    print(f"publish {name}")
+    # THE BUNDLE ID CARRIES THE REVISION (2026-09-10).
+    #
+    # `elo-browser-v04` is the ID SPACE and must not be renamed -- renaming it is what
+    # would renumber fixtures and orphan stored ids, for a problem that is not in the id
+    # space. But two bundles built from that same id space with DIFFERENT asset content
+    # cannot both be called `elo-browser-v04`, or a consumer holding cached facet
+    # verdicts from revision 1 has no way to learn they are stale.
+    #
+    # So: build name is the id space, bundle id is `<build>r<revision>`, and consumers
+    # pin the BUNDLE ID. ELO-Browser's FIXTURE_BUILD tripwire compares that string, so
+    # it fires on a content revision exactly as it would on a new build -- which is the
+    # behaviour it was written for and would NOT have got from a bare revision integer
+    # tucked inside the json.
+    _man_path = build_dir / "manifest.json"
+    _man = json.loads(_man_path.read_text(encoding="utf-8")) if _man_path.exists() else {}
+    revision = int(_man.get("package_revision", 1))
+    bundle_id = name if revision <= 1 else f"{name}r{revision}"
+
+    print(f"publish {name}   package_revision {revision}   bundle_id {bundle_id}")
     print(f"  source build : {build_dir}")
     print(f"  bundle src   : {bundle_src}")
-    print(f"  dest         : {out_root / name}" + ("   [DRY RUN]" if a.dry_run else ""))
+    print(f"  dest         : {out_root / bundle_id}" + ("   [DRY RUN]" if a.dry_run else ""))
 
     bundle = load_bundle(bundle_src, build_dir, name)
+    # G11 compares this bundle against prior publications of the same build, so it needs
+    # to know where publications live -- including when --out-root moved them.
+    bundle["_out_root"] = str(out_root)
     print(f"  vocab n=0..{bundle['_vocab_entries']-1}   source_fp={bundle['_source_fp'][:16]}\n")
 
     gates = run_gates(bundle, build_dir, run_heavy=not a.no_heavy)
@@ -501,24 +761,51 @@ def main() -> int:
           f"source_build_fingerprint {doc['source_build_fingerprint'][:16]}")
 
     if failed:
-        print(f"\nREFUSED: {len(failed)} gate(s) failed -- {', '.join(g.id for g in failed)}. "
+        # REPEAT THE REASON HERE. The gate table above already carries it, but the
+        # refusal is the line people copy, and a bare "G11 failed" is not actionable --
+        # it sends the reader back to a scrollback they may not have. A refusal should
+        # be self-contained.
+        print(f"\nREFUSED: {len(failed)} gate(s) failed -- "
+              f"{', '.join(g.id for g in failed)}. "
               f"A partial or inconsistent bundle is never published.")
+        for g in failed:
+            print(f"\n  {g.id}  {g.name}\n      {g.detail}")
+            if g.id == "G11":
+                print(f"      -> the bundle's bytes differ from a publication at this "
+                      f"same revision.\n"
+                      f"         Bump it:  python build_assets.py {build_dir} "
+                      f"--bump-revision \"<what changed>\"\n"
+                      f"         Current package_revision: {revision}  "
+                      f"(would publish as {bundle_id})")
+            if g.id == "G10":
+                print("      -> an asset the build carries is not in the bundle. Run "
+                      "its exporter stage, or record in asset_registry why it stays "
+                      "local.")
         return 2
     if a.dry_run:
         print("\n--dry-run: all gates pass; nothing written. Re-run without --dry-run to publish.")
         return 0
 
-    dest = out_root / name
+    dest = out_root / bundle_id
     if dest.exists():
-        raise SystemExit(f"REFUSED: {dest} already exists. A published bundle is immutable; "
-                         f"a rebuild is a NEW build name (spec sec 4.2).")
+        raise SystemExit(
+            f"REFUSED: {dest} already exists. A published bundle is immutable.\n"
+            f"  If the ASSET CONTENT changed, bump the revision:\n"
+            f"    python build_assets.py {build_dir} --bump-revision \"<what changed>\"\n"
+            f"  If the ID SPACE changed, that is a new dictionary and needs a new build "
+            f"name (spec sec 4.2).")
     dest.mkdir(parents=True)
     import shutil
-    to_copy = [bundle["vocab"], bundle["facets"], bundle["epa"], bundle["neighbours"],
-               bundle_src / "facets.names.json"]
-    if "vfacets" in bundle.get("_channels", []):
-        to_copy.append(bundle["vfacets"])
-    for src in to_copy:
+    # THE FOURTH HAND-MAINTAINED LIST, and the one that did the damage. `to_copy` named
+    # six files and omitted `vfacets.names.json`, so elo-browser-v04 published
+    # `vfacets.bin` with NO DECODE CONTRACT in the bundle: shifts, masks, value names and
+    # `polarity_known` all stayed behind in the browser tree. `facets.bin` shipped with
+    # its names file; `vfacets.bin` did not, and nothing compared the two.
+    #
+    # Copy the payload, from the directory. `files` in BUNDLE.json is derived the same
+    # way, from the same function, so the manifest and the copy cannot disagree -- they
+    # were two lists before, and they did.
+    for src in payload_files(bundle_src).values():
         shutil.copyfile(src, dest / src.name)
     (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\npublished -> {dest}\n  {len(doc['files'])+1} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
@@ -617,6 +904,18 @@ def _verify_published(bundle_dir: Path) -> int:
         match = got == rec["sha256"]
         ok &= match
         print(f"  {'ok  ' if match else 'FAIL'} {name}  {got[:16]}")
+
+    # THE OTHER DIRECTION. Iterating `doc["files"]` alone only proves that what was
+    # declared is intact -- it says nothing about a file sitting in the bundle that
+    # nothing declares, which is precisely how `neighbours.bin` (22 MB) and
+    # `vfacets.names.json` shipped unbound in elo-browser-v04 while every check passed.
+    # A one-way integrity check cannot detect an omission; it can only detect damage.
+    undeclared = sorted(set(payload_files(bundle_dir)) - set(doc["files"]))
+    if undeclared:
+        ok = False
+        for name in undeclared:
+            print(f"  FAIL {name}  UNDECLARED -- present in the bundle, absent from "
+                  f"BUNDLE.json")
     material = "".join(f"{n}\t{s}\n" for n, s in sorted(shas.items()))
     recomputed = hashlib.sha256(material.encode()).hexdigest()
     fp_ok = recomputed == doc["bundle_fingerprint"]
@@ -637,6 +936,10 @@ def _verify_published(bundle_dir: Path) -> int:
             lp = live / name
             if lp.exists() and _sha256(lp) != doc["files"][name]["sha256"]:
                 drift.append(name)
+        extra = sorted(set(payload_files(live)) - set(doc["files"]))
+        if extra:
+            print(f"  ⚠ the live bundle carries {len(extra)} file(s) this publication "
+                  f"does not describe: {', '.join(extra)}")
         if drift:
             print(f"  ⚠ STAGED DRIFT: live bundle differs from this publication in "
                   f"{len(drift)} file(s): {', '.join(drift)}")

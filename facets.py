@@ -8,7 +8,24 @@ from config import (
 )
 from normalize import normalize_surface
 
-__all__ = ['assign_facet', 'load_overrides', 'OverrideError']
+__all__ = ['assign_facet', 'load_overrides', 'load_nonlexical', 'OverrideError']
+
+
+def load_nonlexical(path) -> frozenset:
+    """Read `data/nonlexical_terms_<build>.txt` VERBATIM.
+
+    A separate function for a one-line file read because the one line is wrong in the
+    obvious way. Surfaces in this file carry significant leading and trailing spaces --
+    6,987 of elo-browser-v04's 14,411 entries differ from another entry only by one --
+    so `.strip()` does not tidy the input, it silently merges `'return '` (web-structure
+    only) into `'return'` (4,732 transcript occurrences) and mislabels a real word.
+
+    Only the line terminator comes off. Comment lines (`#`) and the empty string are
+    dropped; nothing else is touched."""
+    with open(path, encoding='utf-8') as fh:
+        return frozenset(
+            line for line in (raw.rstrip('\r\n') for raw in fh)
+            if line and not line.startswith('#'))
 
 _STRUCTURAL_SURFACES = frozenset(STRUCTURAL_IDS.values())
 _NORM_FILLERS = frozenset(normalize_surface(f) for f in ALL_FILLERS)
@@ -88,12 +105,42 @@ def _check_version_comment(comment: str, lineno: int, path: str) -> None:
                 raise OverrideError(f'{path}:{lineno}: normalization_version mismatch')
 
 
-def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int, int]:
+def assign_facet(surface: str, overrides: dict | None = None,
+                 nonlexical: frozenset | None = None) -> tuple[int, int, int]:
+    """Deterministic facet assignment. Still pure — `nonlexical` is an input, not a
+    lookup.
+
+    `nonlexical` is the build's own web-structure provenance set (the
+    `data/nonlexical_terms_<build>.txt` the HARD RULE already makes the builder emit:
+    surfaces present ONLY in non-lexical corpus sources — CSS names, JS classes, HTML
+    tags). Passing it is what lets the UTILITY axis tell a CSS class from a noun.
+
+    **Why this parameter exists.** Until 2026-09-10 the only source of STRUCTURAL was
+    `STRUCTURAL_IDS` — 27 hardcoded Tier-0 surfaces — so every surface that entered the
+    vocabulary from a web-structure source fell through to CONTENT. Measured on
+    elo-browser-v04: of 14,410 provenance-flagged non-lexical surfaces, **14,394 were
+    labelled CONTENT** — `' -mb-0.5'`, `'!important'`, `'" />'`. The build knew; the
+    facet assigner was never told. UTILITY read 99.85% CONTENT, effective cardinality
+    1.012, and ELO-Browser ranked salience with it.
+
+    **Read the provenance file VERBATIM — use `load_nonlexical`, never `.strip()`.**
+    A space is part of an ELO surface (the implicit-whitespace codec), so stripping
+    collapses 14,410 surfaces to 7,442 and MERGES non-lexical surfaces into lexical
+    ones: `'return '` is web-structure-only, `'return'` is an ordinary word with 4,732
+    transcript occurrences. 93 real words would have shipped STRUCTURAL that way.
+
+    A MANUAL override still wins outright — provenance is evidence about a corpus,
+    an override is an authored decision, and the authored decision is the one a human
+    can be held to."""
     overrides = overrides or {'exact': {}, 'normalized': {}}
     key = normalize_surface(surface)
 
     is_multiword = ' ' in key
     is_structural = surface in _STRUCTURAL_SURFACES
+    # Provenance does not apply where a human authored an exact answer.
+    is_nonlexical = (nonlexical is not None
+                     and surface in nonlexical
+                     and surface not in overrides['exact'])
     is_filler = key in _NORM_FILLERS
     matched_cue = _SEED_CUE_BY_KEY.get(key, 0)
     is_closed_class = matched_cue != 0
@@ -107,6 +154,13 @@ def assign_facet(surface: str, overrides: dict | None = None) -> tuple[int, int,
         utility = UTILITY['FILLER']
     elif is_closed_class or is_function_word:
         utility = UTILITY['FUNCTION']
+    elif is_nonlexical:
+        # LAST, deliberately. Provenance is corpus statistics; the lists above are
+        # authored closed classes. Ranked the other way it moved exactly one record --
+        # `'from '` (trailing space) -- from FUNCTION to STRUCTURAL, which is right for
+        # a JS `import ... from ` and wrong for the English preposition. When an
+        # authored list has already answered, provenance does not get a second vote.
+        utility = UTILITY['STRUCTURAL']
     else:
         utility = UTILITY['CONTENT']
 

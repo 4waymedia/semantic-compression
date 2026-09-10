@@ -23,8 +23,15 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from asset_registry import identity_kinds                          # noqa: E402
+
 STATUSES    = ("staged", "frozen", "locked")
-KINDS       = ("dictionary", "facets", "epa", "vfacets", "templates", "meta")
+# DERIVED (2026-09-10). The hand-kept tuple omitted `wordclass` and `neighbours`, so
+# `manifest.json` -- the registry of record for a build -- carried no entry for either.
+# A 437,995-record locked channel and the 22 MB neighbours channel were absent from the
+# artifact registry entirely, which is why nothing downstream could notice they were
+# missing from the bundle: you cannot detect the absence of something never declared.
+KINDS       = identity_kinds()
 KEY_SCHEMES = ("base64_id", "surface", "lang_surface", "none")
 
 
@@ -240,6 +247,28 @@ def write_registry(pkg_dir: str | Path) -> dict:
     man["artifacts"] = reg
     man["artifacts_problems"] = validate_registry(reg)
     man["deliverables_by_kind"] = classify_deliverables(pkg)
+
+    # THE CODEC POLICY, stamped where consumers already look (ELO-Browser's `build.rs`
+    # reads this manifest). Until 2026-09-10 nothing versioned what the codec DOES:
+    # three counters governed the container, `dict_fp` identified the dictionary, and
+    # the case policy -- whether `Apple` is one cased id or TAG_CAP + `apple` -- was
+    # versioned by nothing at all. So an encoder change produced different bytes that
+    # every existing pin called identical.
+    #
+    # Read from config, never restated. It is deliberately SEPARATE from
+    # FORMAT_VERSION: reusing that one would make an unrelated reader reject files it
+    # can read, because it means "the header shape changed".
+    from config import CODEC_POLICY_VERSION, FORMAT_VERSION
+    man["codec"] = {
+        "policy_version": CODEC_POLICY_VERSION,
+        "stream_format_version": FORMAT_VERSION,
+        "covers": ["case policy", "restore_implicit_spaces", "phrase scan order",
+                   "byte-fallback / OOV construction"],
+        "note": ("policy_version changes when the codec would produce DIFFERENT OUTPUT "
+                 "for the same input and the same dictionary. Pin it if you cache "
+                 "encoded bytes or expected decode values; a fixture that pins only "
+                 "build/fingerprint cannot see an encoder change."),
+    }
     man_path.write_text(json.dumps(man, indent=2), encoding="utf-8")
     return reg
 

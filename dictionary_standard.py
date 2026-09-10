@@ -104,6 +104,21 @@ def _identity(lmdb_path: Path) -> dict:
 
 
 
+def _package_revision(build_dir: Path) -> int:
+    """The build's asset-set revision, read from its manifest.
+
+    Read, never restated. The build's `manifest.json` is where `--add-asset` and
+    `--bump-revision` record it; copying the number into a second place by hand is the
+    defect this repo has spent a fortnight removing."""
+    mp = build_dir / "manifest.json"
+    if not mp.exists():
+        return 1
+    try:
+        return int(json.loads(mp.read_text(encoding="utf-8")).get("package_revision", 1))
+    except Exception:
+        return 1
+
+
 def _derived(lmdb_path: Path, build_dir: Path) -> dict:
     """Fields DERIVED from the artifact, computed once at PROMOTION time (§3).
 
@@ -255,6 +270,15 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         "schema": SCHEMA_STANDARD,
         "build": build,
         "dictionary_fingerprint": ident["fingerprint"],
+        # THE ASSET-SET IDENTITY (2026-09-10). Without it the standard cannot express
+        # the difference between two packages of the same build:
+        # `dictionary_fingerprint` is the ID SPACE and is IDENTICAL across revisions by
+        # design -- that is what keeps stored `.elo` files readable -- so a consumer
+        # resolving through STANDARD.json had no way to tell v04 r1 (facets wrong on
+        # 14,394 surfaces, no wordclass) from v04 r2. `bundle_id` is the string to pin.
+        "package_revision": _package_revision(d),
+        "bundle_id": (build if _package_revision(d) <= 1
+                      else f"{build}r{_package_revision(d)}"),
         "release": ident["release"],
         "status": ident["status"],
         "path": str(lm.relative_to(ROOT)).replace("\\", "/"),

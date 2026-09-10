@@ -41,7 +41,7 @@ from pathlib import Path
 
 # Dependency order (also the build order). Index in this list = stage order.
 ORDER = ["dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
-         "vectors", "browser", "templates"]
+         "vectors", "browser", "wordclass", "templates"]
 
 # Declaration deps: each asset requires these OTHER assets to also be enabled.
 DEPS: dict[str, list[str]] = {
@@ -57,6 +57,10 @@ DEPS: dict[str, list[str]] = {
     "meta_layer2": ["meta", "epa"],
     "vectors":     ["meta"],
     "browser":     ["facets", "epa"],   # neighbours sub-channel also wants `vectors`
+    # wordclass: distributional evidence over the books corpus + the frequency list.
+    # Depends on `browser` only for the EXPORT half (stage 16 needs the vocab json that
+    # defines n); the build half (stage 15) needs the dictionary alone.
+    "wordclass":   ["dictionary", "browser"],
     "templates":   ["dictionary"],
 }
 
@@ -64,17 +68,33 @@ DEPS: dict[str, list[str]] = {
 IDENTITY_KIND: dict[str, str | None] = {
     "dictionary": "dictionary", "facets": "facets", "meta": "meta",
     "epa": "epa", "vfacets": "vfacets", "meta_layer2": "meta", "vectors": None,
-    "browser": None, "templates": "templates",
+    "browser": None, "wordclass": "wordclass", "templates": "templates",
 }
 
 PRESETS: dict[str, set[str]] = {
     "minimal":  {"dictionary"},
     "standard": {"dictionary", "facets", "meta"},
+    # `wordclass` ADDED 2026-09-10. It was missing here, so `suite: full` did not
+    # enable it and cascade stage 15 -- created specifically to stop the channel being
+    # hand-built -- reported "off (not in suite)" and skipped on EVERY run. The stage
+    # existed, was correct, and never executed. That is the most expensive shape of this
+    # bug: a fix that looks landed.
     "full":     {"dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
-                 "vectors", "browser"},
+                 "vectors", "browser", "wordclass"},
 }
 
 RESERVED = {"templates"}          # System 2; never auto-enabled
+
+# THE CROSS-CHECK. Four lists in this module (ORDER, DEPS, IDENTITY_KIND, PRESETS) plus
+# five elsewhere described "an asset", and no two were compared. An asset the registry
+# says SHIPS must be buildable by the `full` preset, or `full` does not mean full.
+_missing_from_full = sorted(
+    a.name for a in __import__("asset_registry").ASSETS
+    if a.ships and a.name not in PRESETS["full"] and a.name not in RESERVED
+    and a.subdb is not None)
+assert not _missing_from_full, (
+    f"asset_registry marks {_missing_from_full} as shipping, but PRESETS['full'] does "
+    f"not enable them -- a `full` build would omit an asset the bundle requires")
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +116,12 @@ def _env_status(asset: str, repo_root: Path) -> tuple[bool, str]:
             return (True, "")
         return (not miss, "" if not miss else f"missing {', '.join(miss)}")
     if asset == "browser":
-        tool = repo_root / "ELO-Browser" / "tools" / "export_browser_assets.py"
+        # Moved out of ELO-Browser/tools/ on 2026-09-10: the dictionary's own build
+        # cascade must not depend on a consumer lane's source tree.
+        tool = repo_root / "semantic_compression" / "export_browser_assets.py"
+        return (tool.exists(), "" if tool.exists() else f"missing {tool.name}")
+    if asset == "wordclass":
+        tool = repo_root / "semantic_compression" / "export_wordclass.py"
         return (tool.exists(), "" if tool.exists() else f"missing {tool.name}")
     if asset == "templates":
         return (False, "System 2 not built (reserved)")

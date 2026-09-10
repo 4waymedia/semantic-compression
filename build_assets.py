@@ -21,6 +21,7 @@ declared output sentinel is missing. Else SKIP. Ledger: <pkg>/assets_pipeline.js
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import hashlib
 import importlib.util
 import json
@@ -35,7 +36,26 @@ import build_suite
 
 SC = Path(__file__).resolve().parent                 # semantic_compression/
 ROOT = SC.parent                                     # R-D-concepts/
-BROWSER_TOOLS = ROOT / "ELO-Browser" / "tools"
+
+# THE EXPORTERS LIVE HERE (moved 2026-09-10, integration lane's finding).
+#
+# They were in `ELO-Browser/tools/` and run as stages 7, 8 and 16 of THIS cascade. The
+# dictionary lane owned the assets; the browser lane owned the code that produced them.
+# Three consequences, all of which we paid:
+#
+#   1. A clone of `semantic_compression` alone could not build its own assets.
+#   2. A consumer lane could change an asset's wire format by editing its own tools/.
+#   3. The PRODUCER (browser tools) and the PUBLISHER (publish_dictionary.py) sat in
+#      different lanes with no shared declaration, so an asset added to one was
+#      invisible to the other BY CONSTRUCTION. That is the mechanical cause of the nine
+#      asset lists and of `wordclass` having an exporter for weeks while
+#      `BUNDLE_CHANNELS` never heard of it.
+#
+# `asset_registry.py` cannot govern code it does not contain, so the registry work is
+# only real once the exporters are here. Ownership was already honoured in who RUNS
+# them; this fixes where they LIVE.
+EXPORTERS = SC
+BROWSER_TOOLS = EXPORTERS        # deprecated alias; remove once no branch references it
 # O3: browser assets land in a PER-DICTIONARY subdir so shipped products never
 # collide. The runtime selects a product dir; the default is keyed by build name.
 # Layer-4 evidence for the wordclass stage. Repo-relative so it resolves identically
@@ -62,7 +82,33 @@ STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                # of NEUTRAL/UNKNOWN that look like data.
                13: "vfacets",
                14: "census",
-               15: "wordclass"}
+               15: "wordclass",
+               # 16 gates on the same suite asset as 15: a build that declares
+               # `wordclass` builds it AND ships it. Splitting them would recreate the
+               # exact gap this stage closes -- a channel built and never exported.
+               16: "wordclass"}
+
+
+def _dict_fingerprint(lmdb_path: Path) -> str | None:
+    """The ID SPACE fingerprint: sha256 over sorted (surface, id) pairs.
+
+    Deliberately NOT a hash of the file. An asset write changes the file and must not
+    change this -- that is the whole invariant. An `.elo` binds to this value, because
+    the ids it contains are all decode needs; every asset is additive on top."""
+    try:
+        import lmdb as _l
+        env = _l.open(str(lmdb_path), readonly=True, max_dbs=32, lock=False)
+    except Exception:
+        return None
+    try:
+        fwd = env.open_db(b"forward", create=False)
+        h = hashlib.sha256()
+        with env.begin() as t:
+            for k, v in t.cursor(db=fwd):
+                h.update(bytes(k)); h.update(b"\t"); h.update(bytes(v)); h.update(b"\n")
+        return h.hexdigest()
+    finally:
+        env.close()
 
 
 def _sig(path: Path) -> str:
@@ -235,13 +281,13 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
              dep=None, argv=["--build", str(pkg), "--cut", BROWSER_CUT], out=[vocab]),
         # --out-root, not --out: the exporter appends the build name itself, so the
         # versioned folder is guaranteed rather than assembled by each caller.
-        dict(n=7, name="browser-epa+facets", script=BROWSER_TOOLS / "export_browser_assets.py",
+        dict(n=7, name="browser-epa+facets", script=EXPORTERS / "export_browser_assets.py",
              cwd=ROOT, dep="lmdb",
              argv=["--build", str(pkg), "--out-root", str(browser_out.parent)],
              out=[browser_out / "epa.bin", browser_out / "facets.bin",
                   browser_out / "assets.meta.json",
                   browser_out / f"{pkg.name}.browser.json"]),
-        dict(n=8, name="browser-neighbours", script=BROWSER_TOOLS / "export_neighbours.py",
+        dict(n=8, name="browser-neighbours", script=EXPORTERS / "export_neighbours.py",
              cwd=ROOT, dep="faiss", argv=["--build", str(pkg), "--index", str(pkg),
              "--out", str(browser_out)], out=[browser_out / "neighbours.bin"]),
         # RE-DERIVE THE REGISTRY *AFTER* THE ASSETS EXIST. Previously script=None: the
@@ -301,6 +347,22 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
                    "--corpus", str(SC / "data" / "word_frequencies.txt"),
                    "--corpus-text", str(CORPUS_TEXT)],
              out=[pkg / "wordclass_stats.json"]),
+        # STAGE 16 -- EXPORT WORDCLASS TO THE BUNDLE.
+        #
+        # Stage 15 builds the channel into the LMDB; nothing carried it any further.
+        # From 2026-08-28 to 2026-09-10 `wordclass` was built by every run, locked at
+        # format v3, stamped in meta, measured by the census, and consumed by the
+        # Verbalizer through a direct LMDB open -- because there was no exporter and no
+        # bundle channel. It passed every publish gate by not being in BUNDLE_CHANNELS.
+        #
+        # It runs AFTER stage 15 (needs the sub-db) and after stage 6 (needs the vocab
+        # json that defines n). Position in this list is execution order; n=16 is an
+        # append-only id, like 13/14/15 before it.
+        dict(n=16, name="wordclass-export", script=EXPORTERS / "export_wordclass.py",
+             cwd=ROOT, dep="lmdb",
+             argv=["--build", str(pkg), "--out", str(browser_out)],
+             out=[browser_out / "wordclass.bin",
+                  browser_out / "wordclass.names.json"]),
         dict(n=14, name="census", script=SC / "coverage_census.py", cwd=SC,
              dep="lmdb", argv=["--db", str(lmdb)],
              out=[pkg / "coverage_census.json"], gate=True),
@@ -455,6 +517,33 @@ def main() -> None:
                     help="O3: browser asset dir (default: <root>/dictionary/<name>/)")
     ap.add_argument("--release", default=None, help="O4: stamp release (default: from spec_meta)")
     ap.add_argument("--status", default=None, help="O4: stamp status (default: from spec_meta)")
+    # --- upgrading an OLDER build with a NEWER asset (2026-09-10, Paul) ---------
+    #
+    # "As we expand or add on these assets, older dictionaries can be rebuilt with them."
+    # The re-run machinery already existed (--only/--from/--force + the staleness
+    # ledger). What did not was the question that comes FIRST -- *which assets is this
+    # build missing?* -- and the ability to answer it, because a build's `suite.enabled`
+    # is recorded at build time and is authoritative. elo-browser-v04 was declared
+    # `full` on 2026-08-13, before `wordclass` existed, so `full` for that build means
+    # eight assets forever and no amount of --force adds a ninth.
+    #
+    # That recording is CORRECT -- the declared suite is part of a build's identity, and
+    # silently widening it on re-run is how an artifact stops matching its own manifest.
+    # So widening is an explicit act with an explicit flag.
+    ap.add_argument("--audit", action="store_true",
+                    help="report which registry assets this build lacks, and the "
+                         "command that would add them. Reads only; changes nothing.")
+    ap.add_argument("--add-asset", default=None, metavar="NAME[,NAME...]",
+                    help="widen this build's RECORDED suite to include NAME, then run "
+                         "its stages. The declared suite is part of the build's "
+                         "identity, so this is deliberate and logged -- not implied by "
+                         "--force.")
+    ap.add_argument("--bump-revision", default=None, metavar="REASON",
+                    help="increment package_revision for a CONTENT change that adds no "
+                         "asset (a corrected channel, a re-derivation). package_revision "
+                         "means 'the assets INCLUDING their content' -- the facets/utility "
+                         "fix changes 14,394 records and adds nothing, and a consumer "
+                         "caching verdicts under revision 1 must be able to see that.")
     a = ap.parse_args()
 
     pkg = a.pkg.resolve()
@@ -467,6 +556,131 @@ def main() -> None:
     if mpath.exists():
         man = json.loads(mpath.read_text(encoding="utf-8"))
     rec_suite = man.get("suite") or {}
+    _fp_before = None
+    if a.bump_revision:
+        # A CONTENT revision. No asset is added; existing channels are re-derived.
+        # Same identity split as --add-asset: the id space must not move, the asset
+        # content may, and the revision is what tells the two apart downstream.
+        rev = int(man.get("package_revision", 1)) + 1
+        man["package_revision"] = rev
+        man["bundle_id"] = pkg.name if rev <= 1 else f"{pkg.name}r{rev}"
+        # Same entry shape as --add-asset, so one revision is one entry however it was
+        # produced. Run BOTH flags in one invocation and the addition attaches to this
+        # entry rather than opening a second -- see the note in the --add-asset block.
+        man.setdefault("revision_log", []).append({
+            "revision": rev,
+            "content_change": a.bump_revision,
+            "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "id_space_unchanged": "asserted after the run",
+        })
+        if not a.dry_run:
+            mpath.write_text(json.dumps(man, indent=2), encoding="utf-8")
+        print(f"package_revision {rev - 1} -> {rev}   content: {a.bump_revision}")
+        print(f"  publishes as {pkg.name}r{rev}   (id space asserted unchanged; "
+              f"no .elo file is invalidated)"
+              + ("   [DRY RUN -- manifest not written]" if a.dry_run else ""))
+        _fp_before = _dict_fingerprint(pkg / "dictionary.lmdb")
+    if a.audit or a.add_asset:
+        import lmdb as _lmdb
+        from asset_registry import ASSETS as _AR, BY_NAME as _BN, missing_from
+        _e = _lmdb.open(str(pkg / "dictionary.lmdb"), readonly=True, max_dbs=32,
+                        lock=False)
+        with _e.begin() as _t:
+            _present = {bytes(k).decode() for k, _ in _t.cursor()}
+        _e.close()
+        _rec = set(rec_suite.get("enabled") or ())
+        _lacks = missing_from(_present)
+        print(f"audit {pkg.name}")
+        print(f"  recorded suite : {', '.join(sorted(_rec)) or '(none)'}")
+        print(f"  sub-dbs present: {', '.join(sorted(_present))}")
+        for _a in _AR:
+            if not _a.in_lmdb or _a.name in ("forward", "reverse"):
+                continue
+            _has = _a.subdb.decode() in _present
+            _why = (f"  -- {_a.unbuilt_reason.split('.')[0]}" if _a.unbuilt_reason else "")
+            print(f"    {_a.name:12} {'present' if _has else 'ABSENT ':8}"
+                  f"{'declared' if _a.name in _rec else 'not declared':13}{_why}")
+        if _lacks:
+            print(f"\n  {len(_lacks)} asset(s) missing: {', '.join(_lacks)}")
+            print(f"  add them with:\n"
+                  f"    python build_assets.py {a.pkg} --add-asset {','.join(_lacks)}")
+        else:
+            print("\n  this build carries every buildable registry asset")
+        if a.audit and not a.add_asset:
+            return
+    if a.add_asset:
+        want = [w.strip() for w in a.add_asset.split(",") if w.strip()]
+        from asset_registry import BY_NAME as _BN2
+        unknown = [w for w in want if w not in _BN2]
+        if unknown:
+            sys.exit(f"not in asset_registry: {', '.join(unknown)}. An asset must be "
+                     f"declared before it can be built.")
+        blocked = [w for w in want if _BN2[w].unbuilt_reason]
+        if blocked:
+            sys.exit(f"{', '.join(blocked)} has no builder: "
+                     f"{_BN2[blocked[0]].unbuilt_reason}")
+        # A REBUILD CARRIES A NEW ID (Paul, 2026-09-10). The moment `.elo` files are
+        # written and kept, "which dictionary decoded this" has to have one answer.
+        #
+        # TWO IDENTITIES, AND ONLY ONE OF THEM MAY MOVE HERE:
+        #
+        #   dictionary_fingerprint  the ID SPACE -- pure (surface, id). THIS is what an
+        #                           .elo binds to, because it is all decode needs.
+        #                           Adding an asset must NOT move it, and the assertion
+        #                           after the run enforces that.
+        #   package_revision        the ASSET SET. Increments on every widening, so two
+        #                           packages both named elo-browser-v04 are still
+        #                           distinguishable, and a consumer can ask for "v04 at
+        #                           revision >= 2" when it needs wordclass.
+        #
+        # Keeping them separate is what makes an in-place asset addition SAFE for
+        # existing .elo files rather than a silent break: the ids they contain still
+        # resolve, and everything that was added is additive. If the id space ever does
+        # move, that is a new dictionary and needs a new build NAME -- not a revision.
+        rec_suite = dict(rec_suite)
+        rec_suite["enabled"] = sorted(set(rec_suite.get("enabled") or ()) | set(want))
+        rec_suite["widened"] = sorted(set(rec_suite.get("widened") or ()) | set(want))
+        # ONE ENTRY PER REVISION, recording BOTH kinds of change.
+        #
+        # `--add-asset` and `--bump-revision` used to write separate entries with
+        # separate shapes -- `added` on one, `content_change` on the other -- so a run
+        # that did both (r2: added `wordclass` AND re-derived `facets` for 14,394
+        # surfaces) logged only the addition. **r2's own revision_log under-describes
+        # r2.** Caught by ELO-Browser, and they were right: a revision log that records
+        # what was ADDED and not what CHANGED is worse than none, because it reads
+        # complete.
+        #
+        # If a revision is already open in THIS invocation (--bump-revision ran first),
+        # extend that entry rather than opening a second -- one revision, one entry.
+        rev = int(man.get("package_revision", 1))
+        log = man.setdefault("revision_log", [])
+        open_entry = log[-1] if (log and _fp_before is not None
+                                 and log[-1].get("revision") == rev) else None
+        if open_entry is None:
+            rev += 1
+            man["package_revision"] = rev
+            open_entry = {
+                "revision": rev,
+                "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+                "id_space_unchanged": "asserted after the run",
+            }
+            log.append(open_entry)
+        _bumped_here = (open_entry.get("added") is None)
+        open_entry["added"] = sorted(set(open_entry.get("added") or ()) | set(want))
+        man["suite"] = rec_suite
+        # bundle_id lives in the MANIFEST, derived once. publish_dictionary and
+        # dictionary_standard both used to construct this string themselves -- two
+        # places building one identity, which is how identities drift.
+        man["bundle_id"] = pkg.name if rev <= 1 else f"{pkg.name}r{rev}"
+        if not a.dry_run:
+            mpath.write_text(json.dumps(man, indent=2), encoding="utf-8")
+        print(f"\n  suite widened by {', '.join(want)} -> "
+              f"{', '.join(rec_suite['enabled'])}")
+        _rev_note = (f"-> {rev}" if _bumped_here
+                     else f"{rev} (already open this run)")
+        print(f"  package_revision {_rev_note}   bundle_id {man['bundle_id']}"
+              + ("   [DRY RUN -- manifest not written]" if a.dry_run else ""))
+        _fp_before = _dict_fingerprint(pkg / "dictionary.lmdb")
     if rec_suite.get("enabled"):
         enabled = set(rec_suite["enabled"])                 # authoritative (recorded)
     else:
@@ -498,6 +712,35 @@ def main() -> None:
     print(f"assets for {pkg.name}   dict_sig={dict_sig}   suite={sorted(enabled)}"
           + ("   [DRY RUN]" if a.dry_run else ""))
     print(f"  browser_out={browser_out}   stamp={stamp_release}/{stamp_status}")
+    # THE OTHER HALF OF THE REGISTRY CHECK. `publish_dictionary` refuses when a declared
+    # asset does not ship; this refuses when a declared asset has no way to be BUILT.
+    # `templates` is why: declared in the manifest as an artifact for weeks, carried in
+    # every build as an empty sub-db, and produced by no stage anywhere. A registry entry
+    # with neither a builder nor a stated reason is a promise nobody keeps.
+    # The exporters must be HERE, not in a consumer's tree. Loud and specific rather
+    # than a fallback to the old location: a fallback would let the cascade keep running
+    # against another lane's copy, which is the condition this move exists to end.
+    _missing_exp = [n for n in ("export_browser_assets.py", "export_neighbours.py",
+                                "export_wordclass.py") if not (EXPORTERS / n).exists()]
+    if _missing_exp:
+        raise SystemExit(
+            "exporters not found in semantic_compression/: " + ", ".join(_missing_exp)
+            + "\n  They moved here on 2026-09-10 so the dictionary no longer builds its "
+              "assets from the browser lane's source tree. Run:\n"
+            + "".join(f"    git mv ELO-Browser/tools/{n} semantic_compression/{n}\n"
+                      for n in _missing_exp))
+
+    from asset_registry import ASSETS as _ASSETS
+    _built = {v for v in STAGE_ASSET.values() if v}
+    _orphan = [a.name for a in _ASSETS
+               if a.in_lmdb and not a.unbuilt_reason and a.name not in _built
+               and a.name not in ("forward", "reverse")]
+    if _orphan:
+        raise SystemExit(
+            f"asset_registry declares {', '.join(_orphan)} but no stage builds it. "
+            f"Add a stage (and its STAGE_ASSET entry), or record `unbuilt_reason` on "
+            f"the registry entry so the gap is visible instead of silent.")
+
     print(f"{'#':>2}  {'stage':<20}{'state':<26}action")
     print("-" * 70)
     for st in _stages(pkg, a.device, browser_out, stamp_release, stamp_status):
@@ -551,6 +794,30 @@ def main() -> None:
     if not a.dry_run:
         _write_ledger(pkg, ledger)
         print(f"\nledger -> {lpath.name}")
+
+    # THE INVARIANT THAT MAKES AN IN-PLACE ASSET ADDITION SAFE.
+    #
+    # Adding an asset re-derives channels inside the same LMDB under the same build
+    # name. That is only legitimate while the ID SPACE is untouched, because an `.elo`
+    # written yesterday holds ids and nothing else -- if (surface, id) moved, every
+    # stored file silently decodes to different words, and the build name would still
+    # say elo-browser-v04.
+    #
+    # So: assert it, do not assume it. If this ever fires, the correct response is a NEW
+    # BUILD NAME, not a revision bump -- a moved id space is a different dictionary
+    # wearing the same label, which is the one thing no consumer can detect on its own.
+    if (a.add_asset or a.bump_revision) and not a.dry_run and _fp_before:
+        _fp_after = _dict_fingerprint(pkg / "dictionary.lmdb")
+        if _fp_after != _fp_before:
+            sys.exit(
+                f"\n[STOP] the ID SPACE MOVED during an asset addition.\n"
+                f"  before {_fp_before[:16]}\n  after  {_fp_after[:16] if _fp_after else '?'}\n"
+                f"  Every .elo encoded against {pkg.name} now decodes to different "
+                f"surfaces. An asset addition must be ADDITIVE. This is a new "
+                f"dictionary and needs a new BUILD NAME, not a package_revision.")
+        print(f"id space unchanged  {_fp_before[:16]}  "
+              f"(package_revision {man.get('package_revision')}; .elo files encoded "
+              f"against this build are unaffected)")
 
 
 if __name__ == "__main__":

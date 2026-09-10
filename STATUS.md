@@ -3,8 +3,9 @@
 | | |
 |---|---|
 | **Status** | `develop` (dev source; graduates two packages) |
-| **Liveness** | `active` — codec + dictionary build exercised 2026-08-29 |
-| **Updated** | 2026-08-29 |
+| **Liveness** | `active` — published `elo-browser-v04r2` 2026-09-10 (11 gates, verified both directions) |
+| **Updated** | 2026-09-10 |
+| **Standard** | `elo-browser-v04` · `package_revision 2` · **pin `bundle_id: elo-browser-v04r2`** |
 | **Owner lane** | semantic_compression / dictionary lane |
 | **Spec** | `SYSTEM1.md` · `docs/compression/*` · `docs/format/ELO_FILE_FORMAT.md` + `docs/format/spec-elo-dictionary-binding.md` |
 | **Package** | graduates **two**: `packages/elo-dictionary/` 0.3.1 (block, publishable) · `packages/elo-compression/` 0.3.1 (system, private) |
@@ -33,12 +34,58 @@ the ID space and the coupled asset family that downstream systems consume.
 | Codec `.elo`/`.eloB` | `compressor.py` | built — **now dictionary-bound (§ below)** |
 | Build family driver + asset cascade | `build_dictionary.py`, `build_from_spec.py`, `build_assets.py`, `build_suite.py` | built |
 | Artifact identity / manifest | `artifact_identity.py` | built |
-| Publish (stage 12) | `publish_dictionary.py` + `docs/compression/spec-publish-dictionary.md` | built — gates G1–G8, refuses on failure |
+| Publish (stage 12) | `publish_dictionary.py` + `docs/compression/spec-publish-dictionary.md` | built — gates **G1–G11**, refuses on failure |
+| **THE asset registry** | `asset_registry.py` | **built 2026-09-10** — one declaration per asset; nine hand-kept lists derive from it |
+| Asset exporters | `export_browser_assets.py`, `export_neighbours.py`, `export_wordclass.py` | **moved into this lane 2026-09-10** (were in `ELO-Browser/tools/`) |
 | **Standard pointer + index** | `dictionary_standard.py` → `dist/dictionary/{STANDARD,INDEX}.json` | **built 2026-08-29** |
 | **Resolver (the one door)** | `resolve.py` → `compression_dictionary.resolve_dictionary()` | **built 2026-08-29** |
 | **Resolution gate** | `check_dict_resolution.py` + `tests/test_dict_resolution_gate.py` | **built 2026-08-29 — 0 violations, `--strict` passes** |
-| Word class channel | `wordclass_builder.py` (`b'wordclass'`, 3 B) | built — run by hand, **not yet a cascade stage** |
+| Word class channel | `wordclass_builder.py` (`b'wordclass'`, 3 B) | built — **cascade stages 15 + 16 (2026-09-10); ships in the bundle for the first time in r2.** ⚠ the rebuild changed the channel's bytes; delta unmeasured (see 2026-09-10 §5) |
 | Coverage census (stage 14) | `coverage_census.py` | built — always-run, fingerprint-bound |
+
+### 2026-09-10 — `elo-browser-v04r2`: one asset registry, wordclass ships, revisions exist
+
+**Published `dist/dictionary/elo-browser-v04r2`** — bundle fingerprint `2f5e0c9791ec00d4`,
+11 gates PASS, `--verify` clean both directions, live browser bundle matches (first time
+since 09-04).
+
+**The registry.** `asset_registry.py` is now the single declaration per asset — sub-db,
+record width, wire magic, bundle file, decode contract, and (required, no default) **how
+the asset expresses ABSENCE**. It replaces **nine** hand-maintained lists. Seven of the
+nine did not know about `wordclass`, which is how a locked, 437,995-record, Verbalizer-
+adopted channel passed every publish gate for two weeks *by not being mentioned*. The
+mirror case, `templates`, is declared and built by nothing — now with a stated reason.
+
+**Two new gates.** **G10** asks the LMDB whether every built asset ships (catches
+`wordclass`). **G11** requires that content moving implies the revision moving, checked
+against prior publications rather than trusted (caught a six-day-old `vfacets` divergence
+on its first run). A build-side orphan check aborts the cascade on a registry asset with
+no builder. A channel now ships **with its decode contract or not at all** —
+`vfacets.bin` had been published for a month with its geometry left behind.
+
+**Three identities.** `dictionary_fingerprint` = the **id space**, what an `.elo` binds
+to, asserted unchanged across a revision. `build` = unchanged, so no fixture renumbers.
+`package_revision` / `bundle_id` = the **assets including their content**;
+**consumers pin `bundle_id`**. `STANDARD.json` now carries both.
+
+**Exporters moved in** from `ELO-Browser/tools/`: the dictionary's build no longer depends
+on a consumer lane's source tree, and the registry governs code it contains.
+
+**Rebuilding an older build with newer assets** is now two verbs:
+`build_assets.py <pkg> --audit` (read-only; reports what a build lacks and prints the
+command) and `--add-asset NAME` / `--bump-revision REASON`.
+
+**⚠ OWED — the wordclass rebuild changed the channel.** Stage 15 ran for the first time
+ever (the channel had been hand-built for its whole life, because `PRESETS["full"]` never
+listed it). `wordclass.bin` moved `8dadf64e` → `6c9d52c7` while coverage held at exactly
+274,202 — **same count, different bytes, so class assignments moved.** The Verbalizer
+adopted the *hand-built* channel on 08-29. **Nobody should treat r2's wordclass as
+equivalent until the delta is measured.**
+
+**Also open:** `neighbours` is still the r1 index (it selects on `utility='CONTENT'`, so
+the 7,209 web-structure embeddings clear only when stages 5+8 re-run) — r2 therefore
+ships facets saying STRUCTURAL beside neighbours chosen as if CONTENT, and G11 cannot
+catch it because both are revision 2.
 
 ### 2026-08-29 — the dictionary standard, and the drift it exposed
 

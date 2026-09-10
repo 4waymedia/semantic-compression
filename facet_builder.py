@@ -35,7 +35,7 @@ from config import (
     FORWARD_DB_NAME, META_DB_NAME, REVERSE_DB_NAME, STREAM_ENCODING,
     FACETS_DB_NAME, FLAG, pack_facet,
 )
-from facets import assign_facet, load_overrides
+from facets import assign_facet, load_nonlexical, load_overrides
 from facet_reader import (
     bucket_name, compute_fingerprint, cue_names, describe_facet, get_facet,
     utility_name,
@@ -81,9 +81,19 @@ def build_facets(
     dictionary_id: str = 'general',
     dictionary_version: int = 1,
     dictionary_format_version: int = 3,
+    nonlexical_path: Path | None = None,
+    require_provenance: bool = True,
     verbose: bool = True,
 ) -> dict:
-    """Facet an existing dictionary.lmdb in place. Returns the stats dict."""
+    """Facet an existing dictionary.lmdb in place. Returns the stats dict.
+
+    `nonlexical_path` is the build's web-structure provenance (`data/
+    nonlexical_terms_<build>.txt`). It drives the UTILITY axis; without it every
+    non-lexical surface falls through to CONTENT, which is the state that shipped in
+    elo-browser-v04 (14,393 CSS/HTML/JS surfaces labelled CONTENT). Missing provenance
+    RAISES rather than degrading, because the degraded result is a plausible-looking
+    facets channel that is wrong on 3.3% of the vocabulary and says nothing about it.
+    Pass `require_provenance=False` only for a build with no non-lexical sources."""
     lmdb_path = Path(lmdb_path)
     if not lmdb_path.exists():
         raise FileNotFoundError(f'dictionary not found: {lmdb_path}')
@@ -92,6 +102,19 @@ def build_facets(
     n_overrides = len(overrides['exact']) + len(overrides['normalized'])
     if verbose:
         print(f'Loaded {n_overrides} overrides from {overrides_path}')
+
+    nonlexical: frozenset | None = None
+    if nonlexical_path is not None and Path(nonlexical_path).exists():
+        nonlexical = load_nonlexical(nonlexical_path)
+        if verbose:
+            print(f'Loaded {len(nonlexical):,} non-lexical surfaces from '
+                  f'{nonlexical_path}')
+    elif require_provenance:
+        raise FileNotFoundError(
+            f'non-lexical provenance not found: {nonlexical_path}. The UTILITY axis '
+            f'cannot separate a CSS class from a noun without it, and the resulting '
+            f'channel would be wrong silently. Pass require_provenance=False if this '
+            f'build genuinely has no non-lexical corpus sources.')
 
     env = lmdb.open(str(lmdb_path), map_size=MAP_SIZE_BYTES, max_dbs=4)
     fwd_db = env.open_db(FORWARD_DB_NAME, create=False)
@@ -119,7 +142,7 @@ def build_facets(
     with env.begin(write=True) as txn:
         for surface_bytes, id_bytes in txn.cursor(db=fwd_db):
             surface = surface_bytes.decode(STREAM_ENCODING)
-            bucket, cue_mask, flags = assign_facet(surface, overrides)
+            bucket, cue_mask, flags = assign_facet(surface, overrides, nonlexical)
 
             # Builder invariant: MANUAL and HEURISTIC are never both set.
             if (flags & FLAG['MANUAL']) and (flags & FLAG['HEURISTIC']):
@@ -285,7 +308,20 @@ def main() -> None:
     p.add_argument('--dict-family', default='general')
     p.add_argument('--dict-id', default='general')
     p.add_argument('--dict-version', type=int, default=1)
+    # Derived from the build name, like --stats, so the cascade needs no new wiring and
+    # a hand-run cannot pair one build's LMDB with another build's provenance.
+    p.add_argument('--nonlexical', default=None,
+                   help='data/nonlexical_terms_<build>.txt; defaults to the file named '
+                        'for the --db build. Drives the UTILITY axis.')
+    p.add_argument('--no-provenance', action='store_true',
+                   help='this build has NO non-lexical corpus sources. Without it a '
+                        'missing provenance file is an error, not a silent CONTENT '
+                        'default (elo-browser-v04 shipped 14,394 CSS/HTML surfaces as '
+                        'CONTENT that way).')
     args = p.parse_args()
+    build = Path(args.db).parent.name
+    nonlexical = Path(args.nonlexical) if args.nonlexical else (
+        Path(__file__).resolve().parent / 'data' / f'nonlexical_terms_{build}.txt')
     build_facets(
         lmdb_path=Path(args.db),
         overrides_path=Path(args.overrides),
@@ -294,6 +330,8 @@ def main() -> None:
         dictionary_family=args.dict_family,
         dictionary_id=args.dict_id,
         dictionary_version=args.dict_version,
+        nonlexical_path=nonlexical,
+        require_provenance=not args.no_provenance,
     )
     spot_check(
         ['therefore', 'because', 'cast iron', 'um', 'rabbit', '?', 'the',

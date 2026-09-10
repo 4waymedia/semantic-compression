@@ -208,6 +208,9 @@ def _build_tagged() -> str:
     stats = facet_builder.build_facets(
         lmdb_path=Path(path), overrides_path=Path(_OVERRIDES),
         stats_path=Path(os.path.join(os.path.dirname(path), 'stats.json')),
+        # The fixture has no non-lexical corpus sources, which is exactly the case the
+        # flag is for. A real build without provenance now RAISES.
+        require_provenance=False,
         verbose=False,
     )
     assert stats['facets_total'] == len(_ENTRIES)

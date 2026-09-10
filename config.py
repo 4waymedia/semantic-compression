@@ -9,6 +9,42 @@ FORMAT_VERSION  = 2        # .elo TEXT stream header. v2 = dictionary-bound head
 COUNTS_FORMAT_VERSION = 1  # internal corpus text artifacts (ngram/phrase/word
                            # frequency dumps + legacy v0.2 builder stats). Decoupled
                            # from the .elo stream so a stream bump never rev's these.
+
+# ---------------------------------------------------------------------------
+# CODEC POLICY VERSION — what the codec DOES, not what its container looks like.
+#
+# ADDED 2026-09-10, on ELO-Browser's finding, corroborated by integration's D8 note.
+# Both lanes arrived at this independently and from different directions: the browser
+# found that `conformance_recase.rs` pins three constants, NONE of which can move when
+# the encoder's behaviour changes; integration found that a re-saved file would produce
+# different bytes under an identical header with nothing refusing.
+#
+# THE GAP: three version counters existed and all three govern the CONTAINER --
+# FORMAT_VERSION and ELO_TEXT_VERSION (the .elo text header shape), ELO_BIN_VERSION
+# (the .eloB header shape). `dict_fp` identifies the DICTIONARY. `caps_codec.py` had no
+# version constant of any kind. So the case policy -- the rule deciding whether `Apple`
+# encodes as one cased id or as TAG_CAP + `apple` -- was versioned by NOTHING, and an
+# encoder change produced different bytes that every existing check called identical.
+#
+# WHAT IT COVERS: anything that changes what `decode_ids` returns for a FIXED
+# vocabulary, or what `encode_ids` emits for fixed input text --
+#   * the case policy (cased-entry lookup, TAG_CAP emission, the position rule)
+#   * restore_implicit_spaces
+#   * the phrase scan's match order
+#   * byte-fallback / OOV construction
+# It does NOT cover the header shape (that is FORMAT_VERSION's job) and it does NOT
+# cover the vocabulary (that is dictionary_fingerprint's).
+#
+# WHY NOT REUSE FORMAT_VERSION: it means "the header shape changed". Bumping it for a
+# policy change would make an unrelated reader reject files it can read perfectly well.
+# Three identities, three counters -- which layout, which dictionary, which policy.
+#
+# BUMP THIS when the encoder or decoder would produce different output for the same
+# input and the same dictionary. The cased-entry fix (compression lane, step 3) is the
+# next bump: `compressor.py` lowercases unconditionally at lines 177, 490 and 1001, so
+# a cased vocab entry is currently unreachable by any path, and fixing it changes the
+# bytes for every capitalised token.
+CODEC_POLICY_VERSION = 1
 STREAM_ENCODING = 'utf-8'  # all text in streams and LMDB keys/values
 PIPE_BYTE       = 0x7C     # b'|' — stream token delimiter, never changes
 OOV_SEP_BYTE    = 0x3A     # b':' — OOV internal field delimiter

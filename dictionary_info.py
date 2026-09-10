@@ -40,22 +40,17 @@ from pathlib import Path
 
 import lmdb
 
-# The channels a dictionary MAY carry, and how each is keyed. Extend here when a
-# new sub-db ships (e.g. b'role'); consumers then see it with no code of their own.
-KNOWN_SUBDBS: dict[bytes, str] = {
-    b"forward":  "surface->id",
-    b"reverse":  "id->surface",
-    b"facets":   "base64_id",       # 4-byte record: bucket | cue_mask u16 | flags
-    b"epa":      "base64_id",       # 12-byte record: <fff E,P,A
-    b"vfacets":  "base64_id",       # 2-byte record: agency/dir/temporal | domain/polarity
-    b"meta":     "identity keys",   # the dictionary's own identity store
-    # 2026-08-28: renamed from b'role' (collided with the reasoning lane's semantic
-    # roles agent/patient) and scoped for BOTH consumers per the grammatical-sentence
-    # gap analysis: byte 0 = class/confidence/ambivalent, byte 1 = the lexical features
-    # generation needs (countability, inherent number, proper, requires_determiner).
-    # Contract + rationale: handoffs/2026-08-28-dictionary-lane-wordclass-accepted.md
-    b"wordclass": "base64_id",      # reserved -- planned, ships with v05 (2 bytes)
-}
+# The channels a dictionary MAY carry, and how each is keyed.
+#
+# DERIVED from asset_registry.ASSETS since 2026-09-10 -- do NOT extend here. This was one
+# of seven hand-kept asset lists; the copy it replaces still described `wordclass` as
+# "reserved -- planned, ships with v05 (2 bytes)" while v04 carried 437,995 records of it
+# at 3 bytes, format v3, locked. It also omitted `templates`, which is why this module
+# reported a declared artifact under `unknown_subdbs`. Add an asset to the registry and
+# every consumer sees it.
+from asset_registry import known_subdbs                            # noqa: E402
+
+KNOWN_SUBDBS: dict[bytes, str] = known_subdbs()
 
 # Sidecar files that may sit next to the LMDB in a build package, and the JSON
 # field each uses to record which dictionary it was derived from.
