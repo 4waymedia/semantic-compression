@@ -129,7 +129,23 @@ except Exception:                                          # pragma: no cover
 # b1790799 -> cd8f56f4) while the Rust still read the v01a .bin files. The oracle
 # silently began describing a different artifact than the one it tested.
 BUILDS_ROOT = ROOT / "semantic_compression" / "db" / "builds"
-DEFAULT_OUT_ROOT = ROOT / "ELO-Browser" / "elo-browser" / "src-tauri" / "dictionary"
+
+# THE CASCADE STAGES ITS OWN OUTPUT (2026-09-11, integration's ruling, order-of-work 1).
+#
+# This defaulted to `ELO-Browser/elo-browser/src-tauri/dictionary/`, so the dictionary's
+# build wrote its payload INTO A CONSUMER'S TREE and `publish_dictionary` then read it
+# back out of there -- `bundle src: ELO-Browser/.../dictionary/elo-browser-v04` on every
+# publish, including v04r2's. Moving the exporters here on 09-10 fixed where the CODE
+# lives and left the WRITE PATH pointing at the old owner, which is why v04r2's own
+# `assets.meta.json` still stamps `generated_by: ELO-Browser/tools/...`.
+#
+# Adding the `morph` stage before fixing this would have put a new dictionary channel in
+# the browser's repository by construction -- the defect this week removed, one layer up.
+#
+# The bundle now stages inside the build package it belongs to. `publish_dictionary`
+# reads from here; the browser INSTALLS the published bundle from `dist/` rather than
+# being written into. Override with --out-root; nothing about the layout is implied.
+DEFAULT_OUT_ROOT = BUILDS_ROOT                      # <build>/bundle/ -- see main()
 DEFAULT_ORACLE_ROOT = ROOT / "ELO-Browser" / "poc" / "conformance"
 
 MAGIC_EPA = b"ELOEPA\x01\x00"
@@ -158,6 +174,12 @@ def main() -> int:
                          "defaulting to one is how the wrong dictionary gets exported.")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT,
                     help="assets are written to <out-root>/<build-name>/")
+    # --out, explicit, matching export_neighbours.py and export_wordclass.py. The
+    # <out-root>/<build-name> convention silently mis-resolves once the bundle stages in
+    # a `bundle/` subdirectory, and three exporters in one cascade taking three different
+    # destination arguments is its own small trap.
+    ap.add_argument("--out", type=Path, default=None, dest="out_explicit",
+                    help="exact output directory; overrides --out-root")
     ap.add_argument("--oracle-root", type=Path, default=DEFAULT_ORACLE_ROOT,
                     help="oracles are written to <oracle-root>/<build-name>/")
     ap.add_argument("--oracle-n", type=int, default=300)
@@ -171,7 +193,18 @@ def main() -> int:
 
     # THE BUILD NAME IS THE FOLDER. Both destinations are derived, never passed in, so
     # no invocation can put one build's assets where another build's already live.
-    a.out = a.out_root / a.build.name
+    #
+    # When staging inside the build package (the default), the bundle gets its own
+    # `bundle/` subdirectory rather than sitting loose beside `dictionary.lmdb`,
+    # `meta.db` and the stats sidecars -- publish's G4 deny-list exists precisely because
+    # build-time artifacts and shipped payload must not share a directory, and
+    # `payload_files()` would otherwise sweep the whole build package into the manifest.
+    if a.out_explicit is not None:
+        a.out = a.out_explicit.resolve()
+    elif a.out_root.resolve() == BUILDS_ROOT.resolve():
+        a.out = a.out_root / a.build.name / "bundle"
+    else:
+        a.out = a.out_root / a.build.name
     a.oracle_out = a.oracle_root / a.build.name
 
     vocab_path = a.build / f"{a.build.name}.browser.json"

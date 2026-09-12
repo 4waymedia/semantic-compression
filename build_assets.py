@@ -56,6 +56,13 @@ ROOT = SC.parent                                     # R-D-concepts/
 # them; this fixes where they LIVE.
 EXPORTERS = SC
 BROWSER_TOOLS = EXPORTERS        # deprecated alias; remove once no branch references it
+
+# The morph sweep. Called as a build-time LIBRARY from elo_reasoning: the generator is
+# reasoning's, the artifact is the dictionary's (ruling 2026-09-11). Invoked via `-m` so
+# the cascade does not reach into the wheel by path -- a package entry point, not a file
+# location, which is what keeps this from being the exporters-in-another-lane defect
+# wearing a different hat.
+MORPH_SWEEP = "elo_reasoning.morphology.sweep"
 # O3: browser assets land in a PER-DICTIONARY subdir so shipped products never
 # collide. The runtime selects a product dir; the default is keyed by build name.
 # Layer-4 evidence for the wordclass stage. Repo-relative so it resolves identically
@@ -81,12 +88,77 @@ STAGE_ASSET = {1: "facets", 2: "meta", 3: "epa", 4: "meta_layer2", 5: "vectors",
                # which fails fast at resolve time instead of writing 437,995 rows
                # of NEUTRAL/UNKNOWN that look like data.
                13: "vfacets",
-               14: "census",
+               # 14 census: NOT AN ASSET -- a measurement of the finished package, like
+               # 9/11/12. It was keyed to a suite asset named "census" that no preset
+               # contains, so `coverage_census.json` was gated off on every build and the
+               # stage's own `gate=True` never got a chance to fire. THIRD instance of
+               # this shape (wordclass, morph, census): a stage exists, is correct, and
+               # never executes because the suite does not know the name it was filed
+               # under. None = always run.
+               14: None,
+               17: "morph",
                15: "wordclass",
                # 16 gates on the same suite asset as 15: a build that declares
                # `wordclass` builds it AND ships it. Splitting them would recreate the
                # exact gap this stage closes -- a channel built and never exported.
                16: "wordclass"}
+
+
+def _channel_census(lmdb_path: Path) -> dict:
+    """A per-channel snapshot of the LMDB, cheap enough to take before every revision.
+
+    WHY THIS EXISTS. On 2026-09-10 stage 15 rebuilt `wordclass` in place and stage 16
+    overwrote the .bin. The channel changed -- bytes moved while the non-absent count
+    held at exactly 274,202, so class assignments moved -- and **the previous state was
+    not recoverable**: the LMDB was rewritten, the .bin overwritten, and both `db/` and
+    `*.bin` are gitignored. A lane was told to hold pending a delta that could no longer
+    be measured, and a good tool written to measure it (`tools/wordclass_delta.py`) had
+    no OLD file to be given.
+
+    A channel rebuild that keeps no record of what it replaced is not reversible and not
+    reviewable. This is the cheap half of fixing that: not the bytes (neighbours alone is
+    22 MB) but the DISTRIBUTION, which is what "what moved" actually asks. Counts and
+    per-value histograms reconstruct a transition summary even when the artifact is gone.
+    """
+    out: dict = {}
+    try:
+        import lmdb as _l
+        from asset_registry import ASSETS as _A
+        env = _l.open(str(lmdb_path), readonly=True, max_dbs=32, lock=False)
+    except Exception:                                            # noqa: BLE001
+        return out
+    try:
+        with env.begin() as t:
+            present = {bytes(k).decode() for k, _ in t.cursor()}
+        for a in _A:
+            if not a.in_lmdb or a.subdb.decode() not in present:
+                continue
+            name = a.subdb.decode()
+            if name in ("forward", "reverse"):
+                continue
+            db = env.open_db(a.subdb, create=False)
+            hist: dict = {}
+            n = absent = 0
+            zero = b"\x00" * (a.record_width or 0)
+            with env.begin() as t:
+                for _, v in t.cursor(db=db):
+                    b = bytes(v)
+                    n += 1
+                    if a.record_width and b == zero:
+                        absent += 1
+                    # Byte 0 is the discriminating byte in every fixed-width channel we
+                    # carry; a full-record histogram would be as large as the channel.
+                    if b:
+                        hist[b[0]] = hist.get(b[0], 0) + 1
+            out[a.name] = {
+                "entries": n,
+                "all_zero": absent,
+                "byte0_histogram": dict(sorted(hist.items(),
+                                               key=lambda kv: -kv[1])[:24]),
+            }
+    finally:
+        env.close()
+    return out
 
 
 def _dict_fingerprint(lmdb_path: Path) -> str | None:
@@ -159,7 +231,7 @@ def _have(mod: str) -> bool:
 # argv(pkg), cwd, output sentinels(pkg), and any heavy dep it needs.
 # ---------------------------------------------------------------------------
 
-def _stages(pkg: Path, device: str | None, browser_out: Path,
+def _stages(pkg: Path, device: str | None, bundle_out: Path,
             stamp_release: str, stamp_status: str):
     lmdb = pkg / "dictionary.lmdb"
     vocab = pkg / f"{pkg.name}.browser.json"
@@ -283,13 +355,16 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         # versioned folder is guaranteed rather than assembled by each caller.
         dict(n=7, name="browser-epa+facets", script=EXPORTERS / "export_browser_assets.py",
              cwd=ROOT, dep="lmdb",
-             argv=["--build", str(pkg), "--out-root", str(browser_out.parent)],
-             out=[browser_out / "epa.bin", browser_out / "facets.bin",
-                  browser_out / "assets.meta.json",
-                  browser_out / f"{pkg.name}.browser.json"]),
+             # --out, not --out-root: all three exporters now take the exact directory,
+             # so no stage depends on a name-appending convention that breaks the moment
+             # the bundle stages in a subdirectory.
+             argv=["--build", str(pkg), "--out", str(bundle_out)],
+             out=[bundle_out / "epa.bin", bundle_out / "facets.bin",
+                  bundle_out / "assets.meta.json",
+                  bundle_out / f"{pkg.name}.browser.json"]),
         dict(n=8, name="browser-neighbours", script=EXPORTERS / "export_neighbours.py",
              cwd=ROOT, dep="faiss", argv=["--build", str(pkg), "--index", str(pkg),
-             "--out", str(browser_out)], out=[browser_out / "neighbours.bin"]),
+             "--out", str(bundle_out)], out=[bundle_out / "neighbours.bin"]),
         # RE-DERIVE THE REGISTRY *AFTER* THE ASSETS EXIST. Previously script=None: the
         # manifest was written once by build_from_spec at CORE-build time, before epa
         # (stage 3) / meta_layer2 / vectors ran, so it froze a pre-epa view --
@@ -326,6 +401,27 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         # It is deliberately LAST: it measures the finished package, including the
         # channels stages 1/3/13 wrote. Running it earlier would census a half-built
         # artifact and report the gaps as findings.
+        # STAGE 17 -- MORPH. The validated same-lemma map, baked from the vector space.
+        #
+        # Runs AFTER vectors (stage 5) and the bundle staging (6-8), and BEFORE wordclass
+        # (15) because PASS 2's plural handling should read a validated link instead of
+        # guessing a singular by string surgery -- the bug that made three consecutive
+        # builds produce three different wordclass channels.
+        #
+        # THE GENERATOR IS elo_reasoning's; THE ARTIFACT IS OURS (ruling 2026-09-11).
+        # `sweep.py` imports argparse/json/os/re/sys/numpy and its own package -- no
+        # dictionary import -- so the cascade calls it as a build-time library exactly as
+        # it calls facet_builder.py, and the PUBLISHED READER never imports elo_reasoning.
+        # A builder may use tools a consumer must not depend on.
+        #
+        # `bake` is the expensive mode. `restamp` carries a still-valid map forward
+        # (its invalidants are corpus_fingerprint + the vectors, NOT the id-space
+        # fingerprint -- gating on the id space would discard a valid map on every
+        # re-tier and recharge millions of formula pairs for a no-op).
+        dict(n=17, name="morph", script=None, module=MORPH_SWEEP, cwd=ROOT, dep="numpy",
+             argv=["bake", "--build", str(pkg), "--bundle", str(bundle_out),
+                   "--out", str(bundle_out / "morph_map.json")],
+             out=[bundle_out / "morph_map.json"]),
         # STAGE 15 -- WORDCLASS. Always declared, never inherited.
         #
         # This channel was built BY HAND for its whole life, which is two hazards at
@@ -360,9 +456,9 @@ def _stages(pkg: Path, device: str | None, browser_out: Path,
         # append-only id, like 13/14/15 before it.
         dict(n=16, name="wordclass-export", script=EXPORTERS / "export_wordclass.py",
              cwd=ROOT, dep="lmdb",
-             argv=["--build", str(pkg), "--out", str(browser_out)],
-             out=[browser_out / "wordclass.bin",
-                  browser_out / "wordclass.names.json"]),
+             argv=["--build", str(pkg), "--out", str(bundle_out)],
+             out=[bundle_out / "wordclass.bin",
+                  bundle_out / "wordclass.names.json"]),
         dict(n=14, name="census", script=SC / "coverage_census.py", cwd=SC,
              dep="lmdb", argv=["--db", str(lmdb)],
              out=[pkg / "coverage_census.json"], gate=True),
@@ -421,17 +517,64 @@ def _preflight_device(device: str, allow_cpu: bool) -> None:
         "    Then re-run. To proceed on CPU anyway (hours, not minutes): --allow-cpu\n")
 
 
+def _subdb_present(lmdb_path: Path, subdb: bytes) -> bool:
+    """Is this named sub-db actually in the environment right now?"""
+    try:
+        import lmdb as _l
+        env = _l.open(str(lmdb_path), readonly=True, max_dbs=32, lock=False)
+    except Exception:                                            # noqa: BLE001
+        return True          # cannot tell -> do not claim it is missing
+    try:
+        with env.begin() as t:
+            return any(bytes(k) == subdb for k, _ in t.cursor())
+    finally:
+        env.close()
+
+
 def _stale(stage, pkg, ledger, dict_sig) -> tuple[bool, str]:
     rec = ledger.get(str(stage["n"]))
     for o in stage["out"]:
         if not Path(o).exists():
             return True, f"output missing: {Path(o).name}"
+
+    # THE CHANNEL ITSELF IS AN OUTPUT. Checked before anything in the ledger.
+    #
+    # THE BUG THIS CLOSES (elo-v5, 2026-09-11, caught by the coverage census):
+    # `build_dictionary.py` is core + cascade. Re-running it RE-RUNS THE CORE BUILD,
+    # which recreates dictionary.lmdb -- writing forward/reverse/facets and destroying
+    # `epa` and `vfacets`. The rebuild is DETERMINISTIC, so `dict_sig` did not move, so
+    # this function reported "up to date" for stages 3 and 13 and the cascade skipped
+    # them. The build finished green with two channels gone.
+    #
+    # Every check below keys on a PROXY for the artifact -- the dictionary's signature,
+    # the script's mtime, the argv hash. None of them asks whether the thing the stage
+    # produces is still there. A stats sidecar in `out` survives the wipe, so even the
+    # output check above passes. Two mechanisms, no shared truth: the core build can
+    # destroy a channel without moving anything the ledger watches.
+    #
+    # Asking the LMDB is cheap and it is the only question that cannot be fooled by a
+    # deterministic rebuild.
+    _asset = STAGE_ASSET.get(stage["n"])
+    if _asset:
+        try:
+            from asset_registry import BY_NAME as _BN
+            _a = _BN.get(_asset)
+        except Exception:                                        # noqa: BLE001
+            _a = None
+        if _a is not None and _a.in_lmdb:
+            if not _subdb_present(pkg / "dictionary.lmdb", _a.subdb):
+                return True, (f"channel b'{_a.subdb.decode()}' ABSENT from the LMDB "
+                              f"(core rebuild wipes channels; dict_sig does not move)")
+
     if rec is None:
         return True, "never run"
     if rec.get("dict_sig") != dict_sig:
         return True, "dictionary changed"
-    scr = stage["script"]
-    if scr and Path(scr).exists() and Path(scr).stat().st_mtime > rec.get("script_mtime", 0):
+    # The generator's mtime, whether it is a script path or a module entry point. A
+    # module stage must go stale when ITS source changes too, or the morph sweep would
+    # be re-run only when the dictionary moved -- never when the sweep itself was fixed.
+    _, _, scr = _stage_target(stage)
+    if scr and scr.exists() and scr.stat().st_mtime > rec.get("script_mtime", 0):
         return True, "script updated"
     # ARGV IS PART OF THE INPUT. A stage whose ARGUMENTS changed is stale even
     # when its inputs and script have not.
@@ -465,26 +608,106 @@ def _argv_sig(stage) -> str:
     return hashlib.sha256("\x1f".join(norm).encode()).hexdigest()[:16]
 
 
+def _child_env() -> dict:
+    """The environment stage subprocesses run in, with an ABSOLUTE PYTHONPATH.
+
+    THE BUG (elo-v5, 2026-09-11). Stage 17 failed with `No module named
+    'elo_reasoning'` while the parent's own `find_spec` for the same module SUCCEEDED --
+    so the PENDING guard passed and the run then died. Cause: the operator's PYTHONPATH
+    held RELATIVE entries (`..\\packages\\elo-reasoning\\src`) resolved against the
+    shell's cwd, and stages run with `cwd=` set per stage. The parent, in
+    semantic_compression/, resolved it correctly; the child, in the repo root, resolved
+    it one directory too high.
+
+    A relative path is not a location, it is a location PLUS a vantage point -- and the
+    cascade deliberately changes vantage point per stage. So: resolve everything the
+    stages need to absolute paths here, and prepend rather than replace so an operator's
+    own entries still apply.
+
+    This is also why the import CHECK and the RUN disagreed: they were asking from
+    different directories. Making the child's path explicit fixes both halves.
+    """
+    env = dict(os.environ)
+    roots = [SC, ROOT]
+    for pkg_dir in sorted((ROOT / "packages").glob("elo-*/src")):
+        roots.append(pkg_dir)
+    abs_paths = [str(p) for p in roots if p.is_dir()]
+    existing = env.get("PYTHONPATH", "")
+    # Absolutise any relative entry the operator supplied, interpreted against the cwd
+    # this process was started in -- which is what they meant by it.
+    for part in existing.split(os.pathsep):
+        if not part:
+            continue
+        p = Path(part)
+        abs_paths.append(str(p if p.is_absolute() else (Path.cwd() / p).resolve()))
+    seen, out = set(), []
+    for p in abs_paths:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    env["PYTHONPATH"] = os.pathsep.join(out)
+    return env
+
+
+def _stage_target(stage) -> tuple:
+    """(argv-prefix, label, source-file) for a stage, whether it names a SCRIPT or a
+    MODULE.
+
+    A stage may be `script=<path>` or `module="pkg.mod"`. The module form exists so the
+    cascade can call a build-time library in another package -- `elo_reasoning.
+    morphology.sweep` bakes the `morph` channel -- WITHOUT reaching into that package by
+    file path. Reaching by path is what put three dictionary exporters in
+    `ELO-Browser/tools/`, and an entry point is the difference between calling a tool and
+    depending on someone's directory layout.
+
+    `source-file` is still a real path, because the staleness ledger keys on the
+    generator's mtime and a stage whose code changed must re-run either way."""
+    mod = stage.get("module")
+    if mod:
+        # Resolve against the CHILD's path, not this process's. Asking locally is what
+        # let stage 17 report importable and then fail in the subprocess -- the parent and
+        # the child had different working directories and therefore different relative
+        # PYTHONPATH entries. The check must use the environment the stage will actually
+        # run in.
+        origin = None
+        try:
+            _saved = sys.path[:]
+            sys.path[:] = [p for p in _child_env()["PYTHONPATH"].split(os.pathsep)
+                           if p] + _saved
+            try:
+                spec = importlib.util.find_spec(mod)
+            finally:
+                sys.path[:] = _saved
+            origin = Path(spec.origin) if (spec and spec.origin) else None
+        except (ImportError, ValueError, AttributeError):
+            origin = None
+        return ([PY, "-m", mod], f"-m {mod}", origin)
+    scr = stage.get("script")
+    p = Path(scr) if scr is not None else None
+    return ([PY, str(scr)] if p else None, p.name if p else "", p)
+
+
 def _run(stage, ledger, dict_sig, dry) -> str:
-    scr = stage["script"]
-    if scr is None:
+    prefix, label, src = _stage_target(stage)
+    if prefix is None:
         return "PENDING (no script; " + stage.get("note", "external") + ")"
-    if not Path(scr).exists():
-        return f"PENDING (missing {Path(scr).name})"
+    if src is None or not src.exists():
+        return (f"PENDING (module not importable: {stage['module']})"
+                if stage.get("module") else f"PENDING (missing {label})")
     if stage["dep"] and stage["dep"] != "lmdb" and not _have(stage["dep"]):
         return f"SKIPPED (missing dep: {stage['dep']})"
     cmds = stage.get("multi") or [stage["argv"]]
     if dry:
         for c in cmds:
-            print(f"      would run: {Path(scr).name} {' '.join(c)}  (cwd={stage['cwd'].name})")
+            print(f"      would run: {label} {' '.join(c)}  (cwd={stage['cwd'].name})")
         return "DRY"
     for c in cmds:
-        r = subprocess.run([PY, str(scr), *c], cwd=str(stage["cwd"]))
+        r = subprocess.run([*prefix, *c], cwd=str(stage["cwd"]), env=_child_env())
         if r.returncode != 0:
             return f"FAILED (exit {r.returncode})"
     ledger[str(stage["n"])] = {"name": stage["name"], "dict_sig": dict_sig,
                                "ran_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                               "script_mtime": Path(scr).stat().st_mtime,
+                               "script_mtime": src.stat().st_mtime,
                                # what the stage was RUN WITH -- see _stale()
                                "argv_sig": _argv_sig(stage),
                                "argv": [str(a) for a in (stage.get("argv") or [])
@@ -513,8 +736,14 @@ def main() -> None:
                          "unless --allow-cpu.")
     ap.add_argument("--allow-cpu", action="store_true",
                     help="proceed on CPU when CUDA is unavailable (hours, not minutes)")
-    ap.add_argument("--browser-out", default=None,
-                    help="O3: browser asset dir (default: <root>/dictionary/<name>/)")
+    # --bundle-out, with --browser-out kept as a deprecated alias so existing runbooks
+    # and scripts do not break. The name mattered: while the flag said "browser", the
+    # destination being a consumer's tree read as intentional rather than as the
+    # ownership violation it was.
+    ap.add_argument("--bundle-out", "--browser-out", dest="bundle_out", default=None,
+                    help="exact bundle staging dir (default: <build>/bundle/). The "
+                         "cascade no longer writes into ELO-Browser's tree; the browser "
+                         "installs a PUBLISHED bundle from dist/.")
     ap.add_argument("--release", default=None, help="O4: stamp release (default: from spec_meta)")
     ap.add_argument("--status", default=None, help="O4: stamp status (default: from spec_meta)")
     # --- upgrading an OLDER build with a NEWER asset (2026-09-10, Paul) ---------
@@ -572,6 +801,9 @@ def main() -> None:
             "content_change": a.bump_revision,
             "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             "id_space_unchanged": "asserted after the run",
+            # What this revision REPLACED. Taken before any stage runs, because after
+            # they run it is gone -- see _channel_census.
+            "before": _channel_census(pkg / "dictionary.lmdb"),
         })
         if not a.dry_run:
             mpath.write_text(json.dumps(man, indent=2), encoding="utf-8")
@@ -663,6 +895,10 @@ def main() -> None:
                 "revision": rev,
                 "utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                 "id_space_unchanged": "asserted after the run",
+                # See the --bump-revision path: taken BEFORE any stage runs. An asset
+                # addition re-runs sibling stages too, so this path needs it just as
+                # much -- r2 added `wordclass` and silently rebuilt it in the same run.
+                "before": _channel_census(pkg / "dictionary.lmdb"),
             }
             log.append(open_entry)
         _bumped_here = (open_entry.get("added") is None)
@@ -688,7 +924,11 @@ def main() -> None:
     smeta = man.get("spec_meta", {})
 
     # O3: per-dictionary browser output.
-    browser_out = Path(a.browser_out).resolve() if a.browser_out else BROWSER_DICT_ROOT / pkg.name
+    # THE BUNDLE STAGES IN THE BUILD PACKAGE, not in the browser's tree (2026-09-11).
+    # See export_browser_assets.DEFAULT_OUT_ROOT for why. The browser INSTALLS a
+    # published bundle from dist/; the cascade no longer writes into its repository.
+    # `--browser-out` still overrides, for anyone who needs the old destination.
+    bundle_out = Path(a.bundle_out).resolve() if a.bundle_out else pkg / "bundle"
     # O4: stamp release/status from spec_meta unless overridden.
     stamp_release = a.release or smeta.get("release") or (
         f"v{smeta['version']}" if smeta.get("version") else "v0")
@@ -698,6 +938,46 @@ def main() -> None:
     ledger = json.loads(lpath.read_text()) if lpath.exists() else {}
     dict_sig = _sig(pkg / "dictionary.lmdb")
     only = {int(x) for x in a.only.split(",")} if a.only else None
+
+    # EVERY DECLARED DEP, BEFORE ANY STAGE RUNS.
+    #
+    # `_preflight_device` checked CUDA and nothing else, so a missing
+    # `sentence_transformers` let stage 5 report SKIPPED -- which is not FAILED, so the
+    # abort-on-failure guard ignored it -- and the run continued to stage 8, which died
+    # with "dictionary.denotative.index not built". The true cause was four stages back
+    # and knowable in 50ms. (elo-v5, 2026-09-11: first full-build attempt, lost at
+    # stage 8.)
+    #
+    # A SKIPPED stage is not harmless. Later stages consume its outputs, so skipping one
+    # produces an INCOMPLETE BUILD that looks like it is progressing. Refuse up front and
+    # name the install.
+    if not a.dry_run:
+        _sel = [st for st in _stages(pkg, a.device, bundle_out, stamp_release,
+                                     stamp_status)
+                if (only is None or st["n"] in only)
+                and (a.frm is None or st["n"] >= a.frm)
+                and (STAGE_ASSET.get(st["n"]) is None
+                     or STAGE_ASSET[st["n"]] in enabled)]
+        _missing = {}
+        for st in _sel:
+            d = st.get("dep")
+            if d and d != "lmdb" and not _have(d):
+                _missing.setdefault(d, []).append(f"{st['n']} {st['name']}")
+        if _missing:
+            _pip = {"sentence_transformers": "sentence-transformers",
+                    "faiss": "faiss-cpu  (or faiss-gpu)",
+                    "numpy": "numpy", "spacy": "spacy", "tqdm": "tqdm"}
+            lines = [f"    {d:24} needed by stage(s) {', '.join(s)}"
+                     f"   ->  pip install {_pip.get(d, d)}"
+                     for d, s in sorted(_missing.items())]
+            raise SystemExit(
+                "\n[preflight] missing dependencies for stages this run would execute:\n"
+                + "\n".join(lines)
+                + f"\n\n    interpreter: {PY}\n"
+                  "\n    Refusing BEFORE any stage runs. A skipped stage is not harmless:"
+                  "\n    later stages consume its outputs, so the run would continue and"
+                  "\n    fail somewhere downstream with an error about a missing file"
+                  "\n    rather than a missing package.\n")
 
     # Check the GPU before spending any time on stages 1-4.
     if not a.dry_run:
@@ -711,7 +991,7 @@ def main() -> None:
 
     print(f"assets for {pkg.name}   dict_sig={dict_sig}   suite={sorted(enabled)}"
           + ("   [DRY RUN]" if a.dry_run else ""))
-    print(f"  browser_out={browser_out}   stamp={stamp_release}/{stamp_status}")
+    print(f"  bundle_out={bundle_out}   stamp={stamp_release}/{stamp_status}")
     # THE OTHER HALF OF THE REGISTRY CHECK. `publish_dictionary` refuses when a declared
     # asset does not ship; this refuses when a declared asset has no way to be BUILT.
     # `templates` is why: declared in the manifest as an artifact for weeks, carried in
@@ -730,6 +1010,24 @@ def main() -> None:
             + "".join(f"    git mv ELO-Browser/tools/{n} semantic_compression/{n}\n"
                       for n in _missing_exp))
 
+    # NO STAGE MAY BE GATED BY A NAME THE SUITE DOES NOT KNOW.
+    #
+    # `wordclass`, `morph` and `census` were each filed under a STAGE_ASSET name absent
+    # from build_suite.ORDER, so the suite filter skipped them on every run and the
+    # stages -- correct, tested, committed -- never executed. Three times is a missing
+    # check, not three oversights. A name here that the suite cannot resolve is now a
+    # hard stop, because the failure mode is silence: the stage table prints
+    # "off (not in suite)" and a build finishes green without the asset.
+    _unknown = sorted({v for v in STAGE_ASSET.values() if v}
+                      - set(build_suite.ORDER))
+    if _unknown:
+        raise SystemExit(
+            f"STAGE_ASSET gates stage(s) on {', '.join(_unknown)}, which build_suite."
+            f"ORDER does not contain -- those stages would silently never run. Add the "
+            f"asset to build_suite (ORDER/DEPS/IDENTITY_KIND/PRESETS), or set the "
+            f"stage's STAGE_ASSET entry to None if it is a measurement rather than an "
+            f"asset.")
+
     from asset_registry import ASSETS as _ASSETS
     _built = {v for v in STAGE_ASSET.values() if v}
     _orphan = [a.name for a in _ASSETS
@@ -743,7 +1041,7 @@ def main() -> None:
 
     print(f"{'#':>2}  {'stage':<20}{'state':<26}action")
     print("-" * 70)
-    for st in _stages(pkg, a.device, browser_out, stamp_release, stamp_status):
+    for st in _stages(pkg, a.device, bundle_out, stamp_release, stamp_status):
         # STAGE 9 (registry) IS EXEMPT FROM FILTERING. It is how the manifest learns
         # what a run changed; skipping it under --only/--from is how the manifest
         # lied twice (epa.present=false while epa.bin shipped; vfacets invisible).
@@ -794,6 +1092,41 @@ def main() -> None:
     if not a.dry_run:
         _write_ledger(pkg, ledger)
         print(f"\nledger -> {lpath.name}")
+
+    # A BUILD MAY NOT END HAVING LOST A CHANNEL IT DECLARED.
+    #
+    # The `_stale` check re-runs a wiped channel's stage, which fixes the cause. This
+    # catches the case where it was NOT re-run -- `--only`/`--from` filtered the stage
+    # out, or a stage failed, or some future path wipes a channel after its stage ran.
+    #
+    # On elo-v5 the loss of `epa` and `vfacets` survived three runs and was found by the
+    # coverage census at the very end, which only ran because a suite-name bug was fixed
+    # the same day. Nothing else in the cascade or the publish gates asked the question.
+    # Silent channel loss is the worst failure this system has: the bundle exported
+    # BEFORE the wipe is internally consistent, so the .bin files and their headers all
+    # agree while the dictionary they came from no longer carries the channel.
+    if not a.dry_run:
+        from asset_registry import ASSETS as _AR
+        _lost = []
+        for _a in _AR:
+            if not _a.in_lmdb or _a.unbuilt_reason:
+                continue
+            if _a.name not in enabled and _a.name not in ("forward", "reverse"):
+                continue
+            if not _subdb_present(pkg / "dictionary.lmdb", _a.subdb):
+                _lost.append(_a.name)
+        if _lost:
+            sys.exit(
+                f"\n[STOP] the build declares {', '.join(_lost)} and the LMDB does not "
+                f"carry {'it' if len(_lost) == 1 else 'them'}.\n"
+                f"  A declared channel is missing from the finished artifact. Re-run the "
+                f"producing stage(s) with --force; if this happened during a full "
+                f"`build_dictionary` run, the CORE build recreated the LMDB and wiped "
+                f"them.\n"
+                f"  Refusing to report success: a bundle exported before the wipe is "
+                f"internally consistent, so nothing downstream would notice.")
+        print(f"channels present: "
+              f"{', '.join(a_.name for a_ in _AR if a_.in_lmdb and not a_.unbuilt_reason and _subdb_present(pkg / 'dictionary.lmdb', a_.subdb))}")
 
     # THE INVARIANT THAT MAKES AN IN-PLACE ASSET ADDITION SAFE.
     #

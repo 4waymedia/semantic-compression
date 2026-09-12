@@ -133,6 +133,10 @@ NUMBER = {'UNKNOWN': 0, 'SG': 1, 'PL': 2, 'INVARIANT': 3}
 TRI = {'UNKNOWN': 0, 'NO': 1, 'YES': 2}
 PROPER_SHIFT = 2;  PROPER_MASK = 0b00001100
 REQDET_SHIFT = 0;  REQDET_MASK = 0b00000011
+# byte 2's inherent_number field, named rather than open-coded -- PASS 2 clears exactly
+# these two bits and nothing else, and `& ~0b00110000` at the call site is the kind of
+# literal that goes wrong silently when a layout moves.
+NUMBER_SHIFT = 4;  NUMBER_MASK_B2 = 0b00110000
 
 
 def unpack_wordclass(rec: bytes) -> dict:
@@ -614,15 +618,36 @@ def _corpus_provenance(corpus_freq, corpus_text) -> dict:
     }
 
 
-def _singulars_of(low: str) -> set:
-    """Candidate singular forms for a plural surface."""
-    out: set = set()
+def _singulars_of(low: str) -> list:
+    """Candidate singular forms for a plural surface, IN PRECEDENCE ORDER.
+
+    A LIST, and THE only copy. This returned a `set` and PASS 2 had its own inline
+    ordered version, so the same rule existed twice and only one of them was
+    order-stable -- which is how a duplicate becomes a bug rather than just clutter.
+
+    Order is linguistic, most specific first:
+        1. -ies -> -y        `parties` -> `party`
+        2. -es, drop 's'     `roses`   -> `rose`   (the -e stem is the likelier word)
+        3. -es, drop 'es'    `roses`   -> `ros`    (only if `rose` did not resolve)
+        4. -s,  drop 's'     `dogs`    -> `dog`
+    Dedup preserves first position, so a candidate proposed by two rules keeps the
+    narrower rule's precedence.
+
+    NOT a morphology oracle. These are string guesses; the validated same-lemma verdicts
+    live in the `morph` channel (asset_registry), which is what a consumer should ask."""
+    out: list = []
+
+    def _c(w: str) -> None:
+        if w not in out:
+            out.append(w)
+
     if low.endswith('ies') and len(low) > 4:
-        out.add(low[:-3] + 'y')
+        _c(low[:-3] + 'y')
     if low.endswith('es') and len(low) > 3:
-        out.add(low[:-2]); out.add(low[:-1])
+        _c(low[:-1])
+        _c(low[:-2])
     if low.endswith('s') and not low.endswith('ss') and len(low) > 2:
-        out.add(low[:-1])
+        _c(low[:-1])
     return out
 
 
@@ -710,6 +735,28 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
                 classes.add('VERB'); conf = 'HEURISTIC'
             # layer 2b -- INFLECTED FORM: inherit the stem's verb evidence.
             if 'VERB' not in classes:
+                # ALL STEMS, STRONGEST EVIDENCE WINS. No `break`.
+                #
+                # THE BUG (elo-v5, 2026-09-11). This loop iterated `stems_of()` -- a SET
+                # of strings -- and broke on the first stem that matched, with the two
+                # break paths assigning DIFFERENT confidences: frequency-backed evidence
+                # gives CORPUS, mere presence-in-vocab gives HEURISTIC. A surface with
+                # two stems in the vocabulary, one strong and one weak, therefore got
+                # whichever the set happened to yield first -- and string hash order
+                # varies per process.
+                #
+                # Measured: two runs over one corpus moved 4 records between CORPUS and
+                # HEURISTIC (36,918 / 226,590 vs 36,922 / 226,586) and changed
+                # wordclass.bin's sha. The CLASS histogram was identical both times,
+                # which is why it hid: the channel looked stable on every summary anyone
+                # was reading.
+                #
+                # Fixing the ORDER would only make the arbitrary choice repeatable.
+                # Evidence does not care which stem we looked at first: if ANY stem
+                # carries frequency-backed evidence then this surface has
+                # frequency-backed evidence. Collect, then decide -- order-independent by
+                # construction, and no future `break` can reintroduce it.
+                _stem_strong = _stem_weak = False
                 for stem in stems_of(low):
                     if stem not in vocab:
                         continue
@@ -718,14 +765,15 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
                     sc_oth = (max((freq[x] for x in sed), default=0) >= 2
                               or max((freq[x] for x in ss), default=0) >= 2)
                     if sc_ing and sc_oth:
-                        classes.add('VERB')
+                        _stem_strong = True
+                    elif bool(sing & vocab) and (bool(sed & vocab) or bool(ss & vocab)):
+                        _stem_weak = True
+                if _stem_strong or _stem_weak:
+                    classes.add('VERB')
+                    if _stem_strong:
                         conf = 'CORPUS' if conf in ('UNKNOWN', 'HEURISTIC') else conf
-                        break
-                    if bool(sing & vocab) and (bool(sed & vocab) or bool(ss & vocab)):
-                        classes.add('VERB')
-                        if conf == 'UNKNOWN':
-                            conf = 'HEURISTIC'
-                        break
+                    elif conf == 'UNKNOWN':
+                        conf = 'HEURISTIC'
             # layer 3 -- derivational morphology (independent evidence, so it ADDS)
             m = morph_class(low, vocab, freq)
             if m:
@@ -934,61 +982,74 @@ def build(lmdb_path: Path, corpus_freq: Path | None = None,
         if cur[1] and not _singular_is_ambivalent(surface, resolved):
             continue
         low = surface.lower()
-        sings = set()
-        if low.endswith('ies') and len(low) > 4:
-            sings.add(low[:-3] + 'y')
-        if low.endswith('es') and len(low) > 3:
-            sings.add(low[:-2]); sings.add(low[:-1])
-        if low.endswith('s') and not low.endswith('ss') and len(low) > 2:
-            sings.add(low[:-1])
+        # CANDIDATE SINGULARS, IN AN EXPLICIT ORDER -- this was a `set`, and the loop
+        # below `break`s on the first one that resolves.
+        #
+        # THE BUG THAT MADE THIS BUILD NON-REPRODUCIBLE (found 2026-09-10). A set of
+        # strings iterates in an order that depends on PYTHONHASHSEED, which Python
+        # randomises per process. So for any plural with MORE THAN ONE plausible
+        # singular already resolved, which one it inherited from was an arbitrary draw
+        # per run:
+        #
+        #     roses -> {'ros', 'rose'}        lies -> {'ly', 'li', 'lie'}
+        #     fines -> {'fin', 'fine'}        bases -> {'bas', 'base'}
+        #
+        # Measured: three runs of this builder over the same corpus and the same LMDB
+        # produced three different channels -- 8dadf64e, 6c9d52c7 (published in
+        # elo-browser-v04r2) and 8d7989aa. The non-absent count held at EXACTLY 274,202
+        # across all three, which is the signature: the same plurals inherit either way,
+        # only the class they inherit moves. A count that does not change is what let
+        # this hide.
+        #
+        # ORDER IS LINGUISTIC, MOST SPECIFIC FIRST, and it is a list so it is stable:
+        #   1. -ies  -> -y        `parties` -> `party`, the narrowest rule
+        #   2. -es,  drop 's'     `roses`   -> `rose`  (the -e stem is the likelier word)
+        #   3. -es,  drop 'es'    `roses`   -> `ros`   (only if `rose` did not resolve)
+        #   4. -s,   drop 's'     `dogs`    -> `dog`
+        # Dedup preserves first position, so a candidate proposed by two rules keeps the
+        # precedence of the narrower one.
+        # ONE definition of the rule: `_singulars_of`. This block was an inline copy,
+        # which left two versions of the same logic in one file -- and only one of them
+        # ordered. A duplicate is clutter until the copies disagree; then it is a bug.
+        sings = _singulars_of(low)
+        # NARROWED 2026-09-11, on integration's ruling. PASS 2 now writes exactly ONE
+        # field: `inherent_number = PL`. It no longer carries `proper`, countability,
+        # `requires_determiner`, the class mask or the dominant class across the link.
+        #
+        # WHY. The link is a GUESS. The dictionary holds `rose`, `roses`, `rosy` and
+        # possibly `ros` as independent surfaces with no morphological relation encoded
+        # between them, so this loop asks "does some string-surgery candidate happen to
+        # exist?" and then copied a whole classification across that coincidence. An
+        # inherited class from a guessed link is not a weaker answer than UNKNOWN -- it
+        # is a CONFIDENTLY WRONG one, and UNKNOWN is honest. Coverage is not accuracy.
+        #
+        # WHAT THE LOOKUP IS STILL FOR. It is a PLAUSIBILITY FILTER, and a load-bearing
+        # one: it is what stops `analysis`, `bonus` and `chaos` being marked plural,
+        # because `analysi`, `bonu` and `chao` are not surfaces. Shape alone cannot tell
+        # a plural from a singular ending in -s; the existence of a plausible singular
+        # can. So the lookup stays and its ANSWER is discarded -- only the fact that one
+        # existed is used.
+        #
+        # WHAT REPLACES THE INHERITANCE. The `morph` channel (asset_registry) --
+        # validated same-lemma verdicts, keyed on surface pairs, adjudicated by the
+        # embedding where suffix rules cannot decide. When a build carries it, this loop
+        # should ask the map instead of guessing, and treat two decided candidates as
+        # genuine ambiguity rather than a race. Not wired yet: the map is not in a build.
         for sg in sings:
             src = resolved.get(sg)
             if not src or not src[1]:
                 continue
-            _dom, _mask, _conf, _b2 = src
-            # Inherit ONLY the nominal reading. A plural is a noun-number form; the
-            # singular's VERB reading says nothing about this surface being a verb
-            # (`stoves` is not a verb because `stove` can be one). The exception is
-            # an AMBIVALENT singular, where both readings are genuinely live and
-            # suppressing one would overclaim.
-            inherit = _mask & MASK_BIT['NOUN']
-            if bin(_mask).count('1') > 1:
-                inherit = _mask
-            if not inherit:
-                continue
-            inherit |= cur[1]          # UNION -- never discard what the surface earned
-            dom2 = 'NOUN' if inherit & MASK_BIT['NOUN'] else _dom
-            amb2 = bin(inherit).count('1') > 1
-            if amb2:
-                dom2 = 'UNKNOWN'               # inherited ambivalence is not a claim
-            # Keep the surface's own confidence when it had one: it earned that from
-            # evidence, and inheritance adding a reading does not weaken it.
-            conf2 = cur[2] if cur[1] else 'HEURISTIC'
-            b0_2 = ((CLASS[dom2] << CLASS_SHIFT) | (CONF[conf2] << CONF_SHIFT)
-                    | (AMBIVALENT if amb2 else 0))
-            # BYTE 2 for an inherited plural. Two bugs met here:
-            #   * the carried mask was `_b2 & 0b00111100`, written for the v1 layout.
-            #     Under v2 those bits are inherent_number + proper, so countability and
-            #     requires_determiner were being silently dropped.
-            #   * more basic: byte 2 is computed in PASS 1, but a plural only becomes a
-            #     NOUN in PASS 2 -- so `dogs` never entered the noun branch at all and
-            #     came out with countability and requires_determiner UNKNOWN.
-            # A plural is a count noun that does NOT require a determiner ("dogs bark"),
-            # and its number is PL by construction, so all three are known here.
-            _b2n = _b2 & 0b00001100                       # keep the singular's `proper`
-            _b2n |= NUMBER['PL'] << 4
-            _sg_cnt = (_b2 >> 6) & 0b11
-            if _sg_cnt in (COUNTABILITY['COUNT'], COUNTABILITY['BOTH']):
-                _b2n |= COUNTABILITY['COUNT'] << 6
-                _b2n |= TRI['NO'] << REQDET_SHIFT         # bare plurals are grammatical
-            elif _sg_cnt == COUNTABILITY['MASS']:
-                _b2n |= COUNTABILITY['MASS'] << 6
-                _b2n |= TRI['NO'] << REQDET_SHIFT
-            out[idx_of[surface]] = (idb, REC.pack(b0_2, inherit, _b2n))
-            resolved[surface] = (dom2, inherit, conf2, _b2)
-            stats['plural_inherited'] += 1
-            stats[f'class_{dom2}'] += 1
-            stats['class_UNKNOWN'] -= 1
+            # A plausible singular EXISTS. That is the whole finding, and the only one
+            # this loop is entitled to: this surface is a plural. Its class, proper-ness
+            # and countability remain whatever its OWN evidence earned in PASS 1.
+            _b2n = (cur[3] & ~NUMBER_MASK_B2) | (NUMBER['PL'] << 4)
+            if _b2n == cur[3]:
+                break                       # already PL; nothing to write
+            b0_keep = ((CLASS[cur[0]] << CLASS_SHIFT) | (CONF[cur[2]] << CONF_SHIFT)
+                       | (AMBIVALENT if bin(cur[1]).count('1') > 1 else 0))
+            out[idx_of[surface]] = (idb, REC.pack(b0_keep, cur[1], _b2n))
+            resolved[surface] = (cur[0], cur[1], cur[2], _b2n)
+            stats['plural_number_marked'] += 1
             break
 
     if not dry_run:

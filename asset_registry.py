@@ -66,8 +66,20 @@ class Asset:
     contract_file: str | None = None
     #: meta key carrying this asset's format version, when it stamps one.
     format_version_key: str | None = None
+    #: Further files this asset ships beyond `bin_file`. `morph_map` ships a verdict
+    #: map AND a veto set; both are required to reproduce its predicate, so a bundle
+    #: with one and not the other is incomplete rather than smaller.
+    extra_files: tuple = ()
     #: True once the asset is expected in a published bundle.
     ships: bool = False
+    #: Dense or CSR over the vocab index n, so `count == vocab_entries` (gate G1) and an
+    #: 80-byte framed header applies. FALSE for a sparse asset: `morph_map` is keyed on
+    #: PAIRS of surfaces, so it has no n and no per-n count, and asserting one would be
+    #: comparing a pair count to a vocabulary size.
+    n_parallel: bool = True
+    #: Carries its own identity inside the file (a `meta` block) rather than in a framed
+    #: binary header. Such an asset needs no separate contract file to be decodable.
+    self_describing: bool = False
     #: Every build must carry it; a build without it is incomplete, not minimal.
     required: bool = False
     #: Declared-but-deliberately-unbuilt assets name their reason here. A registry
@@ -80,11 +92,22 @@ class Asset:
         return self.subdb is not None
 
     @property
+    def framed(self) -> bool:
+        """Carries the 80-byte magic+count+fingerprint header the .bin channels share.
+        A JSON asset does not, and asking it for one is how a reader invents an offset."""
+        return self.wire_magic is not None
+
+    @property
     def decodable_from_bundle(self) -> bool:
         """Ships WITH the geometry needed to read it. `facets` did; `vfacets` shipped
-        without its names file until 2026-09-10 and could not be read from `dist/`."""
+        without its names file until 2026-09-10 and could not be read from `dist/`.
+
+        Three ways to qualify: a contract file, a self-describing container, or the
+        trivially-shaped `<fff` epa record. Everything else ships data a consumer cannot
+        decode without reaching outside the bundle."""
         return bool(self.ships and self.bin_file
-                    and (self.contract_file or self.record_width == 12))
+                    and (self.contract_file or self.self_describing
+                         or self.record_width == 12))
 
 
 # --------------------------------------------------------------------------------
@@ -158,6 +181,33 @@ ASSETS: tuple[Asset, ...] = (
         note="format v3: class + confidence + ambivalent, class mask, tri-state "
              "features. LOCKED 2026-08-29 and adopted by the Verbalizer -- and it has "
              "never shipped in a bundle. This entry is what changes that.",
+    ),
+    Asset(
+        # `morph` -- the ASSET. `morph_map.json` is one of its files, and naming the
+        # asset after a file is how a second file (morph_vetoes.bin) ends up looking
+        # like a different thing. The manifest publishes `morph`.
+        name="morph", subdb=None, record_width=None,
+        absent="a PAIR with no entry is UNDECIDED -- not 'these are unrelated'. The map "
+               "holds the residue suffix rules cannot settle, adjudicated by the "
+               "embedding; a missing pair means unsettled or never scored. Treating "
+               "absence as 'not the same lemma' is the absent-vs-zero error for this "
+               "asset, and it is the one a consumer will reach for first.",
+        bin_file="morph_map.json",
+        extra_files=("morph_vetoes.bin",),
+        contract_file=None,      # self-describing: `meta` rides inside the json
+        ships=True,
+        n_parallel=False,        # keyed on PAIRS of surfaces; there is no n
+        self_describing=True,
+        note="PAIRWISE same-lemma verdicts, keyed on SURFACES not ids (Paul, "
+             "2026-08-03) so a rebuild does not invalidate it: {'meta': {...}, "
+             "'decided': {'a|b': bool}}. Generator + tiered predicate live in "
+             "elo_reasoning.morphology.lemma; the sweep bakes this. Carries its own "
+             "build+bundle pin, so staleness is detectable (lemma.verify_pin).\n"
+             "THIS IS THE VALIDATED REPLACEMENT for ad-hoc singularisation. "
+             "wordclass_builder PASS 2 still guesses a singular by string surgery and "
+             "accepts the first candidate that exists -- the exact bug this asset was "
+             "built to end (lens/len, physics/physic, roses/ros). PASS 2 must consume "
+             "this map.",
     ),
     Asset(
         name="templates", subdb=b"templates", record_width=None,
@@ -257,6 +307,18 @@ def _selftest() -> int:
           b"ELOWCL\x01\x00")
     check("wordclass is in the manifest kinds", "wordclass" in identity_kinds(), True)
     check("templates is NOT a bundle channel", "templates" in bundle_channels(), False)
+
+    print("\nthe morph asset, declared 2026-09-11:")
+    check("morph is a bundle channel", "morph" in bundle_channels(), True)
+    check("morph is in the manifest kinds", "morph" in identity_kinds(), True)
+    check("morph ships its veto set too", BY_NAME["morph"].extra_files,
+          ("morph_vetoes.bin",))
+    check("morph is NOT n-parallel (keyed on surface PAIRS)",
+          BY_NAME["morph"].n_parallel, False)
+    check("morph is NOT framed (identity rides inside the json)",
+          BY_NAME["morph"].framed, False)
+    check("...and is still decodable from the bundle",
+          BY_NAME["morph"].decodable_from_bundle, True)
 
     print("\nchannels that ship without their geometry:")
     for n in undecodable():

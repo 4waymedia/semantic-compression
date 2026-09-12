@@ -41,7 +41,7 @@ from pathlib import Path
 
 # Dependency order (also the build order). Index in this list = stage order.
 ORDER = ["dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
-         "vectors", "browser", "wordclass", "templates"]
+         "vectors", "browser", "morph", "wordclass", "templates"]
 
 # Declaration deps: each asset requires these OTHER assets to also be enabled.
 DEPS: dict[str, list[str]] = {
@@ -60,7 +60,15 @@ DEPS: dict[str, list[str]] = {
     # wordclass: distributional evidence over the books corpus + the frequency list.
     # Depends on `browser` only for the EXPORT half (stage 16 needs the vocab json that
     # defines n); the build half (stage 15) needs the dictionary alone.
-    "wordclass":   ["dictionary", "browser"],
+    # morph: the validated same-lemma map. Needs `vectors` (the sweep adjudicates the
+    # residue suffix rules cannot settle against the 768-d space) and `browser` (it
+    # stamps the bundle's identity into the map so staleness is detectable).
+    "morph":       ["dictionary", "vectors", "browser"],
+    # wordclass declares `morph` because PASS 2's plural handling should read a
+    # VALIDATED link rather than guess a singular by string surgery. Declared now, in
+    # the suite, so a full build produces morph BEFORE wordclass and the consumption can
+    # land without a second ordering change.
+    "wordclass":   ["dictionary", "browser", "morph"],
     "templates":   ["dictionary"],
 }
 
@@ -68,7 +76,8 @@ DEPS: dict[str, list[str]] = {
 IDENTITY_KIND: dict[str, str | None] = {
     "dictionary": "dictionary", "facets": "facets", "meta": "meta",
     "epa": "epa", "vfacets": "vfacets", "meta_layer2": "meta", "vectors": None,
-    "browser": None, "wordclass": "wordclass", "templates": "templates",
+    "browser": None, "wordclass": "wordclass", "morph": "morph",
+    "templates": "templates",
 }
 
 PRESETS: dict[str, set[str]] = {
@@ -79,8 +88,11 @@ PRESETS: dict[str, set[str]] = {
     # hand-built -- reported "off (not in suite)" and skipped on EVERY run. The stage
     # existed, was correct, and never executed. That is the most expensive shape of this
     # bug: a fix that looks landed.
+    # `full` MEANS FULL. Every asset the registry ships. `wordclass` was missing here
+    # until 2026-09-10, so the stage built to produce it reported "off (not in suite)"
+    # and skipped on every run; `morph` is added now rather than repeating that.
     "full":     {"dictionary", "facets", "meta", "epa", "vfacets", "meta_layer2",
-                 "vectors", "browser", "wordclass"},
+                 "vectors", "browser", "wordclass", "morph"},
 }
 
 RESERVED = {"templates"}          # System 2; never auto-enabled

@@ -62,26 +62,77 @@ def is_embeddable(s: str) -> bool:
     return bool(s) and bool(s.strip()) and len(s) <= MAX_SURFACE_LEN and any(c.isalpha() for c in s)
 
 
+def _meta_has(con, column: str) -> bool:
+    return any(r[1] == column for r in con.execute("PRAGMA table_info(meta)"))
+
+
+def _rank_order(con) -> list[str]:
+    """Frequency rank, read from the ID SPACE rather than from a frequency column.
+
+    WHY THIS EXISTS (2026-09-11, elo-v5's first full build died here). This function
+    queried `meta.frequency`, and `meta_builder.COLS` does not contain it -- so stage 5
+    failed with `no such column: frequency`. Nothing in the tree writes that column.
+    Two modules, one implied contract, and nothing keeping them equal; the same shape as
+    the nine asset lists, in SQL.
+
+    The fix does not invent a frequency source, because the dictionary ALREADY IS one.
+    Rank determines tier and id assignment (spec-tier-system: "one frequency-ranked
+    list; rank determines both tier and profile membership", and Tiers 1-3 are counter
+    outputs), so ordering by (tier, id) reproduces the corpus frequency order exactly,
+    from data meta.db already carries, with no new build input and no new column.
+
+    Deterministic: `id` is unique, so the sort is total and needs no tiebreak."""
+    rows = con.execute(
+        "SELECT surface, tier, id FROM meta "
+        "WHERE kind='word' AND utility='CONTENT'").fetchall()
+    pool = [(s, t if t is not None else 99, i or "") for s, t, i in rows
+            if is_embeddable(s)]
+    pool.sort(key=lambda r: (r[1], len(r[2]), r[2]))
+    return [s for s, _, _ in pool]
+
+
 def select_ranked(meta_db: str | Path) -> list[str]:
-    """Single-word CONTENT surfaces, ordered by DESCENDING frequency (ties broken
-    by surface, so the order is reproducible). Frequency-order = usage-order, so a
-    truncated build still covers the most-used words. Deterministic."""
+    """Single-word CONTENT surfaces in DESCENDING frequency order. Deterministic.
+
+    Frequency-order = usage-order, so a truncated build still covers the most-used
+    words. Prefers an explicit `frequency` column when one exists; otherwise derives the
+    same order from the id space -- and SAYS WHICH, because a silent fallback between
+    two ranking sources is how a build quietly embeds a different pool than the one its
+    fingerprint claims."""
     con = sqlite3.connect(str(meta_db))
     try:
-        rows = con.execute(
-            "SELECT surface, COALESCE(frequency, 0) FROM meta "
-            "WHERE kind='word' AND utility='CONTENT'").fetchall()
+        if _meta_has(con, "frequency"):
+            rows = con.execute(
+                "SELECT surface, COALESCE(frequency, 0) FROM meta "
+                "WHERE kind='word' AND utility='CONTENT'").fetchall()
+            pool = [(s, f) for s, f in rows if is_embeddable(s)]
+            pool.sort(key=lambda t: (-t[1], t[0]))
+            print("  rank source: meta.frequency")
+            return [s for s, _ in pool]
+        print("  rank source: id space (tier, id) -- meta.db carries no `frequency` "
+              "column; ids ARE the frequency ranking")
+        return _rank_order(con)
     finally:
         con.close()
-    pool = [(s, f) for s, f in rows if is_embeddable(s)]
-    pool.sort(key=lambda t: (-t[1], t[0]))
-    return [s for s, _ in pool]
+
+
+def _cov_str(c: float) -> str:
+    """Coverage as text. `-1.0` means NOT MEASURABLE on this build (no counts), and it
+    must not render as `-100.0%` -- a negative percentage is a number someone will try
+    to explain instead of reading as absent."""
+    return "n/a (no counts)" if c < 0 else f"{c*100:5.1f}%"
 
 
 def coverage(meta_db: str | Path, n: int) -> float:
     """Fraction of total corpus occurrences covered by the first n ranked words."""
     con = sqlite3.connect(str(meta_db))
     try:
+        if not _meta_has(con, "frequency"):
+            # WITHOUT counts there is no occurrence coverage to compute. Returning a
+            # ratio derived from rank POSITION would look like the same number and mean
+            # something else entirely -- share-of-types, not share-of-occurrences. -1.0
+            # is "not measurable on this build"; callers print it as such.
+            return -1.0
         rows = con.execute(
             "SELECT surface, COALESCE(frequency,0) FROM meta "
             "WHERE kind='word' AND utility='CONTENT'").fetchall()
@@ -171,7 +222,7 @@ def embed(meta_db, out_dir, *, batch=10000, limit=None, device=None,
             }), encoding="utf-8")
             rate = (hi - done) / max(time.time() - t0, 1e-6)
             print(f"  {hi:>7,}/{target:,}  (+{hi-lo})  {rate:6.0f} w/s  "
-                  f"usage-coverage {coverage(meta_db, hi)*100:5.1f}%")
+                  f"usage-coverage {_cov_str(coverage(meta_db, hi))}")
     print(f"done: {target:,} embedded in {time.time()-t0:.0f}s")
     return {"embedded": target}
 
@@ -261,7 +312,7 @@ def main() -> None:
         print(f"  fingerprint {surfaces_fingerprint(surf)}")
         for n in (2000, 10000, 20000, 50000, len(surf)):
             n = min(n, len(surf))
-            print(f"  first {n:>7,} -> {coverage(a.meta, n)*100:5.1f}% usage  "
+            print(f"  first {n:>7,} -> {_cov_str(coverage(a.meta, n))} usage  "
                   f"~{n*EMBEDDING_DIM*4/1e9:.2f} GB")
         print(f"  head: {surf[:8]}")
     elif a.cmd == "embed":

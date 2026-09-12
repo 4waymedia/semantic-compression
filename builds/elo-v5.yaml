@@ -1,0 +1,150 @@
+# ============================================================================
+# Dictionary build spec — elo-v5   (ships as "elo-v5")
+#
+# THE FIRST COMPLETE BUILD. Every build before this was test work: v01a/b/c and
+# v04 were built while the asset set was still being discovered, so each shipped
+# with channels missing, hand-built, or never exported. v04 is the clearest case
+# — it carried `wordclass` in its LMDB for two weeks while no exporter existed,
+# and carried no `morph` at all.
+#
+# WHAT MAKES THIS ONE DIFFERENT: the asset set is now DECLARED
+# (semantic_compression/asset_registry.py) rather than discovered, and three
+# gates refuse a build that does not match the declaration:
+#
+#   G10  every asset the build carries is shipped, or the registry says why not
+#   orphan check  a declared asset with no builder stage aborts the cascade
+#   STAGE_ASSET   a stage gated on a name the suite cannot resolve aborts
+#
+# The last one is why this spec exists at all: `wordclass`, `morph` and `census`
+# were each filed under a suite name no preset contained, so all three stages
+# were correct, committed, and never executed. A build that reports "off (not in
+# suite)" and finishes green is the failure this file is built to make loud.
+#
+# NAMING RULE (Paul, 2026-08-13): the build number and the display number MATCH.
+# v04 <-> elo-v4; this is elo-v5 both ways. No r-suffix: revisions are for
+# content changes to a PUBLISHED build (package_revision), and this is r1 of a
+# new one.
+#
+#   Build:   python -m semantic_compression.build_dictionary `
+#              semantic_compression/builds/elo-v5.yaml --device cuda
+#   Publish: python publish_dictionary.py db/builds/elo-v5
+# ============================================================================
+
+meta:
+  name: elo-v5
+  version: "5.0.0"
+  date: "2026-09-11"
+  author: "Paul (4waymedia)"
+  llm_model: "elo-native"
+  status: staged
+  purpose: >
+    The first build whose asset set is complete by declaration rather than by
+    accumulation: all nine registry assets present, exported, contracted and
+    sha-bound in one publication, from one cascade run, with no channel
+    hand-built and none carried forward from an earlier build.
+  goals:
+    - Every registry asset with ships=true present in the bundle. No exceptions
+      that are not recorded in the registry as an exception.
+    - Every shipping channel accompanied by its decode contract. A channel
+      without its geometry is not decodable from the bundle and does not ship.
+    - The morph channel built in the cascade, so wordclass PASS 2 can read a
+      VALIDATED same-lemma link instead of guessing a singular by string surgery.
+    - Reproducible -- two runs over one corpus produce byte-identical channels.
+      v04 produced three different wordclass channels from identical inputs.
+  use_cases:
+    - The first dictionary intended as a dictionary rather than as a test of the
+      build system.
+
+build:
+  size: char-4
+  select_strategy: frequency
+  min_freq: 1
+  tier1_word_reserve: 1024
+  suite: full                         # NOW TEN: + wordclass, + morph
+  expand_tiers: true
+
+  force_include:
+    - "_"
+    - "{"
+    - "}"
+    - "|"
+    - ">"
+    - "<"
+    - "`"
+    - "~"
+    - "\r\n"
+    - "\r"
+    - "\xa0"
+
+  # DECLARED, NEVER INHERITED. `wordclass` and `morph` are listed because a build
+  # that does not name an asset does not get it -- which is exactly how v04 came
+  # to carry a hand-built wordclass channel that no stage produced and no bundle
+  # shipped.
+  assets:
+    facets: true
+    meta: true
+    epa: true
+    vfacets: true
+    meta_layer2: true
+    vectors: true
+    browser: true
+    wordclass: true                   # stages 15 (build) + 16 (export)
+    morph: true                       # stage 17 -- needs vectors; runs BEFORE 15
+
+corpus:
+  - type: transcripts
+    precomputed: semantic_compression/data/word_frequencies.txt
+    weight: 1.0
+    license: per-channel derived stats (counts only)
+  - type: books
+    path: Resources/books
+    include: "*.txt"
+    weight: 1.0
+    license: Public domain (Project Gutenberg / user-supplied)
+  - type: web_structure                # non-lexical: sole eviction class (HARD RULE)
+    precomputed: semantic_compression/data/web_terms_frequencies.txt
+    weight: 1.0
+    license: derived from the browser web dictionary (structure tokens)
+
+eval:
+  harness: bench_dict_efficiency
+  transcript_eval: { channels: semantic_compression/data/eval_channels.txt, top: 10 }
+  held_out_books: []
+
+instructions: >
+  ONE COMMAND builds core + cascade. Then verify, in this order, and treat each
+  as a gate rather than a report:
+
+    1. The cascade must run TEN stage-assets. If any stage prints
+       "off (not in suite)", stop: that is the defect this build exists to close,
+       and it has now occurred three times (wordclass, morph, census).
+
+    2. REPRODUCIBILITY, before anything else is trusted. Re-run stages 15+16 and
+       compare wordclass.bin's sha to the first run. v04 produced three different
+       channels from identical inputs (8dadf64e / 6c9d52c7 / 8d7989aa) because
+       PASS 2 iterated a SET of candidate singulars and broke on the first hit --
+       set order over strings varies per process. Fixed 2026-09-11; this is the
+       build that proves it. Two runs, one sha, or do not publish.
+
+    3. `python build_assets.py db/builds/elo-v5 --audit` -- every buildable
+       registry asset present. `templates` is expected ABSENT and says why.
+
+    4. publish_dictionary --dry-run: ELEVEN gates. G10 must list six channels
+       (facets, epa, vfacets, neighbours, wordclass, morph). G1 holds the
+       n-parallel channels at the vocab count; `morph` is sparse and is excluded
+       from that check by declaration, not by exception.
+
+    5. Publish -> dist/dictionary/elo-v5, then --verify. The cross-copy check
+       must report no staged drift.
+
+    6. Promote: dictionary_standard.py promote elo-v5 --allow-staged. Consumers
+       pin `bundle_id`, not `build` and not the fingerprint.
+
+  KNOWN INCOMPLETE, recorded rather than discovered later:
+    - `morph_vetoes.bin` is written to elo_reasoning's package data; the sweep
+      needs a destination argument before the veto set can ship in the bundle.
+      Registry declares it; publish will refuse until it is there.
+    - `templates` is declared and built by nothing. It is in the registry with a
+      stated reason so it stays visible as owed.
+    - No gold set exists for any channel. Every number this build reports is
+      coverage, population or presence -- none of it is accuracy.

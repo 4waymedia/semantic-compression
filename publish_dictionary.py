@@ -93,10 +93,56 @@ DENY_SUFFIX = ("_stats.json",)
 # hand-maintained "shipped files" lists (export_browser_assets.py, export_neighbours.py,
 # and this module) and none of them complete. G9 now refuses on any payload file that
 # is not declared, so the next channel cannot be forgotten.
-NOT_PAYLOAD = ("BUNDLE.json",)
+NOT_PAYLOAD = ("BUNDLE.json", "assets.meta.json", "neighbours.meta.json")
+#
+# BUNDLE.json IS THE MANIFEST OF RECORD. Settled 2026-09-11 (Paul), on evidence:
+#
+#     dist/dictionary/elo-browser-v01c/     BUNDLE.json          no assets.meta.json
+#     dist/dictionary/elo-browser-v04/      BUNDLE.json          no assets.meta.json
+#     dist/dictionary/elo-browser-v04r2/    BUNDLE.json  AND     assets.meta.json
+#
+# `elo-reasoning`'s gate reads the bundle identity out of `assets.meta.json` -- a file
+# present in ONE PUBLISHED BUNDLE OF THREE, and present in that one only because r2
+# picked it up when this module became directory-driven. A consumer pinned to it works
+# against r2 and fails against every earlier publication, which is worse than failing
+# everywhere: it looks like the gate works.
+#
+# The stage manifests are the build's DIARY -- what stage 7 and stage 8 each wrote. They
+# are useful in the build directory and they are not part of the shipped artifact, so
+# they stop being copied. A bundle carries payload plus the one manifest that describes
+# all of it.
+#
+# Consumers read BUNDLE.json: `build`, `package_revision`, `bundle_id`,
+# `source_build_fingerprint`, `bundle_fingerprint`, `files`, `channels`, `codec`.
 
 
 # --- small io helpers -------------------------------------------------------------
+def _read_self_described(path: Path, role: str) -> tuple:
+    """Identity for an asset that carries it INSIDE the file rather than in a header.
+
+    `morph_map.json` is `{"meta": {...}, "decided": {"a|b": bool}}`. Its meta holds the
+    build and bundle fingerprint it was baked against -- which is how
+    `elo_reasoning.morphology.lemma.verify_pin` already detects a stale map, so publish
+    reads the same field rather than inventing a second notion of the map's identity.
+
+    Returns (entry_count, fingerprint). The count is PAIRS DECIDED, not a vocab count --
+    the registry marks this asset `n_parallel=False` so G1 does not compare the two."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:                                     # noqa: BLE001
+        raise SystemExit(f"{path.name}: unreadable as JSON ({exc}). {role} is declared "
+                         f"self-describing in asset_registry; if its container changed, "
+                         f"the registry entry is what must change with it.")
+    meta = doc.get("meta") or {}
+    decided = doc.get("decided")
+    if decided is None:
+        raise SystemExit(f"{path.name}: no `decided` block -- this is not a morph map.")
+    # `bundle_fingerprint` is what lemma.py reads as the pin; fall back to the plain
+    # `fingerprint` key rather than silently reporting none.
+    fp = meta.get("bundle_fingerprint") or meta.get("fingerprint") or ""
+    return len(decided), fp
+
+
 def _contract_version(bundle_dir: Path, asset) -> "int | None":
     """The channel's format version, READ from its own contract file.
 
@@ -257,10 +303,22 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
     fps = bundle["_fps"]                    # role -> header fp
 
     chans = bundle.get("_channels", list(BUNDLE_CHANNELS))
-    # G1 one vocabulary, one n
-    bad = [f"{r}={counts[r]}" for r in chans if counts[r] != vocab_entries]
+    # G1 one vocabulary, one n -- FOR THE CHANNELS THAT HAVE AN n.
+    #
+    # `morph_map` is keyed on PAIRS of surfaces, not on the vocab index, so it has no
+    # per-n count and comparing its size to `vocab_entries` compares a pair count to a
+    # vocabulary. The registry says which assets are n-parallel rather than this gate
+    # assuming all of them are -- an assumption that held only while every channel
+    # happened to be a dense array.
+    n_chans = [r for r in chans if BY_NAME[r].n_parallel]
+    sparse = [r for r in chans if not BY_NAME[r].n_parallel]
+    bad = [f"{r}={counts[r]}" for r in n_chans
+           if counts.get(r) is not None and counts[r] != vocab_entries]
     gates.append(Gate("G1", "one vocabulary, one n", not bad,
-                      f"all channels count == vocab_entries={vocab_entries}" if not bad
+                      f"{len(n_chans)} n-parallel channels count == "
+                      f"vocab_entries={vocab_entries}"
+                      + (f"; sparse (no n): {', '.join(sparse)}" if sparse else "")
+                      if not bad
                       else f"count mismatch: {', '.join(bad)} (vocab={vocab_entries})"))
 
     # G2 channel fingerprints agree with EACH OTHER *and* with the source build LMDB.
@@ -268,16 +326,28 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
     #     (elo-browser-v01c: every channel carries bdec07bf, but the build LMDB now
     #     self-declares f4c8879e -- the bundle cannot be reproduced from its build dir).
     build_fp = bundle.get("_build_lmdb_fp")
-    disagree = {r: fps[r] for r in chans if fps[r] != src_fp}
+    # FRAMED channels only. Their header fingerprint IS the dictionary fingerprint, so
+    # they must all agree. `morph_map`'s pin is a BUNDLE fingerprint -- a different
+    # identity, deliberately, because the map keys on SURFACES and therefore survives a
+    # rebuild that moves every id. Comparing the two would fail a correct artifact and
+    # teach people to ignore G2.
+    framed = [r for r in chans if BY_NAME[r].framed]
+    disagree = {r: fps[r] for r in framed if fps[r] != src_fp}
     lmdb_ok = (build_fp is None) or (build_fp == src_fp)
     g2ok = (not disagree) and lmdb_ok
+    # Surface the unframed pins rather than dropping them: not gated here, still visible.
+    _pins = {r: (fps.get(r) or "(unpinned)")[:16] for r in chans
+             if not BY_NAME[r].framed}
     if disagree:
         detail = f"channels disagree: {', '.join(f'{r}={v[:16]}' for r, v in disagree.items())}"
     elif not lmdb_ok:
         detail = (f"channels agree ({src_fp[:16]}) but the build LMDB self-declares "
                   f"{build_fp[:16]} -- bundle not exported from this build dir")
     else:
-        detail = f"all channels + build LMDB carry {src_fp[:16]}"
+        detail = f"{len(framed)} framed channels + build LMDB carry {src_fp[:16]}"
+        if _pins:
+            detail += ("; surface-keyed (own pin): "
+                       + ", ".join(f"{r}={v}" for r, v in _pins.items()))
     gates.append(Gate("G2", "channel + build fingerprints agree", g2ok, detail))
 
     # G3 manifest agrees with reality (present flag vs the file that shipped)
@@ -357,8 +427,19 @@ def run_gates(bundle: dict, build_dir: Path, run_heavy: bool) -> list[Gate]:
                       if raw[HDR_LEN + n * w: HDR_LEN + (n + 1) * w] != pat)
         bundle["_coverage"][name] = {
             "entries": present, "coverage": round(present / vocab_entries, 4)}
+    # SPARSE assets get an entry count and NO coverage ratio. There is no denominator:
+    # `morph_map` holds decided PAIRS, and 48,000 pairs out of what? Dividing by the
+    # vocabulary would produce a percentage that looks like coverage and means nothing --
+    # the same "a number with no referent" complaint this lane made about mode share not
+    # saying 99.9% OF WHAT. Report the count, refuse to invent the ratio.
+    for name in chans:
+        if name in bundle["_coverage"] or BY_NAME[name].n_parallel:
+            continue
+        bundle["_coverage"][name] = {"entries": counts.get(name, 0), "coverage": None}
     gates.append(Gate("G7", "coverage recorded", True, ", ".join(
-        f"{n} {c['entries']}/{vocab_entries} ({100*c['coverage']:.1f}%)"
+        (f"{n} {c['entries']}/{vocab_entries} ({100*c['coverage']:.1f}%)"
+         if c["coverage"] is not None
+         else f"{n} {c['entries']:,} entries (sparse, no denominator)")
         for n, c in bundle["_coverage"].items())))
 
     # G10 -- every asset the BUILD carries is shipped, or the registry says why not.
@@ -530,9 +611,16 @@ def load_bundle(bundle_dir: Path, build_dir: Path, build_name: str) -> dict:
                          + "\n\nEvery asset in asset_registry.ASSETS with ships=True must "
                            "be exported before publish. Re-run the exporter stages.")
     vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
+    # FRAMED assets carry the 80-byte magic+count+fingerprint header. A SELF-DESCRIBING
+    # one (morph_map.json) carries its identity inside the file, so asking it for a
+    # header would read its first 8 bytes as a magic and fail -- or worse, not fail.
     counts, fps = {}, {}
     for role, p in files.items():
-        counts[role], fps[role] = _read_header(p, role)
+        a = BY_NAME[role]
+        if a.framed:
+            counts[role], fps[role] = _read_header(p, role)
+        else:
+            counts[role], fps[role] = _read_self_described(p, role)
     man_path = build_dir / "manifest.json"
     manifest = json.loads(man_path.read_text(encoding="utf-8")) if man_path.exists() else {}
     return {
@@ -629,7 +717,10 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
                 },
                 "diagnostic": {
                     "entries": cov[name]["entries"],
+                    # null for a sparse asset -- there is no denominator, and a
+                    # percentage invented for one reads as coverage and is not.
                     "coverage": cov[name]["coverage"],
+                    "n_parallel": BY_NAME[name].n_parallel,
                 },
             }
             for name in bundle.get("_channels", ()) if name in cov
@@ -657,7 +748,8 @@ def main() -> int:
     ap.add_argument("--verify", type=Path, default=None,
                     help="re-check an already-published bundle dir against its BUNDLE.json")
     ap.add_argument("--bundle-src", type=Path, default=None,
-                    help="dir holding the exported channels (default: ELO-Browser .../dictionary/<name>)")
+                    help="dir holding the exported channels "
+                         "(default: <build>/bundle/, the cascade's staging dir)")
     ap.add_argument("--out-root", type=Path, default=None,
                     help="published bundles root (default: <repo>/dist/dictionary; NOT under "
                          "packages/, which is the uv workspace of Python packages)")
@@ -705,8 +797,22 @@ def main() -> int:
         raise SystemExit(f"no dictionary.lmdb in {build_dir}")
     name = build_dir.name
 
-    bundle_src = (a.bundle_src.resolve() if a.bundle_src
-                  else ROOT / "ELO-Browser" / "elo-browser" / "src-tauri" / "dictionary" / name)
+    # PUBLISH READS THE BUILD'S OWN STAGING DIR (2026-09-11). This defaulted to
+    # `ELO-Browser/.../dictionary/<name>`, so every publication -- v04r2 included --
+    # assembled a dictionary bundle out of a consumer lane's repository, and said so on
+    # its own first line: `bundle src: ELO-Browser/...`. The exporters moved here on
+    # 09-10; the write path did not, which is why v04r2's `assets.meta.json` still
+    # stamps `generated_by: ELO-Browser/tools/...`.
+    #
+    # Falls back to the old location when a build predates the move, so v01c and v04
+    # remain republishable rather than being stranded by a layout change.
+    bundle_src = a.bundle_src.resolve() if a.bundle_src else (build_dir / "bundle")
+    if not a.bundle_src and not bundle_src.exists():
+        legacy = ROOT / "ELO-Browser" / "elo-browser" / "src-tauri" / "dictionary" / name
+        if legacy.exists():
+            print(f"  note: no {bundle_src}; falling back to the pre-2026-09-11 "
+                  f"location {legacy}")
+            bundle_src = legacy
     if not bundle_src.exists():
         raise SystemExit(f"no exported bundle at {bundle_src}\n"
                          f"  run build_assets.py {build_dir} first (stages 6-8 export the channels)")
