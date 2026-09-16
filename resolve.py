@@ -128,13 +128,37 @@ class ResolvedDictionary:
     build: str | None
     release: str | None
     status: str | None
-    channels: tuple = ()
+    channels: tuple = ()        # sub-dbs in the LMDB at `path`
+    bundle_channels: tuple = ()  # what the PUBLISHED bundle ships (incl. morph, neighbours)
     source: str = ""            # how it was resolved -- for error messages and logs
     standard_path: Path | None = None
     _info: dict = field(default_factory=dict, repr=False, compare=False)
 
+    def available(self) -> tuple:
+        """Every channel reachable from this dictionary, from EITHER surface.
+
+        2026-09-16, reported by the reasoning lane: `require(("morph",))` raised on a
+        build that ships `morph`, because this class only ever consulted `channels` --
+        the LMDB's sub-dbs. `morph` and `neighbours` have no sub-db; they are bundle
+        files. So the door every lane was told to use reported the data absent on the
+        very build that publishes it, which is indistinguishable from a build that
+        genuinely lacks it -- the exact failure `require` exists to prevent, arriving
+        through the check itself.
+
+        The reasoning lane proposed adding `morph` to `STANDARD.json.channels`. That
+        would be wrong: `channels` answers "what is in the LMDB at `path`", and merging
+        the two lists is what `bundle_channels` was split out to stop two days earlier.
+        Both lists are right; the resolver was asking only one of them."""
+        return tuple(dict.fromkeys((*self.channels, *self.bundle_channels)))
+
     def has(self, channel: str) -> bool:
-        return channel in self.channels
+        return channel in self.available()
+
+    def where(self, channel: str) -> str | None:
+        """Which surface a channel comes from -- 'lmdb', 'bundle', 'both', or None."""
+        in_l, in_b = channel in self.channels, channel in self.bundle_channels
+        return ("both" if in_l and in_b else
+                "lmdb" if in_l else "bundle" if in_b else None)
 
     def require(self, *channels: str) -> "ResolvedDictionary":
         """Assert channels are present. RAISES rather than degrading.
@@ -143,13 +167,15 @@ class ResolvedDictionary:
         this module exists to end: the Verbalizer's wordclass calls resolved against
         a build with no wordclass sub-db and returned 'absent' -- indistinguishable
         from a surface genuinely having no class."""
-        missing = [c for c in channels if c not in self.channels]
+        avail = self.available()
+        missing = [c for c in channels if c not in avail]
         if missing:
             raise ChannelUnavailable(
                 f"dictionary {self.build or self.path} (fp "
                 f"{(self.fingerprint or '?')[:16]}) has no channel(s): "
                 f"{', '.join(missing)}.\n"
-                f"  present: {', '.join(self.channels) or '(none)'}\n"
+                f"  lmdb sub-dbs:   {', '.join(self.channels) or '(none)'}\n"
+                f"  bundle ships:   {', '.join(self.bundle_channels) or '(none)'}\n"
                 f"  resolved via: {self.source}\n"
                 f"  A build lacking a required channel is a WRONG BUILD, not empty "
                 f"data. Promote or select a build that carries it:\n"
@@ -322,13 +348,18 @@ def resolve_dictionary(root: "Path | str | None" = None, *,
                         build=doc.get("build"), release=doc.get("release"),
                         status=doc.get("status"),
                         channels=tuple(doc.get("channels") or ()),
+                        bundle_channels=tuple(doc.get("bundle_channels") or ()),
                         source=f"STANDARD.json ({sp}) [artifact open elsewhere]",
                         standard_path=sp, _info=doc)
                 else:
                     res = ResolvedDictionary(
                         path=p, fingerprint=ident["fingerprint"], build=doc.get("build"),
                         release=ident["release"], status=ident["status"],
-                        channels=ident["channels"], source=f"STANDARD.json ({sp})",
+                        channels=ident["channels"],
+                        # From the POINTER, not the LMDB: `morph` and `neighbours` have no
+                        # sub-db, so the artifact cannot report them. STANDARD.json can.
+                        bundle_channels=tuple(doc.get("bundle_channels") or ()),
+                        source=f"STANDARD.json ({sp})",
                         standard_path=sp, _info=doc)
                 _CACHE[cache_key] = res
                 return res.require(*require) if require else res

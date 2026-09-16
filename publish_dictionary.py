@@ -685,6 +685,35 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
         "bundle_id": (build_name if int(man.get("package_revision", 1)) <= 1
                       else f"{build_name}r{int(man.get('package_revision', 1))}"),
         "revision_log": man.get("revision_log", []),
+        # WHICH FINGERPRINT TO PIN (2026-09-16, asked by the reasoning lane).
+        #
+        # This file spells one identity three ways -- `source_build_fingerprint`,
+        # `provenance.manifest_dictionary_fp`, and `dictionary_fingerprint` over in
+        # STANDARD.json -- and publishes a second, different identity beside them
+        # (`bundle_fingerprint`). All three spellings of the first agree today; that is
+        # luck holding, not a contract, and the reasoning lane's pin check returned
+        # `unverifiable` rather than guess between them.
+        #
+        # A consumer guessing wrong FAILS OPEN: verify against `bundle_fingerprint` and
+        # you get a green pin for an asset set built on a different dictionary, because
+        # the packaging identity moves on every content revision while the id space does
+        # not. That is the worst available failure -- a check that passes wrongly.
+        #
+        # So the file now names its own canonical field rather than leaving it to prose
+        # in a handoff that not every consumer reads.
+        "identity": {
+            "pin": "bundle_id",
+            "id_space_field": "source_build_fingerprint",
+            "asset_set_field": "bundle_fingerprint",
+            "echoes": ["provenance.manifest_dictionary_fp"],
+            "note": ("`source_build_fingerprint` IS the dictionary identity -- what an "
+                     ".elo binds to, identical across revisions by design. Verify a pin "
+                     "against it. `provenance.manifest_dictionary_fp` is an echo of the "
+                     "same value and MUST NOT be pinned against independently. "
+                     "`bundle_fingerprint` identifies the ASSET SET and moves on every "
+                     "content revision -- pinning against it reports drift when nothing "
+                     "moved, and pinning the id space against it fails open."),
+        },
         "files": {name: {"sha256": sha, "bytes": shipped[name].stat().st_size}
                   for name, sha in sorted(shas.items())},
         # DERIVED from the registry + measured coverage, not four hand-written blocks.
