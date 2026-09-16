@@ -52,6 +52,10 @@ from pathlib import Path
 
 import lmdb
 
+# THE registry -- what an asset is, and which ones ship. Imported rather than restated so
+# `bundle_channels` here and in publish_dictionary cannot drift apart.
+from asset_registry import bundle_channels           # noqa: E402
+
 SC = Path(__file__).resolve().parent            # semantic_compression/
 ROOT = SC.parent                                # R-D-concepts/
 BUILDS = SC / "db" / "builds"
@@ -279,6 +283,22 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         "package_revision": _package_revision(d),
         "bundle_id": (build if _package_revision(d) <= 1
                       else f"{build}r{_package_revision(d)}"),
+        # TWO CHANNEL SETS, NAMED SEPARATELY (2026-09-14).
+        #
+        # `channels` above enumerates the LMDB's sub-dbs, which is correct for `path` --
+        # it describes what that file carries. But it silently EXCLUDES every asset that
+        # has no sub-db: `morph` (keyed on surface pairs) and `neighbours` (a CSR file).
+        # So STANDARD.json listed seven channels while BUNDLE.json listed six DIFFERENT
+        # ones, and a consumer reading the standard would conclude the dictionary has no
+        # morph -- on the very build that publishes it for the first time.
+        #
+        # Neither list was wrong; they answer different questions and shared a name. Both
+        # are now derived, both are named for what they describe.
+        "bundle_channels": list(bundle_channels()),
+        "channels_note": ("`channels` = sub-dbs in the LMDB at `path`. "
+                          "`bundle_channels` = what the PUBLISHED bundle ships, which "
+                          "includes assets with no sub-db (morph, neighbours). A "
+                          "consumer reads the bundle."),
         "release": ident["release"],
         "status": ident["status"],
         "path": str(lm.relative_to(ROOT)).replace("\\", "/"),

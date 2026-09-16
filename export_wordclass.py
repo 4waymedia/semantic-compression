@@ -91,7 +91,7 @@ def build(pkg: Path, out: Path) -> int:
                          "(wordclass_builder.py) before exporting")
 
     arr = bytearray(ABSENT * count)
-    written = 0
+    written = n_any = n_classed = 0
     hist: dict[str, int] = {}
     # The vocab json is the ONE definition of n. Reading ids from it rather than from a
     # cursor order is what keeps every channel parallel to the same index -- G1.
@@ -108,7 +108,11 @@ def build(pkg: Path, out: Path) -> int:
                 continue
             arr[n * REC_WIDTH:(n + 1) * REC_WIDTH] = rec
             written += 1
+            if bytes(rec) != ABSENT:
+                n_any += 1
             d = unpack_wordclass(bytes(rec))["dominant"]
+            if d != "UNKNOWN":
+                n_classed += 1
             hist[d] = hist.get(d, 0) + 1
     env.close()
 
@@ -130,17 +134,23 @@ def build(pkg: Path, out: Path) -> int:
         "entries": written,
         "spec": "semantic_compression/docs/compression/spec-wordclass-db.md",
         "absent": "b'\\x00\\x00\\x00' -- dominant UNKNOWN, empty mask, tri-states UNKNOWN",
-        # TWO COVERAGE NUMBERS, BOTH CORRECT, DIFFERENT QUESTIONS. Measured on v04:
-        #   274,202 (62.6%)  records that are not all-zero -- "has ANY measurement"
-        #   263,702 (60.2%)  records whose dominant class is set -- "has a CLASS"
-        # The 10,500 between them are surfaces with no class but a measured feature
-        # (`stethoscope` proper=NO, `coughs` requires_determiner=NO). Publishing one
-        # number called "coverage" is how that gap becomes an argument six weeks later.
-        "coverage_any_measurement": written,
-        "coverage_note": ("`entries` counts records != ABSENT. A consumer wanting "
-                          "'has a class' must test dominant != UNKNOWN, which is a "
-                          "SMALLER set -- a record can carry a measured feature with "
-                          "no class."),
+        # THREE NUMBERS, THREE QUESTIONS. Each measured, none inferred from another.
+        #
+        # MY BUG, caught by ELO-Browser 2026-09-12: `coverage_any_measurement` was set to
+        # `written`, which counts records that EXIST -- and the builder writes one for
+        # every entry, so it was always the vocabulary size. A field named
+        # "any_measurement" reporting 437,995 while the publish gate measured 276,399 is
+        # exactly the "default counted as a measurement" pattern this lane publishes as an
+        # open concern about `temporal` and `direction`, in my own contract file.
+        "records_written": written,            # a record exists (== count, by construction)
+        "coverage_any_measurement": n_any,     # record != ABSENT: some field is set
+        "coverage_classed": n_classed,         # dominant != UNKNOWN: narrower still
+        "coverage_note": ("THREE different sets, largest to smallest: records_written (a "
+                          "row exists for every entry -- this is NOT coverage), "
+                          "coverage_any_measurement (the row is not all-zero), "
+                          "coverage_classed (dominant != UNKNOWN). A record can carry a "
+                          "measured FEATURE with no CLASS, which is the gap between the "
+                          "last two. Do not read the first as coverage."),
         "layout": {
             "byte0": "dominant class | confidence | ambivalent",
             "byte1": "class mask (composable; >1 bit set is what AMBIVALENT reports)",

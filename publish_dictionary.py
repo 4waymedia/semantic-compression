@@ -677,6 +677,13 @@ def build_bundle_json(bundle: dict, build_name: str, display: str, published: bo
         # Without the second, "rebuilt with the new asset" and "the original" are the
         # same string, and the only thing separating them is a date nobody reads.
         "package_revision": int(man.get("package_revision", 1)),
+        # bundle_id IN THE MANIFEST OF RECORD. It lived only in STANDARD.json, so the
+        # 2026-09-12 broadcast told consumers to pin `bundle_id` and, two sentences later,
+        # that everything they need is in BUNDLE.json -- and both could not be true.
+        # ELO-Browser read the artifact rather than the prose and found it. A pin a
+        # consumer cannot find in the file you told them to read is not a pin.
+        "bundle_id": (build_name if int(man.get("package_revision", 1)) <= 1
+                      else f"{build_name}r{int(man.get('package_revision', 1))}"),
         "revision_log": man.get("revision_log", []),
         "files": {name: {"sha256": sha, "bytes": shipped[name].stat().st_size}
                   for name, sha in sorted(shas.items())},

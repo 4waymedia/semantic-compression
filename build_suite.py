@@ -53,7 +53,12 @@ DEPS: dict[str, list[str]] = {
     # EPA.E, so it REQUIRES epa -- a suite without epa would write 437,995 rows of
     # NEUTRAL/UNKNOWN that look like data. First-class (2026-08-10) so a build
     # DECLARES it rather than inheriting it silently from `epa: true`.
-    "vfacets":     ["epa"],
+    # vfacets ALSO requires wordclass: `vfacet_builder` reads b'wordclass' for its aspect
+    # join and degrades SILENTLY without it ("temporality stays suffix-only"), costing 40%
+    # of measured temporality. Declared 2026-09-12 -- it had been true in the code and
+    # absent from the contract, so nothing ordered the two stages and nothing refused a
+    # build that enabled vfacets without wordclass.
+    "vfacets":     ["epa", "wordclass"],
     "meta_layer2": ["meta", "epa"],
     "vectors":     ["meta"],
     "browser":     ["facets", "epa"],   # neighbours sub-channel also wants `vectors`
@@ -64,11 +69,17 @@ DEPS: dict[str, list[str]] = {
     # residue suffix rules cannot settle against the 768-d space) and `browser` (it
     # stamps the bundle's identity into the map so staleness is detectable).
     "morph":       ["dictionary", "vectors", "browser"],
-    # wordclass declares `morph` because PASS 2's plural handling should read a
-    # VALIDATED link rather than guess a singular by string surgery. Declared now, in
-    # the suite, so a full build produces morph BEFORE wordclass and the consumption can
-    # land without a second ordering change.
-    "wordclass":   ["dictionary", "browser", "morph"],
+    # wordclass: stage 15 needs only the LMDB + corpus; stage 16 (export) needs the vocab
+    # json, hence `browser`.
+    #
+    # It does NOT declare `morph`. I added that aspirationally on 2026-09-11 -- PASS 2
+    # *should* read the validated link instead of guessing -- but it does not read it yet,
+    # and a dependency that describes an intention rather than a use has two costs: it
+    # drags `vectors` into every build that merely wants vfacets (via vfacets ->
+    # wordclass -> morph -> vectors), and it implies an ordering that _EXEC_ORDER
+    # contradicts, since wordclass runs before the sweep. Declare what is consumed.
+    # Restore this the same day PASS 2 consumes the map.
+    "wordclass":   ["dictionary", "browser"],
     "templates":   ["dictionary"],
 }
 

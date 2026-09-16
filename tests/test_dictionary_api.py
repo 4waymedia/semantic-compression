@@ -132,10 +132,43 @@ def run() -> int:
           cov["epa"].measured, cov["epa"].records)
     check("vfacets has no channel-level measured count",
           cov["vfacets"].measured, None)
-    check("templates is EMPTY, and says so", cov["templates"].records, 0)
-    for c in ("epa", "templates"):
+    # `templates` IS NOT ASSUMED PRESENT. v04 carried an empty sub-db; elo-v5 does not
+    # create one at all, which is the better behaviour -- a channel nobody builds should
+    # not exist rather than exist empty. The build-independent assertion is the REGISTRY's
+    # declaration; the channel's presence is a property of the build in hand.
+    from compression_dictionary import BY_NAME                  # noqa: PLC0415
+    check("registry records WHY templates is unbuilt",
+          bool(BY_NAME["templates"].unbuilt_reason), True)
+    if "templates" in cov:
+        check("...and where it exists it is EMPTY", cov["templates"].records, 0)
+    else:
+        print("  ok   templates absent from this build (not created, not empty)")
+    for c in ("epa",) + (("templates",) if "templates" in cov else ()):
         for line in str(cov[c]).splitlines():
             print(f"       {line}")
+
+    # --- 2026-09-14: the absent SENTINEL, honoured by the verb ----------------
+    #
+    # 05-ExtractionPipeline found this in their own code -- an absent facet record read
+    # as `bucket=255`, a bucket id that does not exist, handed to consumers as a value;
+    # and the mask bytes of that same absent record ORed in as logic cues the dictionary
+    # never asserted. THIS READER HAD THE SAME BUG. The rule was published in prose
+    # (BUNDLE.json `gate.absent`) and not implemented in the verb that exists so consumers
+    # do not have to implement it.
+    print("\nfacets() -- 0xFF is ABSENT, 0x00 is a MEASURED UNKNOWN:")
+    from compression_dictionary.config import BUCKET            # noqa: PLC0415
+    check("BUCKET has no 255 -- it is a sentinel, not a value",
+          255 in set(BUCKET.values()), False)
+    _f = d.facets("happy")
+    check("a present record says absent=False", _f and _f.get("absent"), False)
+    check("...and carries a real bucket name", isinstance(_f.get("bucket_name"), str),
+          True)
+    # explain_field must score absence the same way, in both directions.
+    _b = d.explain_field("bucket")
+    check("explain_field('bucket') never reports 255 as a value",
+          any(n == "255" for n, _ in _b.top), False)
+    check("...and UNKNOWN (0x00) counts as MEASURED, not absent",
+          _b.populated_pct > 99.0, True)
 
     # --- absence raises ------------------------------------------------------
     print("\nrequire= -- a missing channel is a WRONG BUILD, not empty data:")
