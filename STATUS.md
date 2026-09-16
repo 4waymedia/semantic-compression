@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | **Status** | `develop` (dev source; graduates two packages) |
-| **Liveness** | `active` — published `elo-browser-v04r2` 2026-09-10 (11 gates, verified both directions) |
-| **Updated** | 2026-09-10 |
-| **Standard** | `elo-browser-v04` · `package_revision 2` · **pin `bundle_id: elo-browser-v04r2`** |
+| **Liveness** | `active` — published + promoted `elo-v5r3` 2026-09-14 (11 gates, verified both directions) |
+| **Updated** | 2026-09-16 |
+| **Standard** | `elo-v5` · `package_revision 3` · **pin `bundle_id: elo-v5r3`** |
 | **Owner lane** | semantic_compression / dictionary lane |
 | **Spec** | `SYSTEM1.md` · `docs/compression/*` · `docs/format/ELO_FILE_FORMAT.md` + `docs/format/spec-elo-dictionary-binding.md` |
 | **Package** | graduates **two**: `packages/elo-dictionary/` 0.3.1 (block, publishable) · `packages/elo-compression/` 0.3.1 (system, private) |
@@ -40,8 +40,58 @@ the ID space and the coupled asset family that downstream systems consume.
 | **Standard pointer + index** | `dictionary_standard.py` → `dist/dictionary/{STANDARD,INDEX}.json` | **built 2026-08-29** |
 | **Resolver (the one door)** | `resolve.py` → `compression_dictionary.resolve_dictionary()` | **built 2026-08-29** |
 | **Resolution gate** | `check_dict_resolution.py` + `tests/test_dict_resolution_gate.py` | **built 2026-08-29 — 0 violations, `--strict` passes** |
-| Word class channel | `wordclass_builder.py` (`b'wordclass'`, 3 B) | built — **cascade stages 15 + 16 (2026-09-10); ships in the bundle for the first time in r2.** ⚠ the rebuild changed the channel's bytes; delta unmeasured (see 2026-09-10 §5) |
-| Coverage census (stage 14) | `coverage_census.py` | built — always-run, fingerprint-bound |
+| Word class channel | `wordclass_builder.py` (`b'wordclass'`, 3 B) | built — cascade stages 15 + 16; **deterministic since 2026-09-11** (two sources fixed, not one) |
+| **Morph channel** | `morph_map.json` + `morph_vetoes.bin` (bundle-only, no sub-db) | **built 2026-09-11** — cascade stage 17, runs *before* wordclass so PASS 2 reads a validated link |
+| Coverage census (stage 14) | `coverage_census.py` | built — always-run, fingerprint-bound; **partitions by id segment** (word/phrase/name/symbol/web_structure/numeric) with a per-channel `expected` matrix |
+
+### 2026-09-14 — `elo-v5r3`: the first build whose asset set is complete by declaration
+
+**Published and promoted `dist/dictionary/elo-v5r3`** — bundle fingerprint `7237ac9531a819db`,
+source build fingerprint `fda069696b43e0f3`, 437,995 entries, 11 gates PASS, `--verify` clean
+both directions. **Consumers pin `bundle_id: elo-v5r3`** — not `build`, not the fingerprint.
+
+Every build before this was test work. v01a/b/c and v04 were built while the asset set was
+still being *discovered*, so each shipped with channels missing, hand-built, or never exported.
+This is the first build where the asset set is **declared** first and the build is refused if it
+does not match.
+
+**Six channels ship:** `facets` · `epa` · `vfacets` · `neighbours` · `wordclass` · `morph`.
+The LMDB carries seven sub-dbs (`forward`, `reverse`, `facets`, `epa`, `vfacets`, `wordclass`,
+`meta`); `neighbours` and `morph` are bundle-only assets with no sub-db. `templates` is declared
+and built by nothing — v04 carried it empty, elo-v5 does not create it at all, which is the
+better behaviour: a channel nobody builds should not exist rather than exist empty.
+
+**`morph` is a dictionary channel** (cascade stage 17), not a reasoning artifact. It runs before
+`wordclass`, so PASS 2 reads a validated same-lemma link instead of guessing a singular by string
+surgery.
+
+**Exporters moved into this lane** — `export_browser_assets.py`, `export_neighbours.py`,
+`export_wordclass.py` were in `ELO-Browser/tools/`. The browser lane no longer builds dictionary
+channels. `gen_vectors_oracle.py` moved with them.
+
+**Determinism closed.** v04 produced three different `wordclass` channels from identical inputs
+because PASS 2 iterated a *set* of candidate singulars and broke on the first hit — set order over
+strings varies per process. Fixed in two places, not one: `_singulars_of` now returns an ordered
+list, and PASS 2 calls it rather than carrying an inline copy. Two runs, one sha, or the build does
+not publish.
+
+**Coverage is now partitioned by id segment.** The dictionary is a heterogeneous id space — word
+205,114 · phrase 174,628 · name 33,444 · symbol 12,980 · web_structure 7,367 · numeric 4,462 — so a
+pooled denominator misreports every sparse channel. `coverage_census.json` carries a per-channel
+`expected` matrix: `epa` reads 54.0% pooled but 57.2% where expected, and `temporal` reads 6.4%
+pooled against 100% over the class it applies to.
+
+**Open, recorded rather than discovered later:**
+
+- **No gold set exists for any channel.** Every number above is coverage, population or presence.
+  None of it is accuracy. This is the largest open item in the lane.
+- Three declared absent sentinels (`epa` NaN, `facets` 0xFF, `wordclass` all-zero) are never
+  emitted on this build. `epa.bin` writes `NaN,NaN,NaN` into unrated slots while the LMDB writes no
+  row at all — same asset, two representations, two absence rules, one published contract.
+- `coverage()` in the package reports the pooled denominator. The number is correct; it does not
+  yet say what it is a share of.
+- `morph_vetoes.bin` ships, but the sweep still writes to `elo_reasoning`'s package data and needs
+  a destination argument.
 
 ### 2026-09-10 — `elo-browser-v04r2`: one asset registry, wordclass ships, revisions exist
 
@@ -194,8 +244,9 @@ v1/v2 files still decode with a warning. Spec: `docs/format/spec-elo-dictionary-
 | `elo-dictionary` package | base block (config, codec primitives, facets, tokenizer) | `elo-compression`, `elo-verbalizer`, 06 |
 | `elo-compression` package | codec/facet-reader surface (consumes `elo-dictionary`) | products (private layer) |
 
-Active shipped build: **`elo-browser-v01c`** (status `staged`). Identity is read from each
-build's own `manifest.json` / `assets.meta.json`; never restated by consumers.
+Active shipped build: **`elo-v5`**, `package_revision 3`, **pin `bundle_id: elo-v5r3`**
+(status `staged`). Identity is read from `dist/dictionary/STANDARD.json` and each build's own
+`manifest.json` / `BUNDLE.json`; never restated by consumers.
 
 ## 4. Usage
 
@@ -262,6 +313,9 @@ python packages\elo-compression\export-package.py --check     # expect: CHECK: c
 
 | date | change |
 |---|---|
+| 2026-09-14 | **`elo-v5r3` published and promoted to standard** — six channels, asset set complete by declaration. Supersedes `elo-browser-v04r2`. Pin `bundle_id: elo-v5r3`. |
+| 2026-09-11 | **`morph` is a dictionary channel** (stage 17), not a reasoning artifact; `wordclass` made deterministic (two sources); asset exporters moved in from `ELO-Browser/tools/` |
+| 2026-09-10 | **`asset_registry.py`** — one declaration per asset, replacing nine hand-kept lists; gates **G9–G11** added; `bundle_id` and `codec.policy_version` added to `BUNDLE.json`; `wordclass` ships for the first time |
 | 2026-08-10 | **`vfacets` promoted to build stage** — previously run by hand; now a proper declared stage in the build pipeline. See `handoffs/2026-08-10-*.md`. |
 | 2026-08-07 | `.elo`/`.eloB` header dictionary-binding (`FORMAT_VERSION` 2 / `ELO_BIN` 3); `COUNTS_FORMAT_VERSION` split off; `facet_builder` data path made module-relative |
 | 2026-08-07 | packages renamed `compression-dictionary`→`elo-dictionary`, `eloai-semantic-compression`→`elo-compression` (dist names; import names frozen); `elo-compression` gained its `export-package.py` drift gate |
