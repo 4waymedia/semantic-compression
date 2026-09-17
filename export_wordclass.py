@@ -145,12 +145,23 @@ def build(pkg: Path, out: Path) -> int:
         "records_written": written,            # a record exists (== count, by construction)
         "coverage_any_measurement": n_any,     # record != ABSENT: some field is set
         "coverage_classed": n_classed,         # dominant != UNKNOWN: narrower still
-        "coverage_note": ("THREE different sets, largest to smallest: records_written (a "
+        # A FOURTH NUMBER (2026-09-17) -- offered by ELO-Browser, and it is the bug above
+        # one field to the RIGHT. `coverage_classed` counts dominant != UNKNOWN. But OTHER
+        # is 174,628, which is EXACTLY the `phrase` segment count in coverage_census.json:
+        # OTHER is not a measured class, it is the phrase segment wearing a class name. So
+        # 66.8% of `coverage_classed` is definitional, and a consumer sizing a WORD-level
+        # gate by it overestimates by ~3x -- the same shape as r1's `coverage_any_measurement`
+        # overstating by 1.6x. A set counted as measured that is partly by construction.
+        "coverage_classed_words": n_classed - hist.get("OTHER", 0),
+        "coverage_note": ("FOUR different sets, largest to smallest: records_written (a "
                           "row exists for every entry -- this is NOT coverage), "
                           "coverage_any_measurement (the row is not all-zero), "
-                          "coverage_classed (dominant != UNKNOWN). A record can carry a "
-                          "measured FEATURE with no CLASS, which is the gap between the "
-                          "last two. Do not read the first as coverage."),
+                          "coverage_classed (dominant != UNKNOWN), coverage_classed_words "
+                          "(also excludes OTHER). A record can carry a measured FEATURE "
+                          "with no CLASS, which is the gap between the middle two. OTHER "
+                          "is the PHRASE segment by construction, not a measured class, "
+                          "which is the gap between the last two -- size word-level gates "
+                          "with coverage_classed_words. Do not read the first as coverage."),
         "layout": {
             "byte0": "dominant class | confidence | ambivalent",
             "byte1": "class mask (composable; >1 bit set is what AMBIVALENT reports)",

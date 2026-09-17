@@ -47,6 +47,11 @@ ROOT = _find_root(Path(__file__).resolve())
 # and its own imports fail, which is a confusing way to discover the difference.
 sys.path.insert(0, str(ROOT))
 
+# Read from config -- the SAME source publish_dictionary reads for BUNDLE.json's `codec`
+# block. Importing it rather than restating it is what keeps the oracle and the bundle from
+# ever disagreeing about which policy produced the cached bytes below.
+from semantic_compression.config import CODEC_POLICY_VERSION     # noqa: E402
+
 # One vector per codec branch. Keep additions APPEND-ONLY: an oracle whose input set
 # changes between builds cannot distinguish "the codec changed" from "the test changed".
 VECTORS: list[str] = [
@@ -108,6 +113,23 @@ def build_oracle(build_dir: Path) -> dict:
         "build": build_id,
         "dictionary_fingerprint": dict_fp,
         "elo_bin_version": vectors[0]["elo_bin_hex"][6:8] if vectors[0]["elo_bin_hex"] else "",
+        # THE POLICY PIN (2026-09-16, asked for by ELO-Browser -- correctly, and urgently).
+        #
+        # This file is nineteen cached `elo_bin_hex` strings. BUNDLE.json's own codec note
+        # says: "Pin it if you cache encoded bytes or expected decode values; a fixture that
+        # pins only build/fingerprint cannot see an encoder change." So the artifact the note
+        # describes was the one artifact that did not carry the field.
+        #
+        # Why it could not wait: the cased-entry fix (exact-before-lower) bumps
+        # CODEC_POLICY_VERSION to 2 and changes the bytes of any vector holding a capitalised
+        # in-vocabulary surface. Same build, same fingerprint, same ELO_BIN_VERSION, different
+        # output. Without this field elo.rs replays the old oracle and PASSES -- the browser
+        # certifying its codec against expectations the codec no longer meets. A green that
+        # means nothing is worse than a red.
+        #
+        # Read from config, the same source BUNDLE.json reads, so the oracle and the bundle
+        # cannot disagree about which policy produced these bytes.
+        "codec_policy_version": CODEC_POLICY_VERSION,
         "vector_count": len(vectors),
         "all_roundtrip_byte_exact": all(v["roundtrip"] for v in vectors),
         "vectors": vectors,
@@ -137,6 +159,8 @@ def main(argv=None) -> int:
     print(f"  build        {oracle['build']}")
     print(f"  fingerprint  {oracle['dictionary_fingerprint'][:32] or '(unstamped)'}")
     print(f"  container    ELO_BIN_VERSION = 0x{oracle['elo_bin_version']}")
+    print(f"  codec policy {oracle['codec_policy_version']}   "
+          f"(cached bytes are only valid under this policy)")
     print(f"  vectors      {oracle['vector_count']}  all round-trip: "
           f"{oracle['all_roundtrip_byte_exact']}")
 
@@ -145,9 +169,32 @@ def main(argv=None) -> int:
             print(f"  MISSING      {dst}")
             return 1
         cur = json.loads(dst.read_text(encoding="utf-8"))
+        # An oracle with no policy stamp predates the pin. It is NOT "matching" -- it is
+        # unverifiable, and saying so is the entire point of the field.
+        cur_pol = cur.get("codec_policy_version")
         same = cur.get("vectors") == oracle["vectors"] and \
-            cur.get("dictionary_fingerprint") == oracle["dictionary_fingerprint"]
-        print(f"  {'no drift' if same else 'DRIFT -- regenerate'}")
+            cur.get("dictionary_fingerprint") == oracle["dictionary_fingerprint"] and \
+            cur_pol == oracle["codec_policy_version"]
+        # ONE verdict, not two (2026-09-17, ELO-Browser ran the six branches this was
+        # shipped without). The verdict line used to print unconditionally, so an UNSTAMPED
+        # oracle whose bytes are byte-identical reported "UNVERIFIABLE" and then "DRIFT" --
+        # and DRIFT is a claim that the cached bytes moved, which in that case they did not.
+        # A reader takes the last line as the answer, regenerates expecting a diff, gets an
+        # identical file with one field added, and trusts the check less afterwards. The
+        # distinction this field was added to make, undone by the line after it.
+        #
+        # Exit code is unaffected: `same` is already False whenever cur_pol is None
+        # (None != 1), so the gate never depended on which line printed.
+        if cur_pol is None:
+            print(f"  UNVERIFIABLE -- oracle carries no codec_policy_version (this build "
+                  f"is policy {oracle['codec_policy_version']}). Regenerate. "
+                  f"(Cached bytes {'match' if cur.get('vectors') == oracle['vectors'] else 'ALSO differ'}.)")
+        elif cur_pol != oracle["codec_policy_version"]:
+            print(f"  POLICY DRIFT -- oracle was generated under codec policy {cur_pol}, "
+                  f"this build is policy {oracle['codec_policy_version']}. The cached bytes "
+                  f"are expectations the current codec no longer owes. Regenerate.")
+        else:
+            print(f"  {'no drift' if same else 'DRIFT -- regenerate'}")
         return 0 if same else 1
 
     dst.parent.mkdir(parents=True, exist_ok=True)
