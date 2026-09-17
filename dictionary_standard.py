@@ -239,6 +239,42 @@ def read_standard() -> dict | None:
         return None
 
 
+def _published_bundle(bundle_id: str) -> dict:
+    """Read the PUBLISHED bundle's own manifest, for the fields only it knows.
+
+    2026-09-16, reported by integration: STANDARD.json carried no `bundle_fingerprint`,
+    while the re-pin broadcast published one in the very block consumers are told to pin
+    from -- and the broadcast also says STANDARD.json wins on disagreement. So the one
+    field identifying the asset set a consumer was told to re-pin to was the one field
+    they could not check against the document that wins. The precedence rule had a hole
+    exactly the width of the thing being pinned.
+
+    Read rather than recomputed: the bundle fingerprint is whatever `publish_dictionary`
+    sealed into BUNDLE.json. Recomputing it here would create a second place holding one
+    fact -- the defect this lane has now found five times."""
+    p = DIST / bundle_id / "BUNDLE.json"
+    if not p.exists():
+        return {"bundle_fingerprint": None, "bundle_published_utc": None,
+                "bundle_path": None,
+                "bundle_note": (f"no published bundle at dist/dictionary/{bundle_id}/ -- "
+                                f"the build is promoted but not published, so consumers "
+                                f"have nothing to read. Run publish_dictionary.")}
+    try:
+        b = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        return {"bundle_fingerprint": None, "bundle_published_utc": None,
+                "bundle_path": None,
+                "bundle_note": f"BUNDLE.json at {p} is unreadable: {type(e).__name__}"}
+    return {
+        "bundle_fingerprint": b.get("bundle_fingerprint"),
+        "bundle_published_utc": b.get("published_utc"),
+        "bundle_path": str(p.parent.relative_to(ROOT)).replace("\\", "/"),
+        "bundle_note": ("`bundle_fingerprint` identifies the ASSET SET and moves with every "
+                        "content revision. `dictionary_fingerprint` identifies the ID SPACE "
+                        "and does not. Pin `bundle_id`; verify with both."),
+    }
+
+
 def promote(build: str, *, allow_staged: bool = False, force: bool = False,
             by: str = "dictionary lane", notes: str = "") -> dict:
     """Make `build` the standard. REFUSES rather than warning.
@@ -270,6 +306,9 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
             f"the id space is still open), or freeze it first.")
 
     prev = read_standard()
+    _rev = _package_revision(d)
+    _bid = build if _rev <= 1 else f"{build}r{_rev}"
+    _pub = _published_bundle(_bid)
     doc = {
         "schema": SCHEMA_STANDARD,
         "build": build,
@@ -280,9 +319,10 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         # design -- that is what keeps stored `.elo` files readable -- so a consumer
         # resolving through STANDARD.json had no way to tell v04 r1 (facets wrong on
         # 14,394 surfaces, no wordclass) from v04 r2. `bundle_id` is the string to pin.
-        "package_revision": _package_revision(d),
-        "bundle_id": (build if _package_revision(d) <= 1
-                      else f"{build}r{_package_revision(d)}"),
+        "package_revision": _rev,
+        "bundle_id": _bid,
+        # The published bundle's own identity, read from BUNDLE.json. See _published_bundle.
+        **_pub,
         # TWO CHANNEL SETS, NAMED SEPARATELY (2026-09-14).
         #
         # `channels` above enumerates the LMDB's sub-dbs, which is correct for `path` --
@@ -311,6 +351,17 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         "ledger_green": led["green"],
         # §3 -- derived at promotion, not at read time. See _derived().
         **_derived(lm, d),
+        # 2026-09-16: integration read `sidecars` as "consumers can fetch and verify these
+        # without asking". They are declared and sha-bound, but they live in the BUILD
+        # directory, which is gitignored and not distributed -- a consumer holding only the
+        # published bundle has none of them. Declared != shipped, and the document said
+        # nothing either way.
+        "sidecars_note": ("sidecars are files in the BUILD directory "
+                          "(`builds_root`/`build`), which is NOT distributed. They are "
+                          "declared and sha-bound so a holder of the build can verify "
+                          "them; a consumer who has only the published bundle at "
+                          "`bundle_path` does not have them. `coverage_census.json` in "
+                          "particular is a measurement sidecar, not a bundle payload."),
         "notes": notes or ("ids are build-specific; bind by surface, verify by "
                            "fingerprint. Persisted ids MUST carry this fingerprint "
                            "beside them and verify tri-state on read."),

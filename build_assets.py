@@ -918,6 +918,30 @@ def main() -> None:
         # Same identity split as --add-asset: the id space must not move, the asset
         # content may, and the revision is what tells the two apart downstream.
         rev = int(man.get("package_revision", 1)) + 1
+        # GATE (2026-09-16) -- a revision's reason must be written BY that revision.
+        #
+        # elo-v5 r2 and r3 carry a BYTE-IDENTICAL `content_change`, 30 seconds apart, so
+        # the log cannot say what r3 changed that r2 did not. The provenance field whose
+        # entire job is to tell two events apart was reused, and every gate passed:
+        # G11 asks whether content moved and whether the revision moved. It never asks
+        # whether the reason given is THIS revision's reason.
+        #
+        # Integration named this as the second instance of one pattern -- the first was
+        # morph_map.json's `restamps[]` array being dropped between v04 and v5, after
+        # which a restamp could not be distinguished from a re-derivation. Same shape:
+        # the element that separates two events is the one that gets reused or removed.
+        #
+        # The check is mechanical and would have caught both.
+        _log = man.get("revision_log") or []
+        if _log:
+            _prev = (_log[-1].get("content_change") or "").strip()
+            if _prev and _prev.casefold() == a.bump_revision.strip().casefold():
+                raise SystemExit(
+                    f"REFUSED: --bump-revision reason is identical to revision "
+                    f"{_log[-1].get('revision')}'s.\n"
+                    f"    {_prev}\n"
+                    f"  A revision must state what IT changed. If this run changed "
+                    f"nothing new, do not bump the revision; if it did, say what moved.")
         man["package_revision"] = rev
         man["bundle_id"] = pkg.name if rev <= 1 else f"{pkg.name}r{rev}"
         # Same entry shape as --add-asset, so one revision is one entry however it was
