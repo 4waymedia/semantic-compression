@@ -135,7 +135,10 @@ def _decode_token(stream_token: str, txn, rev_db) -> str:
 
 def encode_text(text: str, env, stats: _Stats) -> str:
     """Compress text → stream string."""
-    fwd_db = env.open_db(b'forward')
+    # create=False: on a readonly env a missing sub-db otherwise raises
+    # "ReadonlyError: mdb_dbi_open: Permission denied", which names neither the sub-db
+    # nor the cause. See the note in compressor.py (2026-09-17).
+    fwd_db = env.open_db(b'forward', create=False)
     parts = []
     with env.begin() as txn:
         for tok in tokenize(text):
@@ -145,7 +148,7 @@ def encode_text(text: str, env, stats: _Stats) -> str:
 
 def decode_text(stream: str, env) -> str:
     """Decompress stream → text."""
-    rev_db = env.open_db(b'reverse')
+    rev_db = env.open_db(b'reverse', create=False)   # see encode_text
     out = []
     with env.begin() as txn:
         for st in stream.split(PIPE):

@@ -368,8 +368,30 @@ class Compressor:
                 max_dbs=24,
                 lock=False,
             )
-            self._fwd_db = self._env.open_db(b'forward')
-            self._rev_db = self._env.open_db(b'reverse')
+            # create=False IS LOAD-BEARING on a readonly env (2026-09-17).
+            #
+            # py-lmdb's `open_db` defaults to create=True. On a readonly environment lmdb
+            # cannot create a sub-db, so a MISSING one raises
+            #     lmdb.ReadonlyError: mdb_dbi_open: Permission denied
+            # which names neither the sub-db nor the real problem, and reads like a
+            # filesystem or antivirus fault. 04-Verbalizer lost a day to exactly that
+            # message coming out of mneme's `open_db(b'templates')` against elo-v5, which
+            # creates no `templates` sub-db at all.
+            #
+            # `forward` and `reverse` are core channels, so this cannot fire on a real
+            # dictionary -- it fires when the path is NOT a dictionary, or is a
+            # half-built one, which is precisely when a clear message is worth most.
+            # Same defect, same package: verify_lossless.py had it too.
+            # The correct pattern already existed in facet_reader.py and in the
+            # dictionary package's api.py; this file simply had not been brought to it.
+            try:
+                self._fwd_db = self._env.open_db(b'forward', create=False)
+                self._rev_db = self._env.open_db(b'reverse', create=False)
+            except lmdb.Error as e:
+                raise RuntimeError(
+                    f"{self.lmdb_path} has no 'forward'/'reverse' sub-db -- it is not a "
+                    f"built ELO dictionary (or the build did not finish). Underlying "
+                    f"lmdb error: {type(e).__name__}: {e}") from e
             self._build_caches()
             self._resolve_identity()
         return self
