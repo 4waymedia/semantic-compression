@@ -54,7 +54,7 @@ import lmdb
 
 # THE registry -- what an asset is, and which ones ship. Imported rather than restated so
 # `bundle_channels` here and in publish_dictionary cannot drift apart.
-from asset_registry import bundle_channels           # noqa: E402
+from asset_registry import bundle_channels, NOT_PAYLOAD   # noqa: E402
 
 SC = Path(__file__).resolve().parent            # semantic_compression/
 ROOT = SC.parent                                # R-D-concepts/
@@ -123,11 +123,21 @@ def _package_revision(build_dir: Path) -> int:
         return 1
 
 
-def _derived(lmdb_path: Path, build_dir: Path) -> dict:
+def _digest(f: Path) -> dict | None:
+    """bytes + short sha for one file, or None if it cannot be read."""
+    import hashlib
+    try:
+        return {"bytes": f.stat().st_size,
+                "sha256_16": hashlib.sha256(f.read_bytes()).hexdigest()[:16]}
+    except OSError:
+        return None
+
+
+def _derived(lmdb_path: Path, build_dir: Path, bundle_id: str = "") -> dict:
     """Fields DERIVED from the artifact, computed once at PROMOTION time (§3).
 
     A consumer should not have to open a 20 MB LMDB to learn how many entries a channel
-    has, or which sidecars a package carries. Everything here is read FROM the artifact
+    has, or which files a package carries. Everything here is read FROM the artifact
     and frozen into the pointer, so `STANDARD.json` answers those questions on its own
     -- which is what lets the derivation leave the read path entirely.
 
@@ -137,8 +147,7 @@ def _derived(lmdb_path: Path, build_dir: Path) -> dict:
     into code instead of stated in data.
 
     Every value is measured. Nothing here is typed by hand."""
-    import hashlib
-    out: dict = {"channel_entries": {}, "sidecars": {}}
+    out: dict = {"channel_entries": {}}
     try:
         env = lmdb.open(str(lmdb_path), readonly=True, lock=False, max_dbs=24)
     except lmdb.Error as e:
@@ -157,15 +166,55 @@ def _derived(lmdb_path: Path, build_dir: Path) -> dict:
     finally:
         env.close()
 
+    # TWO FILE SETS, NAMED FOR WHETHER A CONSUMER CAN GET THEM (2026-09-21).
+    #
+    # This document used to declare one map called `sidecars`, listing files from the
+    # BUILD directory with byte counts and shas -- and said nothing about whether a
+    # consumer receives them. Both possible misreadings happened, on the same day:
+    #
+    #   integration read a sha as "I can fetch and verify this"   -> it is not shipped
+    #   this lane read the same field as "obviously build-local"  -> never said so
+    #
+    # The build directory is gitignored and not distributed. So a sha on a file nobody
+    # receives is the manifest and the payload disagreeing about what exists -- the exact
+    # inverse of neighbours.bin shipping unbound on 09-10. elo-sdm's framing: the fix is a
+    # caller that reads back only what it published, and it cannot be written until the
+    # document says which set each entry is in. This is that prerequisite.
+    out["payload"] = {}          # in the published bundle -- a consumer HAS these
+    out["build_local"] = {}      # in the build dir -- a consumer does NOT
     for f in sorted(build_dir.glob("*")):
         if f.is_file() and f.suffix in (".json", ".db", ".gz", ".csv"):
-            try:
-                out["sidecars"][f.name] = {
-                    "bytes": f.stat().st_size,
-                    "sha256_16": hashlib.sha256(f.read_bytes()).hexdigest()[:16],
-                }
-            except OSError:
-                continue
+            d = _digest(f)
+            if d:
+                out["build_local"][f.name] = d
+    # A manifest is not payload of itself -- the rule NOT_PAYLOAD exists to state, and
+    # which this map did not apply on its first run: `payload` counted 12 while the
+    # read-back verified 11, the difference being BUNDLE.json. Caught only because both
+    # numbers were printed side by side. Manifests are listed separately, not dropped;
+    # a consumer still receives them and may still want their shas.
+    out["manifests"] = {}
+    bdir = (DIST / bundle_id) if bundle_id else None
+    if bdir and bdir.is_dir():
+        for f in sorted(bdir.glob("*")):
+            if f.is_file():
+                d = _digest(f)
+                if d:
+                    dest = "manifests" if f.name in NOT_PAYLOAD else "payload"
+                    out[dest][f.name] = d
+    out["file_sets_note"] = (
+        "`payload` = the ASSETS in the published bundle at `bundle_path`; a consumer that "
+        "installed the bundle has exactly these, and `promote` reads them back from that "
+        "directory alone before writing this document -- so `payload` and read-back "
+        "`checked` must agree. `manifests` = files that ship beside the payload and "
+        "DESCRIBE it (BUNDLE.json and friends); a manifest is not payload of itself. "
+        "`build_local` = files in the BUILD "
+        "directory (`builds_root`/`build`), which is NOT distributed -- declared and "
+        "sha-bound so a holder of the build can verify them, but a consumer does not have "
+        "them and cannot obtain them from here. `coverage_census.json` is build_local: a "
+        "measurement sidecar, not a bundle payload. Ask the dictionary lane for a copy.")
+    out["sidecars_renamed"] = ("`sidecars` was split into `payload` and `build_local` on "
+                               "2026-09-21 because it did not say which it meant. If you "
+                               "read `sidecars`, you want `build_local`.")
     try:
         out["lmdb_bytes"] = sum(x.stat().st_size for x in lmdb_path.glob("*") if x.is_file())
     except OSError:
@@ -275,6 +324,69 @@ def _published_bundle(bundle_id: str) -> dict:
     }
 
 
+def _read_back(bundle_dir: Path) -> dict:
+    """Verify a published bundle using ONLY what is inside it (2026-09-21).
+
+    elo-sdm's recommendation, and their framing is why it is a caller rather than a
+    document: their `verify_package.py` builds the wheel, installs it into a clean
+    environment and imports it FROM AN UNRELATED DIRECTORY -- and found two import-time
+    bugs a green suite structurally could not see, because the suite always ran from the
+    source tree. Every gate this lane had ran with the build directory in reach, so none
+    of them could tell "the consumer has this file" from "I can see this file".
+
+    This opens `bundle_dir` and resolves nothing outside it: the manifest it trusts is the
+    one that shipped, and the files it checks are the ones that shipped. A build-local
+    file cannot satisfy a payload declaration here, because the build tree is never read.
+
+    Returns a result rather than raising, so `promote` decides the policy."""
+    import hashlib
+    r: dict = {"ok": False, "checked": 0, "problems": [],
+               "bundle_dir": str(bundle_dir).replace("\\", "/")}
+    bj = bundle_dir / "BUNDLE.json"
+    if not bj.is_file():
+        r["problems"].append(f"no BUNDLE.json in {bundle_dir}")
+        return r
+    try:
+        doc = json.loads(bj.read_text(encoding="utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        r["problems"].append(f"BUNDLE.json unreadable: {type(e).__name__}: {e}")
+        return r
+
+    declared = doc.get("files") or {}
+    if not declared:
+        r["problems"].append("BUNDLE.json declares no files -- nothing to verify")
+        return r
+
+    for name, meta in sorted(declared.items()):
+        f = bundle_dir / name
+        if not f.is_file():
+            r["problems"].append(f"MISSING: {name} is declared and is not in the bundle")
+            continue
+        meta = meta or {}
+        want_sha, want_b = meta.get("sha256"), meta.get("bytes")
+        got_b = f.stat().st_size
+        if want_b is not None and got_b != want_b:
+            r["problems"].append(
+                f"SIZE MISMATCH: {name} declared {want_b} bytes, shipped {got_b}")
+            continue
+        if want_sha:
+            got = hashlib.sha256(f.read_bytes()).hexdigest()
+            if got != want_sha:
+                r["problems"].append(
+                    f"SHA MISMATCH: {name} declared {want_sha[:16]}..., shipped {got[:16]}...")
+                continue
+        r["checked"] += 1
+
+    # The other direction -- G9's rule, re-asked from inside the shipped directory.
+    for f in sorted(bundle_dir.glob("*")):
+        if f.is_file() and f.name not in declared and f.name not in NOT_PAYLOAD:
+            r["problems"].append(
+                f"UNDECLARED: {f.name} ships and BUNDLE.json does not declare it")
+
+    r["ok"] = not r["problems"]
+    return r
+
+
 def promote(build: str, *, allow_staged: bool = False, force: bool = False,
             by: str = "dictionary lane", notes: str = "") -> dict:
     """Make `build` the standard. REFUSES rather than warning.
@@ -309,6 +421,28 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
     _rev = _package_revision(d)
     _bid = build if _rev <= 1 else f"{build}r{_rev}"
     _pub = _published_bundle(_bid)
+
+    # READ BACK WHAT WAS PUBLISHED, BEFORE POINTING ANYONE AT IT (elo-sdm, 2026-09-21).
+    #
+    # Promotion silently repoints every consumer in the project. Until now it verified the
+    # BUILD -- ledger green, stamped, channels present -- and never once opened the thing
+    # consumers actually install. A bundle could be short a file, or carry a file whose
+    # sha no longer matched, and promote would happily name it the standard.
+    #
+    # Refuses only when the bundle directory EXISTS and fails: promoting a build that has
+    # not been published yet is a different (already-noted) state, not corruption.
+    _rb = _read_back(DIST / _bid)
+    _bdir_exists = (DIST / _bid).is_dir()
+    if _bdir_exists and not _rb["ok"] and not force:
+        raise PromotionRefused(
+            f"{_bid} fails read-back from its own published directory -- "
+            f"{len(_rb['problems'])} problem(s), {_rb['checked']} file(s) verified:\n  "
+            + "\n  ".join(_rb["problems"][:10])
+            + f"\n\nThe bundle at {DIST / _bid} does not match its own BUNDLE.json. "
+              f"Promoting it would point every consumer at an artifact that cannot "
+              f"verify itself. Re-publish, or --force if you know why this is acceptable.")
+    if not _bdir_exists:
+        print(f"  NOTE: no published bundle at dist/dictionary/{_bid} -- read-back skipped")
     doc = {
         "schema": SCHEMA_STANDARD,
         "build": build,
@@ -350,18 +484,12 @@ def promote(build: str, *, allow_staged: bool = False, force: bool = False,
         "supersedes_fingerprint": (prev or {}).get("dictionary_fingerprint"),
         "ledger_green": led["green"],
         # §3 -- derived at promotion, not at read time. See _derived().
-        **_derived(lm, d),
-        # 2026-09-16: integration read `sidecars` as "consumers can fetch and verify these
-        # without asking". They are declared and sha-bound, but they live in the BUILD
-        # directory, which is gitignored and not distributed -- a consumer holding only the
-        # published bundle has none of them. Declared != shipped, and the document said
-        # nothing either way.
-        "sidecars_note": ("sidecars are files in the BUILD directory "
-                          "(`builds_root`/`build`), which is NOT distributed. They are "
-                          "declared and sha-bound so a holder of the build can verify "
-                          "them; a consumer who has only the published bundle at "
-                          "`bundle_path` does not have them. `coverage_census.json` in "
-                          "particular is a measurement sidecar, not a bundle payload."),
+        # `payload` / `build_local` supersede the old `sidecars` map; the note the 09-16
+        # fix added is now `file_sets_note`, emitted from _derived beside the data it
+        # describes rather than typed in here next to it.
+        **_derived(lm, d, _bid),
+        # What the published directory said about itself, at promotion time.
+        "read_back": _rb,
         "notes": notes or ("ids are build-specific; bind by surface, verify by "
                            "fingerprint. Persisted ids MUST carry this fingerprint "
                            "beside them and verify tri-state on read."),
@@ -418,6 +546,19 @@ def main() -> int:
     if doc["supersedes"]:
         print(f"  supersedes {doc['supersedes']} ({(doc['supersedes_fingerprint'] or '')[:16]})")
     print(f"  channels: {', '.join(doc['channels'])}")
+    print(f"  bundle:   {doc.get('bundle_id')}  "
+          f"bundle_fp={(doc.get('bundle_fingerprint') or '-')[:16]}")
+    rb = doc.get("read_back") or {}
+    if rb.get("ok"):
+        print(f"  read-back: OK -- {rb['checked']} payload file(s) verified from "
+              f"{rb['bundle_dir']} alone")
+    elif rb.get("problems"):
+        print(f"  read-back: {len(rb['problems'])} PROBLEM(S) (promoted with --force)")
+        for p in rb["problems"][:5]:
+            print(f"    {p}")
+    print(f"  files: {len(doc.get('payload') or {})} payload (shipped)  ·  "
+          f"{len(doc.get('manifests') or {})} manifest  ·  "
+          f"{len(doc.get('build_local') or {})} build_local (NOT distributed)")
     print(f"  written: {STANDARD_PATH}")
     return 0
 

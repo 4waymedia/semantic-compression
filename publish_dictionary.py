@@ -56,7 +56,8 @@ NBR_OFF = struct.Struct("<I")            # CSR offset u32
 NBR_REC = struct.Struct("<IB")           # neighbour_n u32 + sim u8 = 5 B
 VFT_REC = struct.Struct("<BB")           # 2 B  vfacet record; b"\xff\xff" = absent
 VFT_ABSENT = b"\xff\xff"
-from asset_registry import ASSETS, BY_NAME, bundle_channels, wire_magic   # noqa: E402
+from asset_registry import (ASSETS, BY_NAME, NOT_PAYLOAD,   # noqa: E402
+                            bundle_channels, wire_magic)
 
 # DERIVED, not declared. These were three hand-kept lists here; `wordclass` was in none
 # of them, which is how a locked 437,995-record channel passed every publish gate by not
@@ -93,7 +94,11 @@ DENY_SUFFIX = ("_stats.json",)
 # hand-maintained "shipped files" lists (export_browser_assets.py, export_neighbours.py,
 # and this module) and none of them complete. G9 now refuses on any payload file that
 # is not declared, so the next channel cannot be forgotten.
-NOT_PAYLOAD = ("BUNDLE.json", "assets.meta.json", "neighbours.meta.json")
+#
+# MOVED TO asset_registry 2026-09-21. It was defined here alone, and dictionary_standard's
+# published read-back needs the same answer -- so it would have had to import a
+# publish-time script or restate the tuple. A restated list is how nine asset lists
+# happened; this one is now declared once, with the assets it is about. Imported above.
 #
 # BUNDLE.json IS THE MANIFEST OF RECORD. Settled 2026-09-11 (Paul), on evidence:
 #

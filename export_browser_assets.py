@@ -449,14 +449,39 @@ def main() -> int:
     # The oracle name is now derived from the build directory, so each build gets its
     # own file and no build can overwrite another's evidence.
     build_name = a.build.name
+
+    # THE REVISION STAMP (2026-09-20, asked for by ELO-Browser -- twice, and correctly).
+    #
+    # `fingerprint` is the DICTIONARY fingerprint, which is IDENTICAL across revisions by
+    # design -- that is what keeps stored .elo files readable. So an oracle stamped with
+    # build + fingerprint alone cannot tell r1 from r3. r3 rebuilt vfacets.bin
+    # (09466e8b -> b093130f) under an unchanged fingerprint, which left the browser unable
+    # to distinguish a REAL vfacets regression from an oracle that simply predates the
+    # rebuild -- i.e. unable to trust the suite either way.
+    #
+    # This is the same defect as the codec oracle's missing codec_policy_version, in the
+    # three channel oracles instead of the vector one. An oracle must pin every identity
+    # that can move under it.
+    _rev, _bid = 1, build_name
+    _mf = a.build / "manifest.json"
+    if _mf.is_file():
+        try:
+            _m = json.loads(_mf.read_text(encoding="utf-8"))
+            _rev = int(_m.get("package_revision", 1))
+            _bid = _m.get("bundle_id") or (build_name if _rev <= 1
+                                           else f"{build_name}r{_rev}")
+        except Exception as e:                               # noqa: BLE001
+            print(f"  WARNING: cannot read package_revision from {_mf} "
+                  f"({type(e).__name__}) -- oracles stamped revision 1")
+    _identity = {"build": build_name, "fingerprint": fingerprint,
+                 "bundle_id": _bid, "package_revision": _rev}
+
     _wj(a.oracle_out / "epa.json", {
-        "build": build_name,
-        "fingerprint": fingerprint,
+        **_identity,
         "cases": [{"surface": s, "epa": epa_sample[s]} for s in sample if s in epa_sample],
     })
     _wj(a.oracle_out / "facets.json", {
-        "build": build_name,
-        "fingerprint": fingerprint,
+        **_identity,
         "cases": [{
             "surface": s,
             "raw": fct_sample[s],
@@ -516,8 +541,9 @@ def main() -> int:
             "polarity_known_names": {"0": "UNKNOWN", "1": "MEASURED"},
         })
         _wj(a.oracle_out / "vfacets.json", {
-            "build": build_name,
-            "fingerprint": fingerprint,
+            # vfacets is the channel r3 actually rebuilt, so this is the oracle whose
+            # missing revision stamp cost the browser a suite it could not trust.
+            **_identity,
             "cases": [dict({"surface": s, "raw": vft_sample[s]},
                            **_vft_decode(*vft_sample[s]))
                       for s in sample if s in vft_sample],

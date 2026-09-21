@@ -224,6 +224,17 @@ BY_NAME: dict[str, Asset] = {a.name: a for a in ASSETS}
 
 
 # --- derived views: what the seven old lists used to say, computed ---------------
+# Files that live IN a published bundle directory but are not payload -- they describe
+# the payload rather than being it. Declared here, with the assets, because three callers
+# need the same answer: publish_dictionary's G9 (every payload declared, two-way),
+# dictionary_standard's published read-back, and anything auditing a bundle directory.
+#
+# It was defined in publish_dictionary alone until 2026-09-21, which meant the read-back
+# either imported a publish-time script or restated the list -- and a restated list is how
+# nine asset lists happened. A manifest is not payload of itself.
+NOT_PAYLOAD = ("BUNDLE.json", "assets.meta.json", "neighbours.meta.json")
+
+
 def known_subdbs() -> dict:
     """`config.KNOWN_SUBDBS` — every LMDB sub-db, with its key scheme."""
     out = {}
