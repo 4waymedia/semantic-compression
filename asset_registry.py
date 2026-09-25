@@ -192,7 +192,11 @@ ASSETS: tuple[Asset, ...] = (
                "the LMDB, is wrong and silent. On the bin: test is_nan, never == 0.0 -- "
                "zero is a measured neutral affect.",
         bin_file="epa.bin", wire_magic=b"ELOEPA\x01\x00",
-        contract_file=None,
+        # DECLARED 2026-09-24. Was None -- one of two shipping channels with no contract
+        # file, so a native reader hand-decoded its geometry from prose and BUNDLE.json
+        # carried `format_version: null`. Declaring it here is what makes publish REFUSE
+        # a bundle without it (publish_dictionary.py:611); export_browser_assets emits it.
+        contract_file="epa.names.json",
         ships=True,
         note="<fff evaluation/potency/activity. AFFECT, never denotative similarity.",
     ),
@@ -228,7 +232,9 @@ ASSETS: tuple[Asset, ...] = (
                "'indexed, nothing similar enough': 258,251 of 258,254 covered "
                "entries sit exactly at the k=16 cap, so min_sim never binds.",
         bin_file="neighbours.bin", wire_magic=b"ELONBR\x01\x00",
-        contract_file=None,
+        # DECLARED 2026-09-24 -- see epa. `neighbours.meta.json` is a build record in
+        # NOT_PAYLOAD and was never the contract; this is. export_neighbours emits it.
+        contract_file="neighbours.names.json",
         ships=True,
         note="CSR: 80B header (16B struct + 64B fingerprint -- `fp_len` at byte 12 is "
              "NOT the header length; this lane has misread it twice) + (count+1) u32 "

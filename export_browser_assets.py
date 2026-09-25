@@ -359,6 +359,32 @@ def main() -> int:
         return _wb(path, json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
     h_epa = _wb(a.out / "epa.bin", epa_bytes)
+    # THE EPA CONTRACT (2026-09-24). Until today epa shipped no .names.json -- one of two
+    # channels with none, alongside neighbours -- so its geometry lived in prose only and
+    # BUNDLE.json recorded `format_version: null` because there was nothing to read it
+    # from. A native reader had to hand-decode from a docstring. This is what it decodes
+    # from now. Consistent with the other contracts: version, fingerprint, count, spec,
+    # then the layout -- but epa has no enums, so the layout IS the contract.
+    h_epa_names = _wj(a.out / "epa.names.json", {
+        "version": 1,
+        "dictionary_fingerprint": fingerprint,
+        "count": count,
+        "spec": "packages/elo-dictionary/PACKAGE-CONTENTS.md#51-epabin--stride-12",
+        "record_width": EPA_REC.size,
+        "record_format": "<fff",
+        "fields": ["evaluation", "potency", "activity"],
+        "field_type": "float32 LE",
+        "scale": "Osgood/Heise EPA, roughly -4..+4; the substrate's own range",
+        "absent": "NaN,NaN,NaN in this file. The array is DENSE: count slots, one per "
+                  "vocab index n, and unrated slots are NaN. Test is_nan; never == 0.0, "
+                  "which is a measured neutral affect. NOTE the LMDB spells absence "
+                  "differently (no row) -- this contract describes THIS file.",
+        "keyed_by": "vocab index n (elo-<build>.browser.json entries[i].n), offset 80 + 12*n",
+        "not_for": "synonymy or semantic search. EPA is affect, not denotation. Use "
+                   "neighbours for 'means something similar'.",
+        "reliability_note": "cross-source agreement on the Warriner/NRC-VAD overlap is "
+                            "E=0.814 A=0.613 P=0.328 -- potency is the least reliable axis.",
+    })
     h_fct = _wb(a.out / "facets.bin", fct_bytes)
     h_vft = None
     if vft_arr is not None:
@@ -406,6 +432,7 @@ def main() -> int:
         "browser_json": vocab_path.name,
         "browser_json_sha256_16": h_vocab,
         "facets_names_sha256_16": h_names,
+        "epa_names_sha256_16": h_epa_names,
         # `files` is filled from the OUTPUT DIRECTORY at the end of main(), not from a
         # list written here -- see _seal_assets_meta. This dict is written last so that
         # every file this stage produces already exists when it is enumerated.

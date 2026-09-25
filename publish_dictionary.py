@@ -957,7 +957,11 @@ def main() -> int:
     (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
     # Orientation for whoever opens this directory next. Generated from the registry, so
     # it cannot describe an asset set the bundle does not carry. In NOT_PAYLOAD.
-    _pkg = _write_package_manifest(dest, doc, man)
+    # `_man` -- the local is underscored (:882). The first call here wrote `man`, a name
+    # that exists in two OTHER functions (:359, :661) and not this one, and crashed the
+    # first real publish of r4 after every gate had passed and BUNDLE.json was on disk.
+    # A call site written without reading the scope it sits in.
+    _pkg = _write_package_manifest(dest, doc, _man)
     # THE CONFORMANCE SUITE (2026-09-24) -- the reference implementation's behaviour,
     # generated against THIS build and shipped beside it, so a port in any language can
     # prove it reads these bytes the way the reference does. Test-time only; a
@@ -1209,7 +1213,12 @@ def _write_conformance(dest: Path, build_dir: Path, doc: dict) -> "dict | None":
     a bundle that cannot be published because its test vectors would not generate is the
     wrong trade. It says so loudly instead."""
     import os                                                     # noqa: PLC0415
-    pkg_src = ROOT / "packages" / "elo-dictionary" / "src"
+    # `ROOT` is a LOCAL inside main() (:808), not a module global -- and :488, four
+    # hundred lines up, is a comment from 2026-09-10 recording that G11 crashed on
+    # exactly this. Second function in one publish to reach for a name that exists
+    # only in a scope it cannot see. Derived from __file__ here, as :493 does.
+    _root = Path(__file__).resolve().parent.parent
+    pkg_src = _root / "packages" / "elo-dictionary" / "src"
     if str(pkg_src) not in sys.path:
         sys.path.insert(0, str(pkg_src))
     prev = os.environ.get("ELO_DICT")

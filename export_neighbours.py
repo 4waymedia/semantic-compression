@@ -312,6 +312,43 @@ def main() -> int:
         "neighbours_bin_sha256_16": h,
         "format": "CSR: 80B header + (count+1) u32 offsets + records(u32 n,u8 sim)",
     }, indent=2), encoding="utf-8")
+
+    # THE NEIGHBOURS CONTRACT (2026-09-24). `neighbours.meta.json` above is a build
+    # record and is NOT payload (it is in NOT_PAYLOAD) -- so until today this channel's
+    # geometry reached a consumer only as prose, and BUNDLE.json recorded
+    # `format_version: null` for it. A native reader had to hand-decode a CSR layout
+    # from a docstring, and this lane misread that same header twice. This file is what
+    # they decode from now; it is payload, sha-bound, and read by _contract_version.
+    (out_dir / "neighbours.names.json").write_text(json.dumps({
+        "version": 1,
+        "dictionary_fingerprint": fingerprint,
+        "count": count,
+        "spec": "packages/elo-dictionary/PACKAGE-CONTENTS.md#55-neighboursbin--csr-not-a-flat-array",
+        "layout": "CSR",
+        "header": {"bytes": 80, "struct": "<8sII + 64s",
+                   "fields": ["magic", "count u32 LE", "fp_len u32 LE (=64, the "
+                              "FINGERPRINT's length, not the header's)",
+                              "fingerprint 64 x ASCII hex"]},
+        "offsets": {"at": 80, "count": "count+1", "type": "u32 LE",
+                    "meaning": "neighbours of n are records[off[n] : off[n+1]]"},
+        "records": {"at": "80 + 4*(count+1)", "width": 5, "struct": "<IB",
+                    "fields": ["neighbour_n u32 LE", "sim u8"]},
+        "size_check": "80 + 4*(count+1) + 5*total_records == file size",
+        "sim": {"type": "u8", "range": "0..255", "meaning": "quantised similarity from "
+                "the 768-d denotative index; NOT a cosine, compare only within this file"},
+        "k": a.k,
+        "min_sim": a.min_sim,
+        "absent": "an EMPTY list (off[n] == off[n+1]) means NOT IN THE INDEX. It "
+                  "essentially never means 'indexed, nothing similar enough': on elo-v5 "
+                  "258,251 of 258,254 covered entries sit exactly at the k cap, so "
+                  "min_sim never binds.",
+        "keyed_by": "vocab index n (<build>.browser.json entries[i].n)",
+        "purpose": "DENOTATIVE similarity -- 'means something similar'. The question EPA "
+                   "cannot answer.",
+        "entries_with_neighbours": with_nb,
+        "index_covers": covered,
+    }, indent=2), encoding="utf-8")
+    print(f"  wrote {out_dir/'neighbours.names.json'}  (the contract)")
     return 0
 
 
