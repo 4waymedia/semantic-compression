@@ -969,7 +969,8 @@ def main() -> int:
     if _conf:
         _n = sum(v["count"] for v in _conf["verbs"].values())
         print(f"  conformance/ written ({_n} vectors, {len(_conf['verbs'])} verbs, "
-              f"{len(_conf['skipped'])} skipped; uncovered: {', '.join(_conf['uncovered'])})")
+              f"{len(_conf['skipped'])} skipped; uncovered: "
+              f"{', '.join(_conf['uncovered']) or 'none'})")
     if not PACKAGE_TERMS:
         print("  NOTE: terms of use are UNSET -- PACKAGE.md says so rather than inventing "
               "a licence. Set PACKAGE_TERMS when that is decided.")
