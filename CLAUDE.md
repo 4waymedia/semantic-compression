@@ -65,18 +65,34 @@
 
 ## Versions & lifecycle
 
-- v0.3 = first LLM vocab contract, **LOCKED** (a model is trained on it).
-- v0.4 = latest general dictionary (`db/builds/general_v0.4_char4`), **staged**.
-- `elo-browser-v01` = v0.4 general + website/HTML fold-in (`builds/elo-browser-v01.yaml`).
-- **Lock is per (dictionary, model) pair** (`stamp_meta.py`: staged|frozen|locked).
-  Facets/meta are **additive** — re-derive freely; they never alter forward/reverse.
+- **The standard is whatever `dist/dictionary/STANDARD.json` says.** As of 2026-09-25:
+  `elo-v5`, `bundle_id: elo-v5r4`. Builds are named `elo-vN`, forward only (ruling
+  2026-09-24). `elo-browser-v01`…`v04` and `general_v0.4_char4` are historical.
+- **Lock is per (dictionary, model) pair** (`stamp_meta.py`: staged|frozen|locked) — and
+  **no model is deployed, so no lock is in force.** Facets/meta are **additive** — re-derive
+  freely; they never alter forward/reverse.
 
-## LLM track
+## LLM track — RETIRED (Paul, 2026-09-25)
 
-- `../llm-training/`: `elo_tokenizer.py` (HF `PreTrainedTokenizer`), `build_tokenizer.py`,
-  `prepare_training_data.py`, `init_embeddings.py`, `train.py`. **The LLM tokenizer
-  MUST match `tokenizer.py` char-class logic** (spec-v0.4 RC4) — same implicit-ws +
-  caps + byte-fallback as the codec, or ids/counts won't match the model.
+> **There is no LLM contract.** "The LLM training is on hold. We are not using v1 anymore.
+> That was months ago, and 9 dictionary builds in the past."
+
+The v0.3 / `docs/v1/` vocabulary contract (`token-ids-v1.csv.gz` and the three `-v1`
+siblings, frozen 2026-06-11) is **dead**. Nothing current binds to it. Consequences, stated
+so nobody rebuilds against a corpse:
+
+- `../llm-training/` (`elo_tokenizer.py`, `build_tokenizer.py`, the training scripts) is
+  frozen with it. Do not run it, do not cite it as a requirement, do not "regenerate" from it.
+- `ids.json` / the browser's `conformance_ids` tested that tokenizer. **Retire the test**; do
+  not park or regenerate it. `gen_ids_oracle.py` refuses to run for this reason.
+- The "LLM tokenizer MUST match `tokenizer.py`" rule has no subject until a tokenizer exists
+  again. `tokenizer.py` remains the codec's tokenizer and is governed by the codec contract.
+- **Profile cuts (`tiny`…`reference`) remain a live per-build concept** — `<build>.browser.json`
+  is projected from them — but they are no longer "for an LLM embedding budget". They are
+  frequency-rank cuts of a build, and nothing else.
+
+When the LLM track resumes it starts from a **current** build, with a new contract, a new
+tokenizer, and a new oracle. None of the v1 artifacts carry forward.
 
 ## HARD RULE — a size limit never drops words (2026-08-10)
 

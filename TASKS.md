@@ -35,7 +35,9 @@
       the terms of the corpora it was derived from**. `PACKAGE.md` says so explicitly.
 - [ ] Ship `INDEX.json` (the build list) and the four oracles in the bundle, or expose
       `builds()` from the package — both are authoritative and unreachable to a consumer.
-- [ ] Promote `elo-v5r4`; tell every lane to re-pin. *(broadcast, by lane name this time)*
+- [ ] Confirm r3 restored: `Remove-Item` its `PACKAGE.md` + `conformance/`, then
+      `publish_dictionary.py --verify dist\dictionary\elo-v5r3` must print no
+      `UNDECLARED ATTACHMENT` line.
 - [ ] **browser:** drop `handoffs/2026-09-24-TEMPLATE-conformance-runner-for-elo-rs.rs` into
       `src-tauri/src/`, fill the `todo!()`s, `cargo test conformance`. Report green OR red.
 - [ ] Regenerate `conformance-verbs.json` (verbalizer generator now emits `fixture_*`);
@@ -89,6 +91,14 @@ from a probe that read `bucket` and discarded `flags`.
 
 ## Done
 
+- [x] 2026-09-25 **`elo-v5r5` published + promoted** — `PACKAGE.md` and `conformance/**`
+      declared under `attachments` with `attachments_fingerprint`; `BUNDLE.json` written
+      last; read-back and `--verify` cover both maps in both directions. Payload
+      byte-identical to r4 (same `bundle_fingerprint`, by construction). Found by ELO-Browser.
+- [x] 2026-09-25 **LLM contract deprecated** in root + lane `CLAUDE.md`; `gen_ids_oracle.py`
+      refuses; `conformance_ids` to be retired, not parked. Paul: "we have NO LLM contract."
+- [x] 2026-09-25 `conformance generate` refuses a published directory. r3 had been mutated in
+      place by this lane's standalone tools, twice.
 - [x] 2026-09-25 **`elo-v5r4` published** — 13 payload files (+`epa.names.json`,
       `neighbours.names.json`), `PACKAGE.md`, `conformance/`, 11 gates, one clean run.
       The two runs before it crashed on `NameError`s in my hooks *after* every gate

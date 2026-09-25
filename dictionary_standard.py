@@ -383,6 +383,43 @@ def _read_back(bundle_dir: Path) -> dict:
             r["problems"].append(
                 f"UNDECLARED: {f.name} ships and BUNDLE.json does not declare it")
 
+    # ATTACHMENTS (2026-09-25, ELO-Browser's finding). PACKAGE.md and conformance/** were
+    # present in r4 and declared nowhere, so this read-back -- top-level glob, NOT_PAYLOAD
+    # excluded -- could not see them, and a tampered vector passed. r3 was mutated in
+    # place the same way and verified green. Both directions over the second map now,
+    # walking subdirectories.
+    att_declared = doc.get("attachments") or {}
+    att_shas = {}
+    for rel, meta in sorted(att_declared.items()):
+        f = bundle_dir / rel
+        if not f.is_file():
+            r["problems"].append(f"MISSING attachment: {rel} declared, not in the bundle")
+            continue
+        got = hashlib.sha256(f.read_bytes()).hexdigest()
+        att_shas[rel] = got
+        if (meta or {}).get("sha256") and got != meta["sha256"]:
+            r["problems"].append(f"SHA MISMATCH attachment: {rel}")
+            continue
+        r["checked"] += 1
+    if att_declared:
+        material = "".join(f"{n}\t{s}\n" for n, s in sorted(att_shas.items()))
+        if hashlib.sha256(material.encode()).hexdigest() != doc.get("attachments_fingerprint"):
+            r["problems"].append("attachments_fingerprint does not match the files on disk")
+    present_att: dict = {}
+    for root in ("PACKAGE.md", "conformance"):
+        p = bundle_dir / root
+        if p.is_file():
+            present_att[root] = p
+        elif p.is_dir():
+            for f in p.rglob("*"):
+                if f.is_file():
+                    present_att[f.relative_to(bundle_dir).as_posix()] = f
+    for rel in sorted(set(present_att) - set(att_declared)):
+        r["problems"].append(
+            f"UNDECLARED attachment: {rel} is present and BUNDLE.json does not declare it "
+            f"-- a file a consumer is told to trust that nothing binds")
+    r["attachments_checked"] = len(att_shas)
+
     r["ok"] = not r["problems"]
     return r
 
@@ -550,7 +587,8 @@ def main() -> int:
           f"bundle_fp={(doc.get('bundle_fingerprint') or '-')[:16]}")
     rb = doc.get("read_back") or {}
     if rb.get("ok"):
-        print(f"  read-back: OK -- {rb['checked']} payload file(s) verified from "
+        print(f"  read-back: OK -- {rb['checked'] - rb.get('attachments_checked', 0)} payload "
+              f"+ {rb.get('attachments_checked', 0)} attachment file(s) verified from "
               f"{rb['bundle_dir']} alone")
     elif rb.get("problems"):
         print(f"  read-back: {len(rb['problems'])} PROBLEM(S) (promoted with --force)")

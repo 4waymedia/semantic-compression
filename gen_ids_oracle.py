@@ -1,4 +1,22 @@
-"""Emit `ids.json` -- the LLM-TOKENIZER oracle. The one oracle that had no generator.
+"""DEPRECATED 2026-09-25 -- this oracle tests an artifact that no longer exists.
+
+Paul, 2026-09-25: "we have NO LLM contract. The LLM training is on hold. We are not using
+v1 anymore. That was months ago, and 9 dictionary builds in the past."
+
+`ids.json` pinned integer token ids over the v1 LLM vocabulary contract
+(`token-ids-v1.csv.gz`, 373,917 rows, frozen 2026-06-11). That contract is retired. There
+is no current LLM tokenizer to generate an oracle FOR, so this file generates nothing:
+`conformance_ids` in the browser should be RETIRED, not parked. Integration's instruction to
+"regenerate under elo-v5r3" and this lane's day spent on it were a category error built on a
+dead document that nobody had marked dead. It is marked now.
+
+Kept in the tree, refusing to run, so the next person who finds `ids.json` referenced
+somewhere reads this instead of rebuilding it. Delete when the LLM track resumes on a
+current build, and write a new generator against whatever the tokenizer is then.
+
+---- original header follows, for the record ----
+
+Emit `ids.json` -- the LLM-TOKENIZER oracle. The one oracle that had no generator.
 
     python semantic_compression/gen_ids_oracle.py --build elo-v5 --profile full
 
@@ -141,6 +159,11 @@ def build_oracle(build: str, profile: str, tokenizer_dir: Path) -> dict:
 
 
 def main(argv=None) -> int:
+    raise SystemExit(
+        "DEPRECATED: ids.json tested the v1 LLM vocabulary contract, which is retired "
+        "(Paul, 2026-09-25 -- no LLM contract, training on hold, v1 unused for 9 builds). "
+        "There is nothing to generate. Retire `conformance_ids` in the browser; do not "
+        "park it. See this file's docstring.")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", required=True, help="dictionary build name, e.g. elo-v5")

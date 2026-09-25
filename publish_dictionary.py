@@ -177,6 +177,46 @@ def payload_files(bundle_dir: Path) -> dict:
             if p.is_file() and p.name not in NOT_PAYLOAD}
 
 
+ATTACHMENT_ROOTS = ("PACKAGE.md", "conformance")
+
+
+def attachment_files(bundle_dir: Path) -> dict:
+    """Every ATTACHMENT in the bundle, by bundle-relative posix path (2026-09-25).
+
+    Attachments are the files that tell a consumer what to trust -- PACKAGE.md and the
+    conformance vectors. They are not payload (not channel data, not n-parallel, not
+    what G1/G2 measure) and are not in `bundle_fingerprint`, so r4's fingerprint does
+    not move retroactively. They ARE sha-bound under `attachments` with their own
+    `attachments_fingerprint`, and read-back verifies both maps.
+
+    Why (ELO-Browser, 2026-09-25): r4 shipped PACKAGE.md and 21 conformance files present
+    in the directory and absent from BUNDLE.json. `bundle_fingerprint` did not reach
+    them; a tampered vector, a swapped PACKAGE.md or a truncated INDEX.json passed every
+    gate green. The two files the revision existed for were the two a consumer could not
+    verify. That was a design choice -- conformance/ was put in a subdirectory
+    *specifically* so G9 would not see it -- and it was the wrong one.
+
+    Non-circular: attachments embed `bundle_fingerprint` (already computed when they are
+    generated) and cannot embed a hash of themselves. BUNDLE.json is in neither map."""
+    out: dict = {}
+    for root in ATTACHMENT_ROOTS:
+        p = bundle_dir / root
+        if p.is_file():
+            out[root] = p
+        elif p.is_dir():
+            for f in sorted(p.rglob("*")):
+                if f.is_file():
+                    out[f.relative_to(bundle_dir).as_posix()] = f
+    return out
+
+
+def _fingerprint_of(shas: dict) -> str:
+    """sha256 over 'name<TAB>sha' lines, sorted -- the same material bundle_fingerprint
+    uses (_verify_published), so the two are computed one way."""
+    material = "".join(f"{n}\t{s}\n" for n, s in sorted(shas.items()))
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -954,20 +994,35 @@ def main() -> int:
     # were two lists before, and they did.
     for src in payload_files(bundle_src).values():
         shutil.copyfile(src, dest / src.name)
-    (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
-    # Orientation for whoever opens this directory next. Generated from the registry, so
-    # it cannot describe an asset set the bundle does not carry. In NOT_PAYLOAD.
+
+    # ORDER MATTERS, and it was wrong on r4 (ELO-Browser, 2026-09-25). BUNDLE.json used to be
+    # written HERE, before PACKAGE.md and conformance/ existed -- so it could not declare
+    # them, bundle_fingerprint could not reach them, and a tampered vector passed green.
+    # Now: generate the attachments (they embed bundle_fingerprint, already in `doc`),
+    # hash them, declare them, and write BUNDLE.json LAST. It is the seal, not a step.
+    #
     # `_man` -- the local is underscored (:882). The first call here wrote `man`, a name
     # that exists in two OTHER functions (:359, :661) and not this one, and crashed the
-    # first real publish of r4 after every gate had passed and BUNDLE.json was on disk.
-    # A call site written without reading the scope it sits in.
+    # first real publish of r4 after every gate had passed. A call site written without
+    # reading the scope it sits in.
     _pkg = _write_package_manifest(dest, doc, _man)
-    # THE CONFORMANCE SUITE (2026-09-24) -- the reference implementation's behaviour,
-    # generated against THIS build and shipped beside it, so a port in any language can
-    # prove it reads these bytes the way the reference does. Test-time only; a
-    # subdirectory so G9 and the read-back (both top-level) do not see it as payload.
     _conf = _write_conformance(dest, build_dir, doc)
-    print(f"\npublished -> {dest}\n  {len(doc['files'])+2} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
+
+    _att = {rel: {"sha256": _sha256(p), "bytes": p.stat().st_size}
+            for rel, p in attachment_files(dest).items()}
+    doc["attachments"] = _att
+    doc["attachments_fingerprint"] = _fingerprint_of({k: v["sha256"] for k, v in _att.items()})
+    doc["attachments_note"] = (
+        "PACKAGE.md and conformance/** -- the files that tell a consumer what to trust. "
+        "Sha-bound here and covered by attachments_fingerprint, verified by read-back. "
+        "NOT in `files` and NOT in bundle_fingerprint: they are not channel data, and "
+        "keeping them out of the payload fingerprint means a prior revision's fingerprint "
+        "does not move when these are added. Test-time artifacts; never embed in a binary.")
+
+    (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\npublished -> {dest}\n  {len(doc['files'])} payload + {len(_att)} attachment "
+          f"files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}  "
+          f"attachments_fingerprint {doc['attachments_fingerprint'][:16]}")
     print(f"  {_pkg.name} written ({len(doc['files'])} files described, "
           f"{sum(1 for a in ASSETS if a.ships)} assets)")
     if _conf:
@@ -1359,11 +1414,38 @@ def _verify_published(bundle_dir: Path) -> int:
         for name in undeclared:
             print(f"  FAIL {name}  UNDECLARED -- present in the bundle, absent from "
                   f"BUNDLE.json")
-    material = "".join(f"{n}\t{s}\n" for n, s in sorted(shas.items()))
-    recomputed = hashlib.sha256(material.encode()).hexdigest()
+    recomputed = _fingerprint_of(shas)
     fp_ok = recomputed == doc["bundle_fingerprint"]
     ok &= fp_ok
     print(f"  bundle_fingerprint {'matches' if fp_ok else 'MISMATCH ' + recomputed[:16]}")
+
+    # ATTACHMENTS (2026-09-25). Same two directions, over the second map. A bundle from
+    # before r5 declares no attachments; that is reported, not failed -- but any
+    # attachment file PRESENT in such a bundle is undeclared, and that IS a failure: it is
+    # exactly how r3 was mutated in place and stayed green.
+    declared_att = doc.get("attachments") or {}
+    present_att = attachment_files(bundle_dir)
+    att_shas = {}
+    if declared_att:
+        for rel, rec in sorted(declared_att.items()):
+            p = bundle_dir / rel
+            if not p.exists():
+                print(f"  MISSING {rel}  (attachment)"); ok = False; continue
+            got = _sha256(p)
+            att_shas[rel] = got
+            match = got == rec["sha256"]
+            ok &= match
+            print(f"  {'ok  ' if match else 'FAIL'} {rel}  {got[:16]}  (attachment)")
+        afp = _fingerprint_of(att_shas)
+        afp_ok = afp == doc.get("attachments_fingerprint")
+        ok &= afp_ok
+        print(f"  attachments_fingerprint {'matches' if afp_ok else 'MISMATCH ' + afp[:16]}")
+    else:
+        print("  (no attachments declared -- pre-r5 bundle)")
+    for rel in sorted(set(present_att) - set(declared_att)):
+        ok = False
+        print(f"  FAIL {rel}  UNDECLARED ATTACHMENT -- present, absent from BUNDLE.json. "
+              f"This is how r3 was mutated after publication and verified green.")
 
     # CROSS-COPY CHECK (2026-08-27, Paul's question): internal verification alone let
     # two artifacts both named <build> -- the frozen publication and the live browser
