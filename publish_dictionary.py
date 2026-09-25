@@ -958,9 +958,18 @@ def main() -> int:
     # Orientation for whoever opens this directory next. Generated from the registry, so
     # it cannot describe an asset set the bundle does not carry. In NOT_PAYLOAD.
     _pkg = _write_package_manifest(dest, doc, man)
+    # THE CONFORMANCE SUITE (2026-09-24) -- the reference implementation's behaviour,
+    # generated against THIS build and shipped beside it, so a port in any language can
+    # prove it reads these bytes the way the reference does. Test-time only; a
+    # subdirectory so G9 and the read-back (both top-level) do not see it as payload.
+    _conf = _write_conformance(dest, build_dir, doc)
     print(f"\npublished -> {dest}\n  {len(doc['files'])+2} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
     print(f"  {_pkg.name} written ({len(doc['files'])} files described, "
           f"{sum(1 for a in ASSETS if a.ships)} assets)")
+    if _conf:
+        _n = sum(v["count"] for v in _conf["verbs"].values())
+        print(f"  conformance/ written ({_n} vectors, {len(_conf['verbs'])} verbs, "
+              f"{len(_conf['skipped'])} skipped; uncovered: {', '.join(_conf['uncovered'])})")
     if not PACKAGE_TERMS:
         print("  NOTE: terms of use are UNSET -- PACKAGE.md says so rather than inventing "
               "a licence. Set PACKAGE_TERMS when that is decided.")
@@ -1183,6 +1192,57 @@ def _write_package_manifest(dest: Path, doc: dict, man: dict) -> Path:
     out = dest / "PACKAGE.md"
     out.write_text("\n".join(L) + "\n", encoding="utf-8")
     return out
+
+
+def _write_conformance(dest: Path, build_dir: Path, doc: dict) -> "dict | None":
+    """Generate conformance/ against THE BUILD BEING PUBLISHED, not the current standard.
+
+    The trap this guards: `open_dictionary()` resolves the promoted standard. At publish
+    time the standard is usually the PREVIOUS build, so vectors generated naively would
+    describe a different dictionary than the one they ship with -- silently, because both
+    have 437,995 entries and every verb would still return something. ELO_DICT is set to
+    this build's LMDB for the duration and restored after; the resolver's cache key
+    includes the variable, so no stale entry can answer.
+
+    Failure here does NOT fail the publish: the bundle is complete without the suite, and
+    a bundle that cannot be published because its test vectors would not generate is the
+    wrong trade. It says so loudly instead."""
+    import os                                                     # noqa: PLC0415
+    pkg_src = ROOT / "packages" / "elo-dictionary" / "src"
+    if str(pkg_src) not in sys.path:
+        sys.path.insert(0, str(pkg_src))
+    prev = os.environ.get("ELO_DICT")
+    os.environ["ELO_DICT"] = str((build_dir / "dictionary.lmdb").resolve())
+    try:
+        from compression_dictionary.api import open_dictionary            # noqa: PLC0415
+        from compression_dictionary.conformance import write_suite        # noqa: PLC0415
+        ident = {
+            "build": doc.get("build"), "bundle_id": doc.get("bundle_id"),
+            "package_revision": doc.get("package_revision"),
+            "dictionary_fingerprint": doc.get("source_build_fingerprint"),
+            "bundle_fingerprint": doc.get("bundle_fingerprint"),
+            "codec_policy_version": (doc.get("codec") or {}).get("policy_version"),
+        }
+        d = open_dictionary()
+        try:
+            if d.fingerprint and doc.get("source_build_fingerprint") and \
+                    d.fingerprint != doc["source_build_fingerprint"]:
+                print(f"  WARNING: conformance NOT written -- resolved dictionary "
+                      f"{d.fingerprint[:16]} is not the build being published "
+                      f"{doc['source_build_fingerprint'][:16]}. ELO_DICT pinning failed; "
+                      f"vectors from the wrong dictionary are worse than none.")
+                return None
+            return write_suite(d, dest / "conformance", ident)
+        finally:
+            d.close()
+    except Exception as e:                                                # noqa: BLE001
+        print(f"  WARNING: conformance/ not written: {type(e).__name__}: {e}")
+        return None
+    finally:
+        if prev is None:
+            os.environ.pop("ELO_DICT", None)
+        else:
+            os.environ["ELO_DICT"] = prev
 
 
 def retag_bundle(src_dir: Path, new_name: str, out_root: Path, dry: bool) -> int:
