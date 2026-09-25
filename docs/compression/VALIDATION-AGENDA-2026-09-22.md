@@ -5,9 +5,49 @@
 > **Evidence tags:** `[M]` measured this lane, with the command · `[R]` read from source or a
 > published artifact · `[U]` unverified — believed, not shown.
 >
-> This is not a task list. It is the list of things this lane **claims** and the specific test
-> that would make each claim safe to act on. An item leaves this document when a measurement
-> retires it, not when someone is confident.
+> **This document is two things, and conflating them was its first defect** (caught by Paul,
+> 2026-09-22 — it opened by saying "this is not a task list" and closed with a ranked list of
+> six things to do).
+>
+> **Parts 1–5 are a CLAIMS REGISTER.** Each entry is something this lane asserts, plus the
+> specific measurement that would make it safe to act on. An entry leaves when a measurement
+> retires it, not when someone is confident. A register entry is not work; it is a statement
+> whose support is recorded.
+>
+> **§6 is a WORK QUEUE** — a small set of things to actually do, drawn from the register but
+> not the same as it. Most register entries never become queue items; they sit as recorded
+> uncertainty, which is their job.
+>
+> **The gold set (§0.1) is neither** and has been moved out of the register for that reason.
+> It is not a claim awaiting a test — it is the absence of an entire evidence class, and it is
+> why nothing in Parts 1–5 can speak to correctness. It is a project with a cost, not a check.
+
+---
+
+## 0.1 The gold set — not a register entry, and the only item here with a cost
+
+**No channel has ever been compared against human-adjudicated truth.** Not `facets`, `epa`,
+`vfacets`, `wordclass`, `morph` or `neighbours`. `FACET_GOLD_GAP.md` has said so since August.
+
+This sits outside the register because it is not a claim awaiting a measurement. It is the
+reason every entry below is about whether a number *means what it says* rather than whether the
+channel is *right*. A channel can be fully covered, deterministic, gate-passing, and wrong —
+and nothing this lane currently runs would notice.
+
+**It is a decision, not a task**, which is why it needs one from Paul rather than a queue
+position. The shape and its cost:
+
+| | |
+|---|---|
+| **Scope** | one channel to start, not all six. `facets` has the most consumers and the most prior art (`facet_gold_editor.html`, `facet_accuracy.py` already exist) |
+| **Sample** | ~300 records, **stratified by id segment** — a flat sample is 40% phrases and 3% symbols, so it would measure the wrong thing (§1.2) |
+| **People** | two adjudicators, independently. One adjudicator measures one person's opinion |
+| **First output** | **inter-annotator agreement, before any accuracy number.** If two people cannot agree on what a bucket means, the channel's *definition* is the defect and accuracy is not yet a meaningful question |
+| **Cost** | the adjudication hours. Everything else exists |
+
+**The decision to make:** whether to spend that, on which channel, and whether "we have no
+accuracy evidence" is an acceptable standing position for a dictionary other lanes are building
+products on. It has been the acceptable position for six weeks by default rather than by choice.
 
 ---
 
@@ -28,23 +68,10 @@ share of.
 
 ## Part 1 — Measurement validity
 
-### 1.1 No gold set for any channel — **the largest open item** `[M]`
+### 1.1 → moved to §0.1
 
-Nothing in `facets`, `epa`, `vfacets`, `wordclass`, `morph` or `neighbours` has been scored
-against human-adjudicated truth. `FACET_GOLD_GAP.md` has said so since August and nothing has
-moved.
-
-**Why it outranks everything else here:** every other item in Part 1 asks whether a number means
-what it says. This one asks whether the channel is *right*, and no amount of the former answers
-the latter. A channel can be 100% covered, deterministic, gate-passing and wrong.
-
-**What would settle it:** a stratified sample per channel (by id segment — word/phrase/name/
-symbol/web_structure/numeric — not a flat sample, see 1.2), adjudicated by two people
-independently, with inter-annotator agreement reported. Start at ~300 records per channel;
-report agreement before reporting accuracy. If two adjudicators cannot agree, the channel's
-definition is the defect, not the data.
-
-**Owner:** dictionary lane. **Blocked on:** nobody. This is a decision not to have done it.
+Not a register entry. See above: it is the absence of an evidence class and a decision with a
+cost, not a claim awaiting a measurement.
 
 ### 1.2 The id space is heterogeneous and most published denominators ignore it `[M]`
 
@@ -55,11 +82,24 @@ A pooled denominator misreports every sparse channel — `epa` reads 54.0% poole
 where expected. But the correction has its own failure mode (1.3), so **neither figure should be
 published alone**.
 
-**Concrete residue:** `coverage()` in `elo-dictionary` still returns the pooled number without
-naming its denominator. The value is correct; the field does not say what it is a share of.
+**Concrete residue:** `coverage()` in `elo-dictionary` returns the pooled number without naming
+its denominator. The value is correct; the field does not say what it is a share of.
 
-**What would settle it:** make `coverage()` return the segment breakdown, or refuse to return a
-single number. Owed.
+**Corrected 2026-09-22 (Paul).** An earlier draft here said *"make `coverage()` return the
+segment breakdown."* **That is not implementable from the bundle** — the segmentation lives in
+`coverage_census.json` and `nonlexical_terms_<name>.txt`, both **build_local** (§3.3, §0.1), so a
+consumer holding only the published bundle cannot reproduce it. Doing it would mean shipping a
+segment map, which is the `segments.bin` proposal this lane raised and withdrew on 2026-09-16 for
+a reason that still holds: **no consumer is computing coverage numbers.** The register had drifted
+back into proposing an asset to solve a hazard nobody has hit.
+
+**What is actually owed, and it is small:** `coverage()` should name its denominator rather than
+report a bare percentage — "54.03% of all 437,995 ids, every id type pooled", plus a note that
+`epa` is not expected for the symbol and numeric segments and that the per-segment figures are in
+`coverage_census.json`, which is build-local and available on request. `test_dictionary_api.py:128`
+asserts `54.03` as a self-describing fact and should assert the labelled form.
+
+No new asset, no rebuild, no revision bump.
 
 ### 1.3 "Coverage where expected" can be a tautology — **one confirmed** `[M]`
 
@@ -73,13 +113,23 @@ Run 2026-09-22 (`probe_absent_tautology.py`):
 |---|---|---|
 | `temporal` 100% | **TAUTOLOGY** `[M]` | 398/398 evidence-free probes → `PROCESS`; 0 of 28,167 qualifying records carry UNKNOWN; `_aspect_of_inflection` is total, final line `return TEMPORAL['PROCESS']` |
 | `direction` 100% | **genuine near-total measurement** `[M]` | the builder *does* emit `DIRECTION['UNKNOWN']` on a substrate miss (`vfacet_builder.py:430`); covers 66,749 of ~66,807 qualifying because the substrate was populated for essentially all NAME/NOUN/VERB |
-| `facets` bucket 100% | **UNEXAMINED** `[U]` | the `0xFF` sentinel is declared and has never been emitted on any build |
+| `facets` bucket 100% | **total but HONEST** `[M]` | bucket never returns UNKNOWN on evidence-free input (0/398), but `facets.py:215` sets `FLAG['HEURISTIC']` on that exact path — published in `facets.names.json`, carried by **270,180 records (61.7%)**. A consumer can separate a finding from a guess, through `flags` not `bucket` |
 
-**The lesson worth keeping:** `direction` looked structurally identical to `temporal` and the
-fast call — "same shape, same verdict" — would have been wrong. It took reading two more files.
-Structural similarity is a hypothesis, not a finding.
+**Three cells, three different answers, and the fast call was wrong twice.** `direction` looked
+structurally identical to `temporal`; it is a real measurement. `facets` was called "a stronger
+tautology than temporal's" on the first probe pass; the probe had read `bucket` and discarded
+`flags`, and the real result **inverts the lesson** — facets marks its guesses and `temporal`
+does not. Structural similarity is a hypothesis. So is a verdict from a probe that reads part of
+what it measures.
 
-**Next:** run `--field facets`. Part B is not yet wired for it; wiring it is the work.
+**What this hands to `temporal`:** facets' `FLAG['HEURISTIC']` is the mechanism `temporal` lacks.
+A defaulted `PROCESS` is currently indistinguishable from a measured one; a flag on the
+`_aspect_of_inflection` fallback path would fix that without touching the assignment. Queued.
+
+**Residual defect, unchanged:** bucket `0xFF` is declared and has no code path that emits it.
+**Decided 2026-09-22 — retire it.** `0x00` UNKNOWN plus `FLAG['HEURISTIC']` already express both
+"not known" and "guessed", both published and both populated; a third state existing only in
+prose is what let two independent consumers decode `0xFF` as bucket 255.
 
 ### 1.4 `direction`'s `NEUTRAL` may be a fallback wearing a verdict's name `[U]`
 
@@ -337,6 +387,26 @@ elo-sdm's: a pin guard written to match abbreviated fingerprints would have miss
 which was full-length. Mine: the revision-reason gate matches string equality only, from exactly
 two observed instances.
 
+### 5.5 Proposing an artifact to solve a hazard nobody has hit
+
+Three instances, all caught by Paul, all in six days:
+
+| proposed | actual problem | ratio |
+|---|---|---|
+| `segments.bin` — a tenth shipped asset, exporter, gate, revision bump | `coverage()` doesn't name its denominator | one label |
+| bit-exact `vectors_digest` as a missing invalidant | vectors were recomputed, not changed; a bit-exact gate would cry wolf every rebuild | a quantised digest |
+| "make `coverage()` return the segment breakdown" (§1.2) | same as row one — **and not implementable from the bundle** | same one label |
+
+The shape: find a real discrepancy, then reach for the artifact that would make the *class* of
+discrepancy impossible, without first asking whether anyone has been harmed by this instance.
+Row three is the worst of the three because it re-proposed row one **inside the document written
+to stop this lane from overclaiming**, five days after withdrawing it for the correct reason.
+
+**The check, and it costs one question:** *who has hit this, and what did it cost them?* If the
+answer is "nobody yet", the item is a register entry (recorded uncertainty), not a build. The
+register exists precisely so that "this could bite someone" has somewhere to live that is not a
+work queue.
+
 ### 5.4 The one method that keeps working: print both numbers
 
 The read-back's `11 payload` vs `12 counted`. The vector probe's verdict against its own
@@ -345,15 +415,45 @@ being clever. **Where a value can be derived two ways, derive it two ways and pr
 
 ---
 
-## Priority
+## 6. Work queue → moved to `semantic_compression/TASKS.md`
 
-1. **1.1 gold set** — nothing in Parts 1–4 substitutes for it, and it has been deferred longest.
-2. **3.1 install gate** — prerequisite for 3.2, and the class it catches is invisible today.
-3. **1.3 `facets` probe** + **1.4 `direction`/NEUTRAL** — cheap, and they decide whether two more
-   published numbers mean anything.
-4. **3.3 / 3.4** — ELO-Browser is blocked on both.
-5. **2.1 `epa` absence**, **2.3 `morph` identity** — live consumer traps, one of which fails open.
-6. Everything else.
+**Tasks left this document 2026-09-22 (Paul).** The register format has a "what would settle it"
+field on every entry, which invites designing a fix at writing time — before anyone has checked
+whether it is needed or possible. That is where all three §5.5 overreaches came from, including
+the one committed inside this document.
+
+§1.2 is the demonstration: three revisions of one section — ship a segment map, then a segment
+breakdown, then (correct) a one-line label — to arrive at a task that was small from the start.
+**Prose about a concern and the concrete next action are different artifacts and were fighting.**
+
+So: concerns live here, tasks live in `TASKS.md`, one line each. The rule there is the useful
+one — *if you cannot write the task in one line, you have not found the task yet; you have found
+a concern.*
+
+The queue as it stood:
+
+**This is the task list**, and it is deliberately short. Everything in Parts 1–5 that is *not*
+here is recorded uncertainty, which is a finished state — not a backlog item awaiting triage.
+"Everything else" was the wrong closing line; there is no everything-else tier, because most of
+the register is not work.
+
+An item enters this queue only when it is blocking a person, or when a number this lane
+publishes is being acted on and might not mean what it says.
+
+| # | item | why it is queued, not just recorded |
+|---|---|---|
+| Q1 | **3.4** `FIXTURE_*` pins on `conformance-verbs.json` | ELO-Browser red; small; the cased-entry fix will otherwise pass green by omission |
+| Q2 | **3.3** oracle set into the bundle | ELO-Browser holding `poc/conformance/` on it; prerequisite (§4c read-back) now done |
+| Q3 | **1.3** `facets` `0xFF` probe | one published number, currently unexamined; probe exists, needs Part B wired |
+| Q4 | **2.3** `morph_map` additive `dictionary_fingerprint` | fails **open** today — a consumer verifying correctly gets a false green |
+| Q5 | **3.1** build-and-install gate | prerequisite for 3.2, and the whole class is invisible without it |
+
+**Not queued, deliberately:** 1.4, 1.7, 1.8, 2.1, 2.2, 2.4–2.7, 4.1–4.4, and all of Part 5.
+Each is real. None is blocking anyone this week, and putting them in a queue would turn a register
+of honest uncertainty into a backlog nobody finishes — which is how the census `anomaly` cells
+(§1.7) have sat unexamined since they were first written down.
+
+**Separately, and above the queue:** §0.1 needs a decision, not a queue position.
 
 ---
 

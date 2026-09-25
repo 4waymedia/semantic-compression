@@ -126,6 +126,21 @@ def run() -> int:
     cov = {c.channel: c for c in d.coverage()}
     check("epa coverage is reported, not assumed",
           round(cov["epa"].pct_records, 2), 54.03)
+    # 2026-09-22: the number above is correct and was SILENT ABOUT ITS BASE, which is the
+    # whole heterogeneous id space -- words, phrases, names, symbols, web-structure,
+    # numerics. `epa` over a symbol is absent BY DESIGN, so 54.03 understates a channel
+    # that is 57.2% where it is expected at all. A consumer ranking channel reliability by
+    # this figure gets it wrong, and nothing in the report said so.
+    check("pct_records names what it is a percentage OF",
+          "every type pooled" in cov["epa"].denominator, True)
+    check("...and says the pooled figure UNDERSTATES a sparse channel",
+          "UNDERSTATES" in cov["epa"].denominator, True)
+    check("...and points at where the per-segment figures live",
+          "coverage_census.json" in cov["epa"].denominator, True)
+    check("...and that they are not in the bundle",
+          "build-local" in cov["epa"].denominator, True)
+    check("str(report) carries the denominator, not just the number",
+          "of 437,995 ids" in str(cov["epa"]), True)
     # NaN is the DECLARED absent marker and it is never used on v04 -- absence is
     # expressed as a missing row instead. Both read as None; only this says which.
     check("epa: absent means NO ROW, not NaN, on this build",

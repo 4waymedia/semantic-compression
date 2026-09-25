@@ -955,8 +955,234 @@ def main() -> int:
     for src in payload_files(bundle_src).values():
         shutil.copyfile(src, dest / src.name)
     (dest / "BUNDLE.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\npublished -> {dest}\n  {len(doc['files'])+1} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
+    # Orientation for whoever opens this directory next. Generated from the registry, so
+    # it cannot describe an asset set the bundle does not carry. In NOT_PAYLOAD.
+    _pkg = _write_package_manifest(dest, doc, man)
+    print(f"\npublished -> {dest}\n  {len(doc['files'])+2} files, bundle_fingerprint {doc['bundle_fingerprint'][:16]}")
+    print(f"  {_pkg.name} written ({len(doc['files'])} files described, "
+          f"{sum(1 for a in ASSETS if a.ships)} assets)")
+    if not PACKAGE_TERMS:
+        print("  NOTE: terms of use are UNSET -- PACKAGE.md says so rather than inventing "
+              "a licence. Set PACKAGE_TERMS when that is decided.")
     return 0
+
+
+PACKAGE_REPO = "https://github.com/4waymedia/semantic-compression"
+
+# COPYRIGHT AND TERMS (2026-09-24, asked for by Paul).
+#
+# There is NO licence anywhere in this project. Checked: every LICENSE file on disk is a
+# vendored dependency inside `llm-training/.venv`, and `docs/legal_dictionary.md` is about
+# using the dictionary ON legal documents, not its own terms.
+#
+# So this generator does NOT invent one. Choosing a licence is a legal and commercial
+# decision with consequences this lane cannot evaluate, and a plausible-looking licence in
+# a published artifact is worse than a visible gap -- a consumer would rely on it. The
+# manifest states the holder (derived, from the build spec author) and states plainly that
+# terms are UNSET.
+#
+# Set PACKAGE_TERMS to the real text when that decision is made. The manifest will then
+# carry it and stop printing the notice below.
+# STATED BY PAUL, 2026-09-24. Authoritative; do not derive this from the build manifest.
+#
+# History, because it matters for how this constant is treated: the first version hardcoded
+# "Paul Renaud", a surname that appears NOWHERE in this repository -- invented and placed in
+# a copyright line, about forty lines from a comment warning that a plausible-looking
+# licence is worse than a visible gap. The second version derived the holder from
+# `manifest.json:39` ("Paul (4waymedia)"), which was honest but wrong: the build spec's
+# `author` field names who ran the build, not who owns the copyright, and 4waymedia is the
+# GitHub org rather than the legal entity.
+#
+# So this is neither guessed nor derived -- it is the value the owner supplied. If it needs
+# to change, it changes here, by him.
+PACKAGE_COPYRIGHT_HOLDER = "Paul Gemignani (Shortcasts LLC)"
+PACKAGE_TERMS = ""          # <- set this. Empty means "undecided", and says so.
+
+
+def _corpus_provenance(man: dict) -> dict:
+    """Corpus sources AGGREGATED BY TYPE, from what manifest.json actually records.
+
+    The first version of this guessed both the key names (`license`, `path`) and the
+    granularity (one row per declared source). Wrong on both: `corpus_sources` records one
+    entry per RESOLVED FILE -- 28 of them, 26 being individual books -- with keys
+    `type` / `file` / `sha256` / `weight` / `tokens`, and **no licence field at all**.
+    The published table came out as 28 rows of `?` and "not declared", which is how the
+    defect surfaced.
+
+    Written from the artifact this time. `semantic_compression/db/builds/elo-v5/manifest.json:110`.
+
+    THE REAL GAP, and it is upstream of this function: licences are declared per source in
+    the build YAML (`builds/<name>.yaml` -> `corpus[].license`) and `build_from_spec` does
+    not copy them into the manifest. So a published bundle cannot state the terms of the
+    corpora it was derived from. Recorded in TASKS.md; this function says so rather than
+    printing a blank column that looks like an answer."""
+    by_type: dict = {}
+    for src in (man.get("corpus_sources") or []):
+        if not isinstance(src, dict):
+            continue
+        t = src.get("type") or "?"
+        e = by_type.setdefault(t, {"files": 0, "tokens": 0, "examples": []})
+        e["files"] += 1
+        e["tokens"] += int(src.get("tokens") or src.get("unique_tokens") or 0)
+        if len(e["examples"]) < 2 and src.get("file"):
+            e["examples"].append(str(src["file"]).replace("\\", "/"))
+    return by_type
+
+
+def _write_package_manifest(dest: Path, doc: dict, man: dict) -> Path:
+    """PACKAGE.md -- the file a consumer opens FIRST.
+
+    2026-09-24. The bundle shipped eleven files and said nothing about what any of them
+    was for. ELO-Browser had a working integration and still had to ask which channel
+    answered which question, because the answer lived in four handoffs, a spec and this
+    lane's head. Every `purpose` / `not_for` line below is read from `asset_registry`, so
+    it cannot drift from the asset it describes.
+
+    In NOT_PAYLOAD: it describes the payload rather than being it."""
+    ident = {
+        "build": doc.get("build"), "bundle_id": doc.get("bundle_id"),
+        "package_revision": doc.get("package_revision"),
+        "dictionary_fingerprint": doc.get("source_build_fingerprint"),
+        "bundle_fingerprint": doc.get("bundle_fingerprint"),
+        "codec_policy_version": (doc.get("codec") or {}).get("policy_version"),
+        "published_utc": doc.get("published_utc"),
+        "entries": (doc.get("vocab") or {}).get("entries"),
+    }
+    files = doc.get("files") or {}
+    L = []
+    A = L.append
+
+    # ASCII ONLY in this file (2026-09-24). It is read by Rust, C, PowerShell and whoever
+    # else, and `Get-Content` on PS5 renders UTF-8 as mojibake by default -- the first
+    # generated copy came out full of `â€”`. A published artifact should not depend on
+    # every reader's encoding being right.
+    A(f"# {ident['bundle_id']} -- ELO Dictionary package contents\n")
+    A("> **Generated by `publish_dictionary.py`. Do not edit -- it is rewritten on every "
+      "publish.**\n> Every per-asset line is read from `asset_registry.py`, the single "
+      "declaration of what each asset is.\n")
+    A("## Identity -- pin `bundle_id`\n")
+    A("| field | value | what it identifies |")
+    A("|---|---|---|")
+    A(f"| `bundle_id` | **{ident['bundle_id']}** | **the asset set. Pin this.** |")
+    A(f"| `package_revision` | {ident['package_revision']} | the same, as an integer |")
+    A(f"| `dictionary_fingerprint` | `{(ident['dictionary_fingerprint'] or '')[:32]}...` | "
+      f"the id space. What an `.elo` binds to. **Identical across revisions by design** |")
+    A(f"| `bundle_fingerprint` | `{(ident['bundle_fingerprint'] or '')[:32]}...` | "
+      f"this asset set's content. Verify with it; **never pin the id space against it -- "
+      f"that check fails open** |")
+    A(f"| `codec.policy_version` | {ident['codec_policy_version']} | what the codec does. "
+      f"**Pin it if you cache encoded bytes** |")
+    A(f"| `entries` | {ident['entries']:,} | vocabulary size |" if ident["entries"]
+      else "| `entries` | ? | |")
+    A(f"\nPublished {ident['published_utc']}. Source: <{PACKAGE_REPO}>\n")
+
+    A("## Files in this directory\n")
+    A("| file | bytes | asset | use it for | do NOT use it for |")
+    A("|---|---:|---|---|---|")
+    by_bin = {a.bin_file: a for a in ASSETS if a.bin_file}
+    for name in sorted(files):
+        meta = files[name] or {}
+        a = by_bin.get(name)
+        extra = next((x for x in ASSETS if name in (x.extra_files or ())), None)
+        contract = next((x for x in ASSETS if x.contract_file == name), None)
+        if a:
+            A(f"| `{name}` | {meta.get('bytes', 0):,} | **{a.name}** | {a.purpose or '—'} "
+              f"| {a.not_for or '—'} |")
+        elif contract:
+            A(f"| `{name}` | {meta.get('bytes', 0):,} | {contract.name} contract | "
+              f"Enum names, masks and shifts for `{contract.name}` -- **read them from here, "
+              f"do not hardcode** | Gating geometry it does not carry |")
+        elif extra:
+            A(f"| `{name}` | {meta.get('bytes', 0):,} | {extra.name} (aux) | "
+              f"Companion to `{extra.name}` | See `{extra.name}` |")
+        else:
+            A(f"| `{name}` | {meta.get('bytes', 0):,} | vocab index | "
+              f"surface <-> id <-> `n`. **Required to use any `.bin`** | Channel values |")
+    A("| `BUNDLE.json` | -- | manifest | shas, geometry, absence rules, gates, identity "
+      "| -- |")
+    A("| `PACKAGE.md` | -- | this file | orientation | -- |\n")
+
+    A("## How absence is spelled -- per channel, and it differs\n")
+    A("This is the defect class this project has paid most for. **`0` is a measured value "
+      "in most channels.**\n")
+    A("| asset | absence |")
+    A("|---|---|")
+    for a in ASSETS:
+        if a.ships:
+            A(f"| `{a.name}` | {a.absent} |")
+    A("")
+
+    A("## Not in this bundle\n")
+    A("The LMDB (2 GB), `meta.db`, `coverage_census.json`, the vocabulary contract files "
+      "(`token-ids.csv.gz`, `special-tokens.json`, `profile-cuts.json`) and the `*_stats.json` "
+      "family are **build-local** -- declared with shas in `STANDARD.json` under "
+      "`build_local`, and not distributed. Ask the dictionary lane; none are secret.\n")
+    A(f"**Build list:** `dist/dictionary/INDEX.json` (repo-only). Builds are named "
+      f"`elo-vN`, forward only.\n")
+
+    A("## Reading it\n")
+    A("- **Python, in-repo:** `from compression_dictionary import open_dictionary` -- see "
+      "`packages/elo-dictionary/CONSUMING.md`.\n"
+      "- **Native (Rust/C/C++) or out-of-repo:** parse the `.bin` files. Full wire format, "
+      "headers, strides and indexing: `packages/elo-dictionary/PACKAGE-CONTENTS.md`.\n"
+      "- **Every `.bin` shares one header:** 8-byte magic, `u32` count, `u32` fp_len(=64), "
+      "64-byte ASCII-hex fingerprint. **Payload starts at offset 80.** `fp_len` is the "
+      "fingerprint's length, not the header's.\n"
+      "- **Channels are indexed by vocab index `n`,** not by Base64 id. Get `n` from the "
+      "vocab index file above.\n")
+
+    A("## Accuracy -- read this before you rely on a number\n")
+    A("**No channel in this bundle has been compared against adjudicated truth.** There is "
+      "no gold set, for any channel, on any build. Every figure this lane publishes -- "
+      "coverage, population, presence, entropy -- is a property of the instrument, not a "
+      "measure of correctness. Two channels are known to assign defaults that a consumer "
+      "would read as findings (`facets` marks them with `FLAG['HEURISTIC']`; `temporal` "
+      "does not). If a number matters to your product, measure it against your own labels.\n")
+
+    A("## Copyright and terms of use\n")
+    A(f"Copyright (c) {(ident['published_utc'] or '')[:4]} {PACKAGE_COPYRIGHT_HOLDER}. "
+      f"All rights reserved.\n")
+    if PACKAGE_TERMS:
+        A(PACKAGE_TERMS + "\n")
+    else:
+        A("> **TERMS OF USE ARE NOT SET.** This project carries no licence file, and "
+          "this generator deliberately does not invent one -- a plausible-looking licence "
+          "in a published artifact is worse than a visible gap, because a consumer would "
+          "rely on it.\n>\n"
+          "> **No licence is granted by this file.** Internal lanes of this project may "
+          "use the bundle as before. Any external distribution or use requires terms that "
+          "do not yet exist. Set `PACKAGE_TERMS` in `publish_dictionary.py` and republish "
+          "once that decision is made.\n")
+    prov = _corpus_provenance(man)
+    if prov:
+        A("### Corpus provenance -- these travel with the artifact\n")
+        A("This bundle is **derived from** the sources below, so their terms bear on what "
+          "you may do with it, independently of the notice above.\n")
+        A("| source type | files | tokens | e.g. |")
+        A("|---|---:|---:|---|")
+        for t in sorted(prov):
+            e = prov[t]
+            eg = ", ".join(f"`{x}`" for x in e["examples"]) or "--"
+            A(f"| {t} | {e['files']:,} | {e['tokens']:,} | {eg} |")
+        A("")
+        A("> **Licences are NOT in this manifest.** They are declared per source in the "
+          "build spec (`semantic_compression/builds/<build>.yaml` -> `corpus[].license`) "
+          "and `build_from_spec` does not copy them into `manifest.json`, so a published "
+          "bundle cannot state the terms of the corpora it was computed from. That is a "
+          "real gap in the build, not in this file, and it is on `TASKS.md`. Ask the "
+          "dictionary lane for the spec until it closes.\n")
+    else:
+        A("> `manifest.json` records no `corpus_sources`. Provenance for this bundle is "
+          "unknown from the artifact alone -- ask the dictionary lane before external use.\n")
+
+    A("---\n")
+    A("Wrong, unclear or missing? Say so rather than working around it -- "
+      "`semantic_compression/TASKS.md`. Every warning here is a bug a consumer shipped, "
+      "and in four cases this lane shipped the same bug in its own reader.")
+
+    out = dest / "PACKAGE.md"
+    out.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return out
 
 
 def retag_bundle(src_dir: Path, new_name: str, out_root: Path, dry: bool) -> int:

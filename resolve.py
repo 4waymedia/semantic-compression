@@ -60,6 +60,7 @@ __all__ = [
     "resolve_dictionary", "ResolvedDictionary", "DictionaryUnavailable",
     "ChannelUnavailable", "FingerprintMismatch", "verify_fingerprint",
     "ENV_VAR", "DEPRECATED_ENV_VARS", "clear_cache",
+    "dictionary_identity",
 ]
 
 ENV_VAR = "ELO_DICT"
@@ -256,6 +257,77 @@ def _read_identity(lmdb_path: Path) -> dict:
     finally:
         env.close()
     return out
+
+
+def dictionary_identity(prefix: str = "", root: "Path | str | None" = None) -> dict:
+    """The identity block a FIXTURE, ORACLE or CERTIFICATE should pin (2026-09-22).
+
+    Every generator in this project has been hand-assembling this, or omitting it:
+
+      conformance-verbs.json  pins NOTHING -- no build, no fingerprint. The browser
+                              hardcodes `elo-browser-v04` in Rust instead.
+      morph_map.json          pins a field NAMED `bundle_fingerprint` that carries the
+                              DICTIONARY fingerprint -- a consumer verifying correctly
+                              gets a false green.
+      the four oracles        each learned a different subset, on three separate days,
+                              after three separate lanes reported the same class of miss.
+
+    One function, so a generator asks rather than remembers. `**dictionary_identity()`
+    into a payload is the whole integration.
+
+    WHY EACH FIELD IS HERE -- they answer four different questions and are not
+    interchangeable (this is the distinction that keeps being lost):
+
+      build                   a LABEL. Does not move when content does.
+      dictionary_fingerprint  the ID SPACE. What an .elo binds to. IDENTICAL across
+                              revisions by design -- so a fixture pinning only this
+                              CANNOT see a content change.
+      bundle_id               the ASSET SET. The string to pin. Moves with every revision.
+      package_revision        the same fact as an integer, for `>= 2` style checks.
+      bundle_fingerprint      the asset set's content hash. Verify with it; never pin the
+                              id space against it -- that check FAILS OPEN.
+      codec_policy_version    what the CODEC DOES. Pin it if you cache encoded bytes or
+                              expected decode values; a fixture that pins only
+                              build/fingerprint cannot see an encoder change.
+
+    Read from the published bundle, not recomputed and not taken from local source: the
+    fixture should record what the artifact says, so the two cannot drift.
+
+    `prefix` renames the keys for callers with their own convention --
+    `dictionary_identity(prefix="fixture_")` gives FIXTURE_BUNDLE_ID's lowercase twin."""
+    r = resolve_dictionary(root)
+    info = dict(r._info or {})
+    out = {
+        "build": info.get("build") or r.build,
+        "dictionary_fingerprint": info.get("dictionary_fingerprint") or r.fingerprint,
+        "bundle_id": info.get("bundle_id"),
+        "package_revision": info.get("package_revision"),
+        "bundle_fingerprint": info.get("bundle_fingerprint"),
+        "codec_policy_version": None,
+    }
+
+    # codec.policy_version lives in the BUNDLE, not in local source. A fixture that took
+    # it from the importing tree would record the policy of whoever ran the generator
+    # rather than the policy the cached values were produced under.
+    bp = info.get("bundle_path")
+    if bp and r.standard_path is not None:
+        try:
+            repo = r.standard_path.parents[2]          # dist/dictionary/STANDARD.json
+            bj = repo / bp / "BUNDLE.json"
+            if bj.is_file():
+                out["codec_policy_version"] = (
+                    (json.loads(bj.read_text(encoding="utf-8")).get("codec") or {})
+                    .get("policy_version"))
+        except Exception:                              # noqa: BLE001
+            pass
+
+    missing = [k for k, v in out.items() if v is None]
+    if missing:
+        out["identity_incomplete"] = (
+            f"could not resolve: {', '.join(missing)}. A fixture pinned on an incomplete "
+            f"identity cannot see the change the missing field exists to catch -- "
+            f"regenerate once the bundle is published rather than shipping this.")
+    return {f"{prefix}{k}": v for k, v in out.items()} if prefix else out
 
 
 def _from_path(p: Path, source: str, standard: Path | None = None) -> ResolvedDictionary:

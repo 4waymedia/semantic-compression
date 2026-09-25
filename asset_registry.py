@@ -85,6 +85,29 @@ class Asset:
     #: Declared-but-deliberately-unbuilt assets name their reason here. A registry
     #: entry with no builder and no reason is the `templates` defect.
     unbuilt_reason: str = ""
+
+    # WHAT A CONSUMER WOULD USE THIS FOR, in one line (2026-09-24).
+    #
+    # Added because the published bundle listed eleven files and said nothing about what
+    # any of them was FOR. ELO-Browser had a working integration and still could not tell
+    # which channel answered which question -- so the answer lived in four handoffs, a
+    # spec, and this lane's head, and a consumer had to ask.
+    #
+    # Declared here rather than in the manifest generator for the usual reason: a
+    # description written next to the generator drifts from the asset it describes. This
+    # is the tenth field on this dataclass and the tenth thing that used to be
+    # hand-maintained somewhere else.
+    #
+    # Defaulted rather than required, unlike `absent`: a missing purpose produces a
+    # manifest entry that says so, which is recoverable. A missing absence rule produces
+    # a consumer that reads zero as a measurement, which is not.
+    purpose: str = ""
+
+    # What it is NOT good for. The manifest ships this beside `purpose` because every
+    # measured misuse in this project was a consumer reaching for a field that looked
+    # applicable: EPA for synonymy, `bucket` for ranking, `utility` for salience.
+    # Naming the misuse next to the use is cheaper than the handoff that follows it.
+    not_for: str = ""
     note: str = ""
 
     @property
@@ -115,18 +138,30 @@ class Asset:
 # --------------------------------------------------------------------------------
 ASSETS: tuple[Asset, ...] = (
     Asset(
+        purpose="surface -> Base64 id. The encode direction; the id space itself.",
+        not_for="Reading channel values -- it carries ids, not assets.",
         name="forward", subdb=b"forward", record_width=None,
         absent="a surface with no id is not in the dictionary; there is no null row",
         required=True,
         note="surface -> id. Half of the binding table; the ids every asset is keyed by.",
     ),
     Asset(
+        purpose="Base64 id -> surface. The decode direction.",
+        not_for="Reconstructing authored text by space-joining -- use the codec (text()).",
         name="reverse", subdb=b"reverse", record_width=None,
         absent="an id with no surface is a build error, not absence",
         required=True,
         note="id -> surface.",
     ),
     Asset(
+        purpose="Coarse SEMANTIC TYPE per surface: bucket (topic/concept/relation/...), "
+                "a composable logic-cue mask, and flags carrying utility "
+                "(content/structural/function/filler). Use it to FILTER -- exclude "
+                "structural surfaces, find connectives.",
+        not_for="RANKING OR SCORING. bucket's effective cardinality is 2.0 and utility's "
+                "is 1.17 -- two of six values hold 99.9%. Measured: an adapter ranked "
+                "salience by bucket and produced the 90%-bold defect. 61.7% of records "
+                "carry FLAG['HEURISTIC'] -- read it; the channel says when it guessed.",
         name="facets", subdb=b"facets", record_width=4,
         absent="bucket byte 0xFF; UNKNOWN=0x00 is a MEASURED value, not absence",
         bin_file="facets.bin", wire_magic=b"ELOFCT\x01\x00",
@@ -137,16 +172,39 @@ ASSETS: tuple[Asset, ...] = (
              "byte 3 and is a separate field that shares the byte.",
     ),
     Asset(
+        purpose="AFFECT per surface: evaluation, potency, activity (Osgood/Heise scale). "
+                "Use it for affective dynamics over Actor-Behavior-Object events, and "
+                "for deflection in Affect Control Theory terms.",
+        not_for="SYNONYMY OR SEMANTIC SEARCH. EPA is 3 dimensions and encodes no "
+                "denotation: `car`'s nearest neighbours are `credentials`, `attention`, "
+                "`decoration`. The retrieval is exact; the space cannot tell them apart. "
+                "Use `neighbours` for denotative similarity. Potency is also the least "
+                "reliable axis (cross-source agreement P=0.328).",
         name="epa", subdb=b"epa", record_width=12,
-        absent="NO ROW. The NaN marker is declared and, on v04, never used: "
-               "236,645 rows, zero NaN. A reader written from the docstring "
-               "implements a case that does not occur and skips the one that does.",
+        # Corrected 2026-09-24: this said "on v04, never used", which was true of the LMDB
+        # and false of the .bin, and the old text named only one of the two spellings. A
+        # published absence rule that describes one representation of two is how a reader
+        # gets the right answer for the wrong reason until the day it does not.
+        absent="TWO SPELLINGS, unreconciled. In the LMDB: NO ROW (236,645 of 437,995 "
+               "entries have one). In epa.bin: NaN,NaN,NaN -- that array is DENSE, so "
+               "201,350 slots carry NaN. Both read as 'no value' through the API, so a "
+               "reader that checks for a missing key against the .bin, or for NaN against "
+               "the LMDB, is wrong and silent. On the bin: test is_nan, never == 0.0 -- "
+               "zero is a measured neutral affect.",
         bin_file="epa.bin", wire_magic=b"ELOEPA\x01\x00",
         contract_file=None,
         ships=True,
         note="<fff evaluation/potency/activity. AFFECT, never denotative similarity.",
     ),
     Asset(
+        purpose="Verb/event shape per surface: agency, direction, temporal aspect, "
+                "domain, polarity (+ a polarity_known bit). Use `direction` and "
+                "`polarity` -- both are genuine measurements that emit absence.",
+        not_for="Reading `temporal` as a measurement. Proven 2026-09-22: a VERB with no "
+                "suffix evidence is assigned PROCESS, and temporal NEVER emits UNKNOWN "
+                "over its qualifying class -- unlike facets, nothing marks the default. "
+                "Also: polarity's absence is the polarity_known BIT, not polarity==0 "
+                "(NEUTRAL is 0b00 and measured, 76% of it).",
         name="vfacets", subdb=b"vfacets", record_width=2,
         absent="PER FIELD, six independent absences. polarity's absence is the "
                "`polarity_known` bit, NOT polarity==0 (NEUTRAL is 0b00). There is no "
@@ -158,6 +216,13 @@ ASSETS: tuple[Asset, ...] = (
         note="agency/direction/temporal/domain/polarity/polarity_known.",
     ),
     Asset(
+        purpose="DENOTATIVE nearest neighbours from the 768-d index, as CSR by vocab "
+                "index. This is the channel for 'what means something similar' -- the "
+                "question EPA cannot answer.",
+        not_for="Reading an empty list as 'nothing similar enough'. It means NOT IN THE "
+                "INDEX: 258,251 of 258,254 covered entries sit exactly at the k=16 cap, "
+                "so the similarity floor never binds. Also ships no contract file, so "
+                "its geometry cannot be gated -- see PACKAGE-CONTENTS.md §5.5.",
         name="neighbours", subdb=None, record_width=None,
         absent="an EMPTY list means NOT IN THE INDEX. It essentially never means "
                "'indexed, nothing similar enough': 258,251 of 258,254 covered "
@@ -170,6 +235,15 @@ ASSETS: tuple[Asset, ...] = (
              "offsets + 5B records. Denotative (mpnet), not EPA.",
     ),
     Asset(
+        purpose="Grammatical class per surface: dominant class + confidence, a composable "
+                "class mask, ambivalence, countability, inherent number, proper, "
+                "requires-determiner. The ONLY field in this dictionary that can rank -- "
+                "effective cardinality 4.03 over the word-level classed set.",
+        not_for="Truthiness tests. Tri-state fields are 0=UNKNOWN 1=NO 2=YES, so `1` is "
+                "TRUTHY and means NOT: `if wc['proper']` fires on 'definitely not a "
+                "name' and has already inverted a consumer's gate. Compare to 2. Also: "
+                "`dominant == OTHER` IS the phrase segment (174,628 both), so exclude "
+                "OTHER and UNKNOWN before ranking -- 4.03, not the inflated 3.78.",
         name="wordclass", subdb=b"wordclass", record_width=3,
         absent="dominant class UNKNOWN=0, and the tri-state feature fields use "
                "0=UNKNOWN / 1=NO / 2=YES -- so 1 is TRUTHY and means NOT. Use the "
@@ -186,6 +260,14 @@ ASSETS: tuple[Asset, ...] = (
         # `morph` -- the ASSET. `morph_map.json` is one of its files, and naming the
         # asset after a file is how a second file (morph_vetoes.bin) ends up looking
         # like a different thing. The manifest publishes `morph`.
+        purpose="Same-lemma adjudications for surface PAIRS that suffix rules cannot "
+                "settle, decided by the embedding. Use it to know two surfaces are "
+                "inflections of one lemma when the spelling does not show it.",
+        not_for="Treating a missing pair as 'not the same lemma'. A pair with no entry is "
+                "UNDECIDED -- unsettled or never scored. This is the absent-vs-zero error "
+                "for this asset and the one consumers reach for first. Also: "
+                "meta.bundle_fingerprint carries the DICTIONARY fingerprint, so verifying "
+                "against it FAILS OPEN -- pin meta.dictionary_fingerprint.",
         name="morph", subdb=None, record_width=None,
         absent="a PAIR with no entry is UNDECIDED -- not 'these are unrelated'. The map "
                "holds the residue suffix rules cannot settle, adjudicated by the "
@@ -210,6 +292,10 @@ ASSETS: tuple[Asset, ...] = (
              "this map.",
     ),
     Asset(
+        purpose="(unbuilt) Reserved for surface -> template bindings.",
+        not_for="Anything. No build produces it; see unbuilt_reason. elo-v5 does not "
+                "create the sub-db at all, so assert against this registry entry rather "
+                "than probing for the channel.",
         name="templates", subdb=b"templates", record_width=None,
         absent="0 entries is not low coverage; nobody has built this",
         unbuilt_reason="DECLARED, NEVER BUILT. No stage produces it and no lane owns "
@@ -232,7 +318,8 @@ BY_NAME: dict[str, Asset] = {a.name: a for a in ASSETS}
 # It was defined in publish_dictionary alone until 2026-09-21, which meant the read-back
 # either imported a publish-time script or restated the list -- and a restated list is how
 # nine asset lists happened. A manifest is not payload of itself.
-NOT_PAYLOAD = ("BUNDLE.json", "assets.meta.json", "neighbours.meta.json")
+NOT_PAYLOAD = ("BUNDLE.json", "assets.meta.json", "neighbours.meta.json",
+               "PACKAGE.md")
 
 
 def known_subdbs() -> dict:
